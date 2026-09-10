@@ -1,9 +1,29 @@
 {
   "name": "kankaku",
   "version": "0.1.0",
+  "description": "pi extension that records agent work time per prompt, excluding waits for the user, with subagent linkage and task/session views",
+  "license": "MIT",
+  "author": "soyunninja",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soyunninja/kankaku.git"
+  },
+  "homepage": "https://github.com/soyunninja/kankaku#readme",
+  "bugs": {
+    "url": "https://github.com/soyunninja/kankaku/issues"
+  },
   "type": "module",
   "keywords": [
-    "pi-package"
+    "pi-package",
+    "pi",
+    "pi-extension",
+    "time-tracking",
+    "agents"
+  ],
+  "files": [
+    "src/",
+    "README.md",
+    "LICENSE"
   ],
   "pi": {
     "extensions": [
@@ -13,7 +33,8 @@
   "scripts": {
     "test": "node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test"
+    "check": "npm run typecheck && npm test",
+    "prepublishOnly": "npm run check"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.85.1",

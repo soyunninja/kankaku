@@ -23,24 +23,21 @@ joined later.
 
 ## Install
 
-Add the extension's path to your pi `settings.json`:
-
-```json
-{
-  "extensions": ["/absolute/path/to/kankaku/src/extension.ts"]
-}
-```
-
-Or, once published, install it as an npm package:
+kankaku is a pi package. Pick one source:
 
 ```
-pi install kankaku
+pi install npm:kankaku                          # from npm
+pi install git:github.com/soyunninja/kankaku    # from git (add @v0.1.0 to pin)
+pi install /absolute/path/to/kankaku            # local checkout, no copy
 ```
 
-To also track subagent children (spawned as separate pi processes), add the
-path to your **global** `~/.pi/agent/settings.json` rather than a
-project-local `.pi/extensions/` directory, since project-local extensions
-depend on trust that a subagent child may not inherit.
+`pi install` writes to your global `~/.pi/agent/settings.json`, so the
+extension loads in every pi process, including the subagent children that
+`subagent_run` spawns. Use `-l` to install into a project's `.pi/settings.json`
+instead; note that project-local resources load only after the project is
+trusted, which a subagent child may not inherit.
+
+To try it without installing: `pi -e /absolute/path/to/kankaku`.
 
 ## Record schema
 
