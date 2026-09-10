@@ -39,8 +39,8 @@ test("summarize groups totals by role for a given local day", () => {
 
   const summary = summarize(records, { day });
 
-  assert.deepEqual(summary.orchestrator, { workMs: 300, waitingMs: 30, wallMs: 330, count: 2 });
-  assert.deepEqual(summary.subagent, { workMs: 50, waitingMs: 5, wallMs: 55, count: 1 });
+  assert.deepEqual(summary.orchestrator, { workMs: 300, waitingMs: 30, wallMs: 330, count: 2, cost: 0 });
+  assert.deepEqual(summary.subagent, { workMs: 50, waitingMs: 5, wallMs: 55, count: 1, cost: 0 });
 });
 
 test("summarize excludes records outside the requested local day", () => {
@@ -81,9 +81,9 @@ test("summarize defaults to today when neither day nor all is given", () => {
 test("summarize returns zeroed totals for roles with no records", () => {
   const summary = summarize([], { all: true });
 
-  assert.deepEqual(summary.orchestrator, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0 });
-  assert.deepEqual(summary.subagent, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0 });
-  assert.deepEqual(summary.tasks, { count: 0, wallMs: 0, workMs: 0 });
+  assert.deepEqual(summary.orchestrator, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0 });
+  assert.deepEqual(summary.subagent, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0 });
+  assert.deepEqual(summary.tasks, { count: 0, wallMs: 0, workMs: 0, cost: 0 });
 });
 
 test("summarize computes a tasks segment as the union of parent and child spans for the given day", () => {
@@ -197,4 +197,56 @@ test("formatSessions renders one line per session with truncated id, time range,
 
 test("formatSessions reports 'no sessions' for an empty list", () => {
   assert.equal(formatSessions([]), "no sessions");
+});
+
+test("summarize accumulates cost per role and per task, including subagent cost", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: sameInstant,
+    settledAt: new Date(Date.parse(sameInstant) + 30_000).toISOString(),
+    usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.25 },
+  });
+  const child = makeRecord({
+    id: "c1",
+    role: "subagent",
+    pid: 200,
+    parentPid: 100,
+    startedAt: new Date(Date.parse(sameInstant) + 5_000).toISOString(),
+    settledAt: new Date(Date.parse(sameInstant) + 20_000).toISOString(),
+    usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+  });
+
+  const summary = summarize([parent, child], { day });
+
+  assert.equal(summary.orchestrator.cost, 0.25);
+  assert.equal(summary.subagent.cost, 0.5);
+  assert.equal(summary.tasks.cost, 0.75);
+});
+
+test("formatReport, formatTasks and formatSessions show cost in dollars", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    sessionId: "session-1",
+    startedAt: sameInstant,
+    settledAt: new Date(Date.parse(sameInstant) + 30_000).toISOString(),
+    usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0, cost: 1.2345 },
+  });
+
+  const summary = summarize([parent], { day });
+  assert.match(formatReport(summary), /orchestrator:.*\$1\.23/);
+  assert.match(formatReport(summary), /tasks:.*\$1\.23/);
+
+  const tasks = buildTasks([parent]);
+  assert.match(formatTasks(tasks), /\$1\.23/);
+  assert.match(formatSessions(buildSessions(tasks)), /\$1\.23/);
 });

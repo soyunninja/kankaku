@@ -7,12 +7,16 @@ export interface RoleTotals {
   waitingMs: number;
   wallMs: number;
   count: number;
+  /** Estimated cost in USD, as priced by pi's model table. */
+  cost: number;
 }
 
 export interface TaskTotals {
   count: number;
   wallMs: number;
   workMs: number;
+  /** Estimated cost in USD, orchestrator and subagents combined. */
+  cost: number;
 }
 
 export type Summary = Record<WorkRole, RoleTotals> & { tasks: TaskTotals };
@@ -36,7 +40,7 @@ export function localDay(iso: string): string {
 }
 
 function emptyTotals(): RoleTotals {
-  return { workMs: 0, waitingMs: 0, wallMs: 0, count: 0 };
+  return { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0 };
 }
 
 /**
@@ -51,7 +55,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
   const summary: Summary = {
     orchestrator: emptyTotals(),
     subagent: emptyTotals(),
-    tasks: { count: 0, wallMs: 0, workMs: 0 },
+    tasks: { count: 0, wallMs: 0, workMs: 0, cost: 0 },
   };
 
   for (const record of records) {
@@ -61,6 +65,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     totals.waitingMs += record.waitingMs;
     totals.wallMs += record.wallMs;
     totals.count += 1;
+    totals.cost += record.usage.cost;
   }
 
   const tasks = buildTasks(records).filter((task) => targetDay === undefined || localDay(task.startedAt) === targetDay);
@@ -68,6 +73,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     summary.tasks.count += 1;
     summary.tasks.wallMs += task.wallMs;
     summary.tasks.workMs += task.workMs;
+    summary.tasks.cost += task.usage.cost;
   }
 
   return summary;
@@ -78,6 +84,11 @@ function formatMinutes(ms: number): string {
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
   return `${minutes}m${String(seconds).padStart(2, "0")}s`;
+}
+
+/** Estimated USD cost with two decimals, e.g. `$1.23`. */
+function formatCost(cost: number): string {
+  return `$${cost.toFixed(2)}`;
 }
 
 function formatTime(iso: string): string {
@@ -91,32 +102,32 @@ function formatTime(iso: string): string {
 export function formatReport(summary: Summary): string {
   const lines = ROLES.map((role) => {
     const totals = summary[role];
-    return `${role}: work ${formatMinutes(totals.workMs)}, waiting ${formatMinutes(totals.waitingMs)}, ${totals.count} record(s)`;
+    return `${role}: work ${formatMinutes(totals.workMs)}, waiting ${formatMinutes(totals.waitingMs)}, ${totals.count} record(s), ${formatCost(totals.cost)}`;
   });
   lines.push(
-    `tasks: ${summary.tasks.count}, wall ${formatMinutes(summary.tasks.wallMs)}, work ${formatMinutes(summary.tasks.workMs)}`,
+    `tasks: ${summary.tasks.count}, wall ${formatMinutes(summary.tasks.wallMs)}, work ${formatMinutes(summary.tasks.workMs)}, ${formatCost(summary.tasks.cost)}`,
   );
   return lines.join(" | ");
 }
 
-/** Render one line per task: time, union-based wall/work, subagent count, and a truncated prompt. */
+/** Render one line per task: time, union-based wall/work, cost, subagent count, and a truncated prompt. */
 export function formatTasks(tasks: TaskView[]): string {
   if (tasks.length === 0) return "no tasks";
   return tasks
     .map((task) => {
       const prompt = task.prompt.length > 60 ? task.prompt.slice(0, 60) : task.prompt;
-      return `${formatTime(task.startedAt)}  wall ${formatMinutes(task.wallMs)}  work ${formatMinutes(task.workMs)}  subagents ${task.subagents.length}  ${prompt}`;
+      return `${formatTime(task.startedAt)}  wall ${formatMinutes(task.wallMs)}  work ${formatMinutes(task.workMs)}  ${formatCost(task.usage.cost)}  subagents ${task.subagents.length}  ${prompt}`;
     })
     .join("\n");
 }
 
-/** Render one line per session: truncated id, time range, union-based wall/work, and task count. */
+/** Render one line per session: truncated id, time range, union-based wall/work, cost, and task count. */
 export function formatSessions(sessions: SessionView[]): string {
   if (sessions.length === 0) return "no sessions";
   return sessions
     .map(
       (session) =>
-        `${session.sessionId.slice(0, 8)}  ${formatTime(session.startedAt)}–${formatTime(session.endedAt)}  wall ${formatMinutes(session.wallMs)}  work ${formatMinutes(session.workMs)}  tasks ${session.tasks.length}`,
+        `${session.sessionId.slice(0, 8)}  ${formatTime(session.startedAt)}–${formatTime(session.endedAt)}  wall ${formatMinutes(session.wallMs)}  work ${formatMinutes(session.workMs)}  ${formatCost(session.usage.cost)}  tasks ${session.tasks.length}`,
     )
     .join("\n");
 }

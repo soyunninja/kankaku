@@ -114,14 +114,19 @@ is appended to the chat transcript as a durable card that is never sent to
 the LLM; without a UI (print or RPC mode) it falls back to a notification.
 Arguments are whitespace-separated and order-insensitive:
 
-- `/kankaku` — today's role totals and tasks segment.
+- `/kankaku` — today's role totals and tasks segment, each with its estimated cost.
 - `/kankaku all` — same, but across every record.
-- `/kankaku tasks` — one line per task (time, union wall/work, subagent
-  count, truncated prompt) for the **current pi session**. Add `all` for
+- `/kankaku tasks` — one line per task (time, union wall/work, cost,
+  subagent count, truncated prompt) for the **current pi session**. Add `all` for
   every session. If the current session has no `sessionId`, tasks from every
   session are shown instead.
 - `/kankaku sessions` — one line per session (id, time range, union
-  wall/work, task count) for today. Add `all` for every day.
+  wall/work, cost, task count) for today. Add `all` for every day.
+
+Cost figures are the sum of `usage.cost` as priced by pi's model table
+(per-million-token rates in `models.json`, adjustable with `modelOverrides`).
+For subscription-based providers this is an estimate at API list prices, not
+an invoice.
 
 While an agent is running, pi's status bar shows a `⏱ mm:ss` indicator with
 the elapsed time for the current run.
