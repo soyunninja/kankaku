@@ -38,6 +38,13 @@ export interface WorkRecordCore {
   turns: number;
   tools: Record<string, number>;
   subagents: SubagentSpan[];
+  /**
+   * Union milliseconds per tag spent in tool calls matched by a
+   * {@link SegmentRule} (e.g. `review`). Optional so older persisted
+   * records without this field still satisfy the type; callers reading
+   * from disk should treat a missing value as `{}`.
+   */
+  segments?: Record<string, number>;
   usage: UsageTotals;
   status: WorkStatus;
 }

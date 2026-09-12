@@ -39,8 +39,8 @@ test("summarize groups totals by role for a given local day", () => {
 
   const summary = summarize(records, { day });
 
-  assert.deepEqual(summary.orchestrator, { workMs: 300, waitingMs: 30, wallMs: 330, count: 2, cost: 0 });
-  assert.deepEqual(summary.subagent, { workMs: 50, waitingMs: 5, wallMs: 55, count: 1, cost: 0 });
+  assert.deepEqual(summary.orchestrator, { workMs: 300, waitingMs: 30, wallMs: 330, count: 2, cost: 0, segments: {} });
+  assert.deepEqual(summary.subagent, { workMs: 50, waitingMs: 5, wallMs: 55, count: 1, cost: 0, segments: {} });
 });
 
 test("summarize excludes records outside the requested local day", () => {
@@ -81,9 +81,9 @@ test("summarize defaults to today when neither day nor all is given", () => {
 test("summarize returns zeroed totals for roles with no records", () => {
   const summary = summarize([], { all: true });
 
-  assert.deepEqual(summary.orchestrator, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0 });
-  assert.deepEqual(summary.subagent, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0 });
-  assert.deepEqual(summary.tasks, { count: 0, wallMs: 0, workMs: 0, cost: 0 });
+  assert.deepEqual(summary.orchestrator, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, segments: {} });
+  assert.deepEqual(summary.subagent, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, segments: {} });
+  assert.deepEqual(summary.tasks, { count: 0, wallMs: 0, workMs: 0, cost: 0, segments: {} });
 });
 
 test("summarize computes a tasks segment as the union of parent and child spans for the given day", () => {
@@ -249,4 +249,117 @@ test("formatReport, formatTasks and formatSessions show cost in dollars", () => 
   const tasks = buildTasks([parent]);
   assert.match(formatTasks(tasks), /\$1\.23/);
   assert.match(formatSessions(buildSessions(tasks)), /\$1\.23/);
+});
+
+test("summarize accumulates segments per role and sums them into the tasks segment", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: sameInstant,
+    settledAt: new Date(Date.parse(sameInstant) + 30_000).toISOString(),
+    segments: { review: 12000 },
+  });
+  const child = makeRecord({
+    id: "c1",
+    role: "subagent",
+    pid: 200,
+    parentPid: 100,
+    startedAt: new Date(Date.parse(sameInstant) + 5_000).toISOString(),
+    settledAt: new Date(Date.parse(sameInstant) + 20_000).toISOString(),
+    segments: { review: 3000, commit: 1000 },
+  });
+
+  const summary = summarize([parent, child], { day });
+
+  assert.deepEqual(summary.orchestrator.segments, { review: 12000 });
+  assert.deepEqual(summary.subagent.segments, { review: 3000, commit: 1000 });
+  assert.deepEqual(summary.tasks.segments, { review: 15000, commit: 1000 });
+});
+
+test("summarize treats records without segments (older log lines) as {}", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const record = makeRecord({ id: "r1", startedAt: sameInstant, segments: undefined });
+
+  const summary = summarize([record], { day });
+
+  assert.deepEqual(summary.orchestrator.segments, {});
+});
+
+test("formatReport appends a segments line only when a tag is non-zero, sorted alphabetically", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: sameInstant,
+    settledAt: new Date(Date.parse(sameInstant) + 62_000).toISOString(),
+    segments: { review: 62000, commit: 10000 },
+  });
+
+  const summary = summarize([parent], { day });
+  const text = formatReport(summary);
+
+  assert.match(text, /segments: commit 0m10s, review 1m02s/);
+});
+
+test("formatReport omits the segments line when no tag is non-zero", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const parent = makeRecord({ id: "p1", startedAt: sameInstant });
+
+  const summary = summarize([parent], { day });
+  const text = formatReport(summary);
+
+  assert.equal(text.includes("segments:"), false);
+});
+
+test("formatTasks appends segment pairs after the cost, only for non-zero tags", () => {
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: "2026-09-10T12:00:00.000Z",
+    settledAt: "2026-09-10T12:00:30.000Z",
+    segments: { review: 12000 },
+  });
+
+  const tasks = buildTasks([parent]);
+  const text = formatTasks(tasks);
+
+  assert.match(text, /review 0m12s/);
+});
+
+test("formatTasks shows no segment text when the task has no segments", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+
+  const tasks = buildTasks([parent]);
+  const text = formatTasks(tasks);
+
+  assert.equal(text.includes("review"), false);
+});
+
+test("formatSessions appends segment pairs after the cost, only for non-zero tags", () => {
+  const parent = makeRecord({
+    id: "p1",
+    sessionId: "session-1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: "2026-09-10T12:00:00.000Z",
+    settledAt: "2026-09-10T12:00:30.000Z",
+    segments: { review: 12000, commit: 5000 },
+  });
+
+  const sessions = buildSessions(buildTasks([parent]));
+  const text = formatSessions(sessions);
+
+  assert.match(text, /commit 0m05s, review 0m12s/);
 });

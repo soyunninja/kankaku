@@ -12,6 +12,7 @@ export default function kankaku(pi: ExtensionAPI): void {
     clock: { now: () => Date.now() },
     interactiveTools: config.interactiveTools,
     subagentTool: config.subagentTool,
+    segmentRules: config.segmentRules,
   });
 
   const log = new LazyJsonlWorkLog(config.dir);

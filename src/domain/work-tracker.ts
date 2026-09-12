@@ -3,11 +3,14 @@ import type { Clock } from "../ports/clock.ts";
 import { clampIntervals, unionMs } from "./intervals.ts";
 import { emptyUsage, WORK_RECORD_SCHEMA } from "./work-record.ts";
 import type { SubagentSpan, UsageTotals, WorkRecordCore, WorkStatus } from "./work-record.ts";
+import type { SegmentRule } from "./segment-rule.ts";
 
 export interface WorkTrackerOptions {
   clock: Clock;
   interactiveTools: string[];
   subagentTool: string;
+  /** Rules that tag a tool execution's span under a named segment. Defaults to none. */
+  segmentRules?: SegmentRule[];
 }
 
 interface Interval {
@@ -35,6 +38,10 @@ interface RunState {
   openToolWaits: Map<string, Interval>;
   subagents: SubagentSpan[];
   openSubagents: Map<string, OpenSubagentSpan>;
+  /** Segment spans opened by a matching {@link SegmentRule}, keyed by tag. */
+  segmentSpans: Record<string, Interval[]>;
+  /** The still-open segment span for a tool call id, if any. */
+  openSegments: Map<string, Interval>;
 }
 
 interface RunEndMessage {
@@ -51,12 +58,14 @@ export class WorkTracker {
   private readonly clock: Clock;
   private readonly interactiveTools: Set<string>;
   private readonly subagentTool: string;
+  private readonly segmentRules: SegmentRule[];
   private state: RunState | undefined;
 
   constructor(options: WorkTrackerOptions) {
     this.clock = options.clock;
     this.interactiveTools = new Set(options.interactiveTools);
     this.subagentTool = options.subagentTool;
+    this.segmentRules = options.segmentRules ?? [];
   }
 
   onRunStart(prompt: string): void {
@@ -73,6 +82,8 @@ export class WorkTracker {
         openToolWaits: new Map(),
         subagents: [],
         openSubagents: new Map(),
+        segmentSpans: {},
+        openSegments: new Map(),
       };
       return;
     }
@@ -93,6 +104,14 @@ export class WorkTracker {
   onToolStart(toolCallId: string, toolName: string, args: Record<string, unknown> | undefined): void {
     if (!this.state) return;
     this.state.tools[toolName] = (this.state.tools[toolName] ?? 0) + 1;
+
+    const rule = this.segmentRules.find((candidate) => candidate.tool === toolName && candidate.pattern.test(segmentText(args)));
+    if (rule) {
+      const span: Interval = { start: this.clock.now(), end: undefined };
+      const spans = this.state.segmentSpans[rule.tag] ?? (this.state.segmentSpans[rule.tag] = []);
+      spans.push(span);
+      this.state.openSegments.set(toolCallId, span);
+    }
 
     if (this.interactiveTools.has(toolName)) {
       const span: Interval = { start: this.clock.now(), end: undefined };
@@ -115,6 +134,12 @@ export class WorkTracker {
 
   onToolEnd(toolCallId: string, result: unknown): void {
     if (!this.state) return;
+
+    const openSegment = this.state.openSegments.get(toolCallId);
+    if (openSegment) {
+      this.state.openSegments.delete(toolCallId);
+      openSegment.end = this.clock.now();
+    }
 
     const openSubagent = this.state.openSubagents.get(toolCallId);
     if (openSubagent) {
@@ -194,6 +219,20 @@ export class WorkTracker {
     const waitingMs = unionMs(clampIntervals(closedSpans, state.startedAt, settledAt));
     const workMs = wallMs - waitingMs;
 
+    const segments: Record<string, number> = {};
+    for (const [tag, spans] of Object.entries(state.segmentSpans)) {
+      for (const span of spans) {
+        if (span.end === undefined) {
+          span.end = settledAt;
+        }
+      }
+      const closedTagSpans = spans.map((span) => ({ start: span.start, end: span.end as number }));
+      const tagMs = unionMs(clampIntervals(closedTagSpans, state.startedAt, settledAt));
+      if (tagMs > 0) {
+        segments[tag] = tagMs;
+      }
+    }
+
     return {
       schema: WORK_RECORD_SCHEMA,
       id: randomUUID(),
@@ -207,10 +246,17 @@ export class WorkTracker {
       turns: state.turns,
       tools: state.tools,
       subagents: state.subagents,
+      segments,
       usage: state.usage,
       status,
     };
   }
+}
+
+/** Text to match a {@link SegmentRule} pattern against: the `command` string arg when present, else the whole args object as JSON. */
+function segmentText(args: Record<string, unknown> | undefined): string {
+  const command = args?.["command"];
+  return typeof command === "string" ? command : JSON.stringify(args ?? {});
 }
 
 function extractTaskId(result: unknown): string | undefined {

@@ -176,3 +176,63 @@ test("buildSessions groups tasks without a sessionId under 'unknown' and sums wa
   assert.equal(session.workMs, session.wallMs - session.waitingMs);
   assert.deepEqual(session.usage, { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.03 });
 });
+
+test("buildTasks sums segments across the orchestrator and its children", () => {
+  const parent = makeRecord({
+    id: "p1",
+    pid: 100,
+    parentPid: 1,
+    startedAt: iso(0),
+    settledAt: iso(30),
+    segments: { review: 5000 },
+  });
+  const child = makeRecord({
+    id: "c1",
+    role: "subagent",
+    pid: 200,
+    parentPid: 100,
+    startedAt: iso(5),
+    settledAt: iso(20),
+    segments: { review: 2000, commit: 1000 },
+  });
+
+  const tasks = buildTasks([parent, child]);
+
+  assert.equal(tasks.length, 1);
+  assert.deepEqual(tasks[0]!.segments, { review: 7000, commit: 1000 });
+});
+
+test("buildTasks treats a record without segments (older log line) as {}", () => {
+  const parent = makeRecord({ id: "p2", pid: 300, parentPid: 1, startedAt: iso(0), settledAt: iso(10), segments: undefined });
+
+  const tasks = buildTasks([parent]);
+
+  assert.deepEqual(tasks[0]!.segments, {});
+});
+
+test("buildSessions sums segments across all of a session's tasks", () => {
+  const taskA = makeRecord({
+    id: "sa",
+    sessionId: "sess-a",
+    pid: 900,
+    parentPid: 1,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    segments: { review: 1000 },
+  });
+  const taskB = makeRecord({
+    id: "sb",
+    sessionId: "sess-a",
+    pid: 901,
+    parentPid: 1,
+    startedAt: iso(20),
+    settledAt: iso(25),
+    segments: { review: 500, commit: 200 },
+  });
+
+  const tasks = buildTasks([taskA, taskB]);
+  const sessions = buildSessions(tasks);
+
+  assert.equal(sessions.length, 1);
+  assert.deepEqual(sessions[0]!.segments, { review: 1500, commit: 200 });
+});

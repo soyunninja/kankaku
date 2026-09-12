@@ -22,6 +22,13 @@ export interface TaskView {
   orchestrator: WorkRecord;
   subagents: WorkRecord[];
   usage: UsageTotals;
+  /**
+   * Per-tag total milliseconds across the orchestrator and every subagent,
+   * summed rather than unioned: unlike `wallMs`, segment intervals are not
+   * persisted on disk, so once a record settles its per-tag total is all
+   * that remains, and there is nothing left to union across records.
+   */
+  segments: Record<string, number>;
 }
 
 /** One or more tasks grouped by their pi session, with the same union rule. */
@@ -35,10 +42,23 @@ export interface SessionView {
   workMs: number;
   tasks: TaskView[];
   usage: UsageTotals;
+  /** Per-tag total milliseconds summed across the session's tasks. See {@link TaskView.segments}. */
+  segments: Record<string, number>;
 }
 
 function toMs(iso: string): number {
   return Date.parse(iso);
+}
+
+/** Sum per-tag milliseconds across several segment maps (older records without one count as `{}`). */
+function sumSegments(segmentMaps: Array<Record<string, number> | undefined>): Record<string, number> {
+  const result: Record<string, number> = {};
+  for (const segments of segmentMaps) {
+    for (const [tag, ms] of Object.entries(segments ?? {})) {
+      result[tag] = (result[tag] ?? 0) + ms;
+    }
+  }
+  return result;
 }
 
 function sumUsage(totals: UsageTotals[]): UsageTotals {
@@ -117,6 +137,7 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
   const waitingMs = orchestrator.waitingMs;
   const workMs = wallMs - waitingMs;
   const usage = sumUsage([orchestrator.usage, ...subagents.map((child) => child.usage)]);
+  const segments = sumSegments([orchestrator.segments, ...subagents.map((child) => child.segments)]);
 
   return {
     id: orchestrator.id,
@@ -132,6 +153,7 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
     orchestrator,
     subagents,
     usage,
+    segments,
   };
 }
 
@@ -182,6 +204,7 @@ export function buildSessions(tasks: TaskView[]): SessionView[] {
     const startedAtMs = Math.min(...sessionTasks.map((task) => toMs(task.startedAt)));
     const endedAtMs = Math.max(...sessionTasks.map((task) => toMs(task.endedAt)));
     const usage = sumUsage(sessionTasks.map((task) => task.usage));
+    const segments = sumSegments(sessionTasks.map((task) => task.segments));
 
     sessions.push({
       sessionId,
@@ -193,6 +216,7 @@ export function buildSessions(tasks: TaskView[]): SessionView[] {
       workMs,
       tasks: sessionTasks,
       usage,
+      segments,
     });
   }
 

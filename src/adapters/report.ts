@@ -9,6 +9,8 @@ export interface RoleTotals {
   count: number;
   /** Estimated cost in USD, as priced by pi's model table. */
   cost: number;
+  /** Per-tag total milliseconds summed across every record of this role. */
+  segments: Record<string, number>;
 }
 
 export interface TaskTotals {
@@ -17,6 +19,8 @@ export interface TaskTotals {
   workMs: number;
   /** Estimated cost in USD, orchestrator and subagents combined. */
   cost: number;
+  /** Per-tag total milliseconds summed across every task (orchestrator and subagents). */
+  segments: Record<string, number>;
 }
 
 export type Summary = Record<WorkRole, RoleTotals> & { tasks: TaskTotals };
@@ -40,7 +44,14 @@ export function localDay(iso: string): string {
 }
 
 function emptyTotals(): RoleTotals {
-  return { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0 };
+  return { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, segments: {} };
+}
+
+/** Add per-tag milliseconds from `segments` (missing on older records) into `into`. */
+function addSegments(into: Record<string, number>, segments: Record<string, number> | undefined): void {
+  for (const [tag, ms] of Object.entries(segments ?? {})) {
+    into[tag] = (into[tag] ?? 0) + ms;
+  }
 }
 
 /**
@@ -55,7 +66,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
   const summary: Summary = {
     orchestrator: emptyTotals(),
     subagent: emptyTotals(),
-    tasks: { count: 0, wallMs: 0, workMs: 0, cost: 0 },
+    tasks: { count: 0, wallMs: 0, workMs: 0, cost: 0, segments: {} },
   };
 
   for (const record of records) {
@@ -66,6 +77,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     totals.wallMs += record.wallMs;
     totals.count += 1;
     totals.cost += record.usage.cost;
+    addSegments(totals.segments, record.segments);
   }
 
   const tasks = buildTasks(records).filter((task) => targetDay === undefined || localDay(task.startedAt) === targetDay);
@@ -74,6 +86,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     summary.tasks.wallMs += task.wallMs;
     summary.tasks.workMs += task.workMs;
     summary.tasks.cost += task.usage.cost;
+    addSegments(summary.tasks.segments, task.segments);
   }
 
   return summary;
@@ -98,6 +111,15 @@ function formatTime(iso: string): string {
   return `${hours}:${minutes}`;
 }
 
+/** Render non-zero segment tags as `tag Xm00s` pairs, sorted alphabetically, joined by `, `. Undefined when none are non-zero. */
+function formatSegmentTags(segments: Record<string, number>): string | undefined {
+  const tags = Object.keys(segments)
+    .filter((tag) => segments[tag]! > 0)
+    .sort();
+  if (tags.length === 0) return undefined;
+  return tags.map((tag) => `${tag} ${formatMinutes(segments[tag]!)}`).join(", ");
+}
+
 /** Render a short, human-readable summary for the `/kankaku` command. */
 export function formatReport(summary: Summary): string {
   const lines = ROLES.map((role) => {
@@ -107,27 +129,34 @@ export function formatReport(summary: Summary): string {
   lines.push(
     `tasks: ${summary.tasks.count}, wall ${formatMinutes(summary.tasks.wallMs)}, work ${formatMinutes(summary.tasks.workMs)}, ${formatCost(summary.tasks.cost)}`,
   );
+  const segmentTags = formatSegmentTags(summary.tasks.segments);
+  if (segmentTags !== undefined) {
+    lines.push(`segments: ${segmentTags}`);
+  }
   return lines.join(" | ");
 }
 
-/** Render one line per task: time, union-based wall/work, cost, subagent count, and a truncated prompt. */
+/** Render one line per task: time, union-based wall/work, cost, non-zero segment tags, subagent count, and a truncated prompt. */
 export function formatTasks(tasks: TaskView[]): string {
   if (tasks.length === 0) return "no tasks";
   return tasks
     .map((task) => {
       const prompt = task.prompt.length > 60 ? task.prompt.slice(0, 60) : task.prompt;
-      return `${formatTime(task.startedAt)}  wall ${formatMinutes(task.wallMs)}  work ${formatMinutes(task.workMs)}  ${formatCost(task.usage.cost)}  subagents ${task.subagents.length}  ${prompt}`;
+      const segmentTags = formatSegmentTags(task.segments);
+      const segmentPart = segmentTags !== undefined ? `  ${segmentTags}` : "";
+      return `${formatTime(task.startedAt)}  wall ${formatMinutes(task.wallMs)}  work ${formatMinutes(task.workMs)}  ${formatCost(task.usage.cost)}${segmentPart}  subagents ${task.subagents.length}  ${prompt}`;
     })
     .join("\n");
 }
 
-/** Render one line per session: truncated id, time range, union-based wall/work, cost, and task count. */
+/** Render one line per session: truncated id, time range, union-based wall/work, cost, non-zero segment tags, and task count. */
 export function formatSessions(sessions: SessionView[]): string {
   if (sessions.length === 0) return "no sessions";
   return sessions
-    .map(
-      (session) =>
-        `${session.sessionId.slice(0, 8)}  ${formatTime(session.startedAt)}–${formatTime(session.endedAt)}  wall ${formatMinutes(session.wallMs)}  work ${formatMinutes(session.workMs)}  ${formatCost(session.usage.cost)}  tasks ${session.tasks.length}`,
-    )
+    .map((session) => {
+      const segmentTags = formatSegmentTags(session.segments);
+      const segmentPart = segmentTags !== undefined ? `  ${segmentTags}` : "";
+      return `${session.sessionId.slice(0, 8)}  ${formatTime(session.startedAt)}–${formatTime(session.endedAt)}  wall ${formatMinutes(session.wallMs)}  work ${formatMinutes(session.workMs)}  ${formatCost(session.usage.cost)}${segmentPart}  tasks ${session.tasks.length}`;
+    })
     .join("\n");
 }

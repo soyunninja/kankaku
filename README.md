@@ -65,6 +65,7 @@ Each line in `worklog.jsonl` is one JSON object:
   "turns": 9,
   "tools": { "bash": 4, "read": 3, "subagent_run": 1, "ask_user_question": 1 },
   "subagents": [{ "toolCallId": "…", "agent": "sdd-explore", "mode": "task", "taskId": "t1", "ms": 90000 }],
+  "segments": { "review": 62000 },
   "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "cost": 0 },
   "status": "completed"
 }
@@ -131,6 +132,38 @@ an invoice.
 While an agent is running, pi's status bar shows a `⏱ mm:ss` indicator with
 the elapsed time for the current run.
 
+## Tagged segments
+
+While a run is open, kankaku can also time tool executions that match a
+configured rule and tag the resulting span with a name — for example,
+knowing how much of a task went to gentle-ai's review-with-receipts step,
+which runs as `gentle-ai review ...` commands through the `bash` tool inside
+the prompt's run.
+
+The default rule tags `review`: tool `bash` running a command matching
+`/\bgentle-ai review\b/`. Configure rules with `KANKAKU_SEGMENTS`, a
+`;`-separated list of `tag=tool:regex` entries, e.g.:
+
+```
+KANKAKU_SEGMENTS="review=bash:gentle-ai review;commit=bash:git commit"
+```
+
+Setting `KANKAKU_SEGMENTS` replaces the default rule entirely; malformed
+entries (missing tag, tool or regex, or an invalid regex) are skipped.
+When several rules could match the same tool call, only the first one
+applies. A `WorkRecord`'s `segments` field is the **union** of milliseconds
+per tag within that one record, so overlapping matching calls are not
+double-counted. `TaskView.segments` and `SessionView.segments` are instead
+the **sum** of `segments` across the orchestrator and its children (or
+across a session's tasks): segment spans are not persisted to
+`worklog.jsonl`, so once a record settles there is nothing left to union
+across records, only per-record totals to add up.
+
+Note that the reviewer's own token cost is not observable here: gentle-pi
+runs it with `--no-extensions`, so kankaku never sees the reviewer's own
+prompt/tool events, only the `bash` call the orchestrator makes to invoke
+it.
+
 ## Environment variables
 
 - `KANKAKU_DIR`: directory for the work log, relative to the project cwd
@@ -138,6 +171,8 @@ the elapsed time for the current run.
 - `KANKAKU_INTERACTIVE_TOOLS`: comma-separated list of tool names whose
   execution span counts as waiting time. Defaults to
   `ask_user_question,ask_user_choice`.
+- `KANKAKU_SEGMENTS`: `;`-separated `tag=tool:regex` rules for tagged
+  segments (see above). Defaults to the single `review` rule.
 
 ## Limitations
 

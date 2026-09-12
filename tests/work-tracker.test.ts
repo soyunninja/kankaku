@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { WorkTracker } from "../src/domain/work-tracker.ts";
 import type { Clock } from "../src/ports/clock.ts";
+import type { SegmentRule } from "../src/domain/segment-rule.ts";
 
 class FakeClock implements Clock {
   private current: number;
@@ -19,13 +20,16 @@ class FakeClock implements Clock {
   }
 }
 
-function makeTracker(clock: Clock): WorkTracker {
+function makeTracker(clock: Clock, segmentRules: SegmentRule[] = []): WorkTracker {
   return new WorkTracker({
     clock,
     interactiveTools: ["ask_user_question", "ask_user_choice"],
     subagentTool: "subagent_run",
+    segmentRules,
   });
 }
+
+const REVIEW_RULE: SegmentRule = { tag: "review", tool: "bash", pattern: /\bgentle-ai review\b/ };
 
 test("single run produces a completed record with no waiting", () => {
   const clock = new FakeClock(0);
@@ -272,4 +276,137 @@ test("a non-interactive tool ending does not close an open waiting span", () => 
   assert.equal(record?.wallMs, 6000);
   assert.equal(record?.waitingMs, 4000);
   assert.equal(record?.workMs, 2000);
+});
+
+test("a bash call matching the review pattern is tagged and timed as a segment", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [REVIEW_RULE]);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(100);
+  tracker.onToolStart("call-1", "bash", { command: "gentle-ai review start" });
+  clock.advanceTo(500);
+  tracker.onToolEnd("call-1", {});
+  clock.advanceTo(1000);
+
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.segments, { review: 400 });
+});
+
+test("a non-matching tool name does not open a segment even if the command matches", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [REVIEW_RULE]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "shell", { command: "gentle-ai review start" });
+  clock.advanceTo(200);
+  tracker.onToolEnd("call-1", {});
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.segments, {});
+});
+
+test("a non-matching command does not open a segment", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [REVIEW_RULE]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "bash", { command: "ls -la" });
+  clock.advanceTo(200);
+  tracker.onToolEnd("call-1", {});
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.segments, {});
+});
+
+test("two overlapping matching calls are unioned, not summed, for the same tag", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [REVIEW_RULE]);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(100);
+  tracker.onToolStart("call-1", "bash", { command: "gentle-ai review start" });
+  clock.advanceTo(200);
+  tracker.onToolStart("call-2", "bash", { command: "gentle-ai review status" });
+  clock.advanceTo(400);
+  tracker.onToolEnd("call-1", {});
+  clock.advanceTo(500);
+  tracker.onToolEnd("call-2", {});
+  clock.advanceTo(1000);
+
+  const record = tracker.onSettled();
+
+  // union of [100,400] and [200,500] is [100,500] => 400ms, not 600ms.
+  assert.deepEqual(record?.segments, { review: 400 });
+});
+
+test("an unclosed segment span truncates at settle time", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [REVIEW_RULE]);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(100);
+  tracker.onToolStart("call-1", "bash", { command: "gentle-ai review start" });
+  clock.advanceTo(1000);
+
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.segments, { review: 900 });
+});
+
+test("an unclosed segment span truncates at shutdown time", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [REVIEW_RULE]);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(50);
+  tracker.onToolStart("call-1", "bash", { command: "gentle-ai review start" });
+  clock.advanceTo(300);
+
+  const record = tracker.onShutdown();
+
+  assert.deepEqual(record?.segments, { review: 250 });
+});
+
+test("only the first matching rule applies to a given tool call", () => {
+  const clock = new FakeClock(0);
+  const first: SegmentRule = { tag: "review", tool: "bash", pattern: /gentle-ai/ };
+  const second: SegmentRule = { tag: "other", tool: "bash", pattern: /review/ };
+  const tracker = makeTracker(clock, [first, second]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "bash", { command: "gentle-ai review start" });
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", {});
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.segments, { review: 100 });
+});
+
+test("non-string args fall back to a JSON.stringify match for non-bash tools", () => {
+  const clock = new FakeClock(0);
+  const rule: SegmentRule = { tag: "gentle", tool: "custom_tool", pattern: /"cmd":"gentle-ai review"/ };
+  const tracker = makeTracker(clock, [rule]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "custom_tool", { cmd: "gentle-ai review" });
+  clock.advanceTo(150);
+  tracker.onToolEnd("call-1", {});
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.segments, { gentle: 150 });
+});
+
+test("a run with no segment rules produces an empty segments object", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, []);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "bash", { command: "gentle-ai review start" });
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", {});
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.segments, {});
 });

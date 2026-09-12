@@ -35,6 +35,10 @@ Read `README.md` for behaviour and the record schema before changing code.
   line per record, tolerate malformed lines when reading, never rewrite it.
 - Bump `WORK_RECORD_SCHEMA` when a persisted field changes meaning or is
   removed. Adding optional fields does not require a bump.
+- Tagged tool segments (`segments`) are the union of milliseconds per tag
+  within one `WorkRecord`, and the sum of `segments` per tag across a
+  task's or session's records — never a union at that level, since segment
+  intervals are not persisted to `worklog.jsonl`.
 
 ## Code conventions
 
