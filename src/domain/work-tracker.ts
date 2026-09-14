@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Clock } from "../ports/clock.ts";
 import { clampIntervals, unionMs } from "./intervals.ts";
-import { emptyUsage, WORK_RECORD_SCHEMA } from "./work-record.ts";
+import { emptyUsage, finiteOrZero, WORK_RECORD_SCHEMA } from "./work-record.ts";
 import type { SubagentSpan, UsageTotals, WorkRecordCore, WorkStatus } from "./work-record.ts";
 import type { SegmentRule } from "./segment-rule.ts";
 
@@ -26,6 +26,8 @@ interface OpenSubagentSpan {
 }
 
 interface RunState {
+  /** Generated once when the run opens, so it stays stable across `peek` and the final `onSettled`/`onShutdown`. */
+  id: string;
   startedAt: number;
   prompt: string;
   runs: number;
@@ -38,8 +40,12 @@ interface RunState {
   openToolWaits: Map<string, Interval>;
   subagents: SubagentSpan[];
   openSubagents: Map<string, OpenSubagentSpan>;
-  /** Segment spans opened by a matching {@link SegmentRule}, keyed by tag. */
-  segmentSpans: Record<string, Interval[]>;
+  /**
+   * Segment spans opened by a matching {@link SegmentRule}, keyed by tag.
+   * A `Map` rather than a plain object so a tag such as `__proto__` cannot
+   * pollute the object prototype while the run is in progress.
+   */
+  segmentSpans: Map<string, Interval[]>;
   /** The still-open segment span for a tool call id, if any. */
   openSegments: Map<string, Interval>;
 }
@@ -71,6 +77,7 @@ export class WorkTracker {
   onRunStart(prompt: string): void {
     if (!this.state) {
       this.state = {
+        id: randomUUID(),
         startedAt: this.clock.now(),
         prompt,
         runs: 1,
@@ -82,7 +89,7 @@ export class WorkTracker {
         openToolWaits: new Map(),
         subagents: [],
         openSubagents: new Map(),
-        segmentSpans: {},
+        segmentSpans: new Map(),
         openSegments: new Map(),
       };
       return;
@@ -94,11 +101,11 @@ export class WorkTracker {
     if (!this.state) return;
     this.state.turns++;
     if (!usage) return;
-    this.state.usage.input += usage.input ?? 0;
-    this.state.usage.output += usage.output ?? 0;
-    this.state.usage.cacheRead += usage.cacheRead ?? 0;
-    this.state.usage.cacheWrite += usage.cacheWrite ?? 0;
-    this.state.usage.cost += usage.cost ?? 0;
+    this.state.usage.input += finiteOrZero(usage.input);
+    this.state.usage.output += finiteOrZero(usage.output);
+    this.state.usage.cacheRead += finiteOrZero(usage.cacheRead);
+    this.state.usage.cacheWrite += finiteOrZero(usage.cacheWrite);
+    this.state.usage.cost += finiteOrZero(usage.cost);
   }
 
   onToolStart(toolCallId: string, toolName: string, args: Record<string, unknown> | undefined): void {
@@ -108,8 +115,9 @@ export class WorkTracker {
     const rule = this.segmentRules.find((candidate) => candidate.tool === toolName && candidate.pattern.test(segmentText(args)));
     if (rule) {
       const span: Interval = { start: this.clock.now(), end: undefined };
-      const spans = this.state.segmentSpans[rule.tag] ?? (this.state.segmentSpans[rule.tag] = []);
+      const spans = this.state.segmentSpans.get(rule.tag) ?? [];
       spans.push(span);
+      this.state.segmentSpans.set(rule.tag, spans);
       this.state.openSegments.set(toolCallId, span);
     }
 
@@ -189,53 +197,59 @@ export class WorkTracker {
 
   onSettled(): WorkRecordCore | undefined {
     if (!this.state) return undefined;
-    const record = this.finalize(this.state.status);
+    const record = this.buildRecord(this.state.status, this.clock.now());
     this.state = undefined;
     return record;
   }
 
   onShutdown(): WorkRecordCore | undefined {
     if (!this.state) return undefined;
-    const record = this.finalize("interrupted");
+    const record = this.buildRecord("interrupted", this.clock.now());
     this.state = undefined;
     return record;
   }
 
-  private finalize(status: WorkStatus): WorkRecordCore {
+  /**
+   * Returns what {@link onSettled}/{@link onShutdown} would produce right
+   * now, without mutating any state: open spans are truncated only in the
+   * returned snapshot, so the tracker keeps running unaffected and a later
+   * `peek` or the eventual settle still sees the spans' true open-ended
+   * state. `undefined` when idle. The returned `id` matches the id the
+   * eventual settled record will carry, since both are generated once
+   * in {@link onRunStart}.
+   */
+  peek(status: WorkStatus): WorkRecordCore | undefined {
+    if (!this.state) return undefined;
+    return this.buildRecord(status, this.clock.now());
+  }
+
+  private buildRecord(status: WorkStatus, settledAt: number): WorkRecordCore {
     const state = this.state;
     if (!state) {
-      throw new Error("finalize called without an open run");
+      throw new Error("buildRecord called without an open run");
     }
-    const settledAt = this.clock.now();
     const wallMs = settledAt - state.startedAt;
 
-    for (const span of state.waitingSpans) {
-      if (span.end === undefined) {
-        span.end = settledAt;
-      }
-    }
-
-    const closedSpans = state.waitingSpans.map((span) => ({ start: span.start, end: span.end as number }));
+    const closedSpans = state.waitingSpans.map((span) => ({ start: span.start, end: span.end ?? settledAt }));
     const waitingMs = unionMs(clampIntervals(closedSpans, state.startedAt, settledAt));
     const workMs = wallMs - waitingMs;
 
-    const segments: Record<string, number> = {};
-    for (const [tag, spans] of Object.entries(state.segmentSpans)) {
-      for (const span of spans) {
-        if (span.end === undefined) {
-          span.end = settledAt;
-        }
-      }
-      const closedTagSpans = spans.map((span) => ({ start: span.start, end: span.end as number }));
+    const segmentEntries: Array<[string, number]> = [];
+    for (const [tag, spans] of state.segmentSpans) {
+      const closedTagSpans = spans.map((span) => ({ start: span.start, end: span.end ?? settledAt }));
       const tagMs = unionMs(clampIntervals(closedTagSpans, state.startedAt, settledAt));
       if (tagMs > 0) {
-        segments[tag] = tagMs;
+        segmentEntries.push([tag, tagMs]);
       }
     }
+    // Built via Object.fromEntries (never `segments[tag] = ...`) so a tag
+    // such as `__proto__` becomes an own data property instead of silently
+    // repointing the object's prototype.
+    const segments = Object.fromEntries(segmentEntries);
 
     return {
       schema: WORK_RECORD_SCHEMA,
-      id: randomUUID(),
+      id: state.id,
       prompt: state.prompt,
       startedAt: new Date(state.startedAt).toISOString(),
       settledAt: new Date(settledAt).toISOString(),

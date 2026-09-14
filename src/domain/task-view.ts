@@ -1,5 +1,5 @@
 import { unionMs } from "./intervals.ts";
-import { emptyUsage } from "./work-record.ts";
+import { emptyUsage, finiteOrZero } from "./work-record.ts";
 import type { UsageTotals, WorkRecord, WorkStatus } from "./work-record.ts";
 
 /**
@@ -61,14 +61,20 @@ function sumSegments(segmentMaps: Array<Record<string, number> | undefined>): Re
   return result;
 }
 
-function sumUsage(totals: UsageTotals[]): UsageTotals {
+/**
+ * Sum several {@link UsageTotals}, tolerating a missing entry (a record
+ * without a `usage` field) and missing or non-finite numeric fields on an
+ * entry — both treated as zero rather than corrupting the sum with
+ * `undefined`/`NaN`.
+ */
+export function sumUsage(totals: Array<UsageTotals | undefined>): UsageTotals {
   const usage = emptyUsage();
   for (const total of totals) {
-    usage.input += total.input;
-    usage.output += total.output;
-    usage.cacheRead += total.cacheRead;
-    usage.cacheWrite += total.cacheWrite;
-    usage.cost += total.cost;
+    usage.input += finiteOrZero(total?.input);
+    usage.output += finiteOrZero(total?.output);
+    usage.cacheRead += finiteOrZero(total?.cacheRead);
+    usage.cacheWrite += finiteOrZero(total?.cacheWrite);
+    usage.cost += finiteOrZero(total?.cost);
   }
   return usage;
 }

@@ -398,6 +398,83 @@ test("non-string args fall back to a JSON.stringify match for non-bash tools", (
   assert.deepEqual(record?.segments, { gentle: 150 });
 });
 
+test("a segment rule tagged __proto__ produces a plain object segments with that own key", () => {
+  const clock = new FakeClock(0);
+  const rule: SegmentRule = { tag: "__proto__", tool: "bash", pattern: /x/ };
+  const tracker = makeTracker(clock, [rule]);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(100);
+  tracker.onToolStart("call-1", "bash", { command: "x" });
+  clock.advanceTo(200);
+  tracker.onToolEnd("call-1", {});
+  const record = tracker.onSettled();
+
+  assert.ok(record);
+  const segments = record!.segments as Record<string, number>;
+  assert.equal(Object.getPrototypeOf(segments), Object.prototype);
+  assert.equal(Object.hasOwn(segments, "__proto__"), true);
+  assert.deepEqual(Object.keys(segments), ["__proto__"]);
+  assert.equal(segments["__proto__"], 100);
+});
+
+test("usage accumulation ignores non-finite numbers and treats missing fields as zero", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  tracker.onTurnEnd({ input: 5, output: Number.NaN, cost: Number.POSITIVE_INFINITY });
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.usage, { input: 5, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+});
+
+test("peek while running returns a record with the same id as the later settled record", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(100);
+  const peeked = tracker.peek("interrupted");
+  clock.advanceTo(500);
+  const settled = tracker.onSettled();
+
+  assert.ok(peeked);
+  assert.ok(settled);
+  assert.equal(peeked?.id, settled?.id);
+  assert.equal(peeked?.status, "interrupted");
+  assert.equal(peeked?.wallMs, 100);
+  assert.equal(settled?.status, "completed");
+  assert.equal(settled?.wallMs, 500);
+});
+
+test("peek does not close open spans and the tracker keeps running afterwards", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(100);
+  tracker.onToolStart("call-1", "ask_user_question", {});
+  clock.advanceTo(300);
+  const peeked = tracker.peek("interrupted");
+  assert.equal(peeked?.waitingMs, 200); // [100,300] truncated at peek time
+
+  clock.advanceTo(400);
+  tracker.onToolEnd("call-1", {});
+  clock.advanceTo(1000);
+  const settled = tracker.onSettled();
+
+  assert.equal(settled?.waitingMs, 300); // [100,400], unaffected by the earlier peek
+  assert.equal(settled?.wallMs, 1000);
+});
+
+test("peek when idle returns undefined", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  assert.equal(tracker.peek("interrupted"), undefined);
+});
+
 test("a run with no segment rules produces an empty segments object", () => {
   const clock = new FakeClock(0);
   const tracker = makeTracker(clock, []);

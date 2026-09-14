@@ -2,18 +2,34 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Box, Text } from "@earendil-works/pi-tui";
 import { WorkTracker } from "../domain/work-tracker.ts";
 import { buildSessions, buildTasks } from "../domain/task-view.ts";
-import type { WorkRecord, WorkRole } from "../domain/work-record.ts";
+import type { WorkRecord, WorkRecordCore, WorkRole } from "../domain/work-record.ts";
+import type { InflightStore } from "../ports/inflight-store.ts";
 import type { WorkLog } from "../ports/work-log.ts";
 import { formatReport, formatSessions, formatTasks, localDay, summarize } from "./report.ts";
 
 export interface PiTrackerDeps {
   tracker: WorkTracker;
   log: WorkLog;
+  /** Crash-recovery checkpoint store; see the "Crash recovery" README section. */
+  inflight: InflightStore;
   role: WorkRole;
   pid: number;
   parentPid: number;
   /** Status line refresh interval in ms. Defaults to 1000. */
   statusIntervalMs?: number;
+  /** Whether a pid is still alive. Defaults to signal-probing with `process.kill(pid, 0)`. */
+  isAlive?: (pid: number) => boolean;
+}
+
+/** Default `isAlive`: probe with signal 0 — no signal is sent, only existence/permission is checked. */
+function defaultIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the process exists but we lack permission to signal it — still alive.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 const STATUS_KEY = "kankaku";
@@ -54,8 +70,9 @@ function guarded<E>(fn: (event: E, ctx: ExtensionContext) => void): (event: E, c
  * records to a {@link WorkLog} and exposing the `/kankaku` report command.
  */
 export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
-  const { tracker, log, role, pid, parentPid } = deps;
+  const { tracker, log, inflight, role, pid, parentPid } = deps;
   const statusIntervalMs = deps.statusIntervalMs ?? 1000;
+  const isAlive = deps.isAlive ?? defaultIsAlive;
 
   let runStartedAt: number | undefined;
   let statusTimer: NodeJS.Timeout | undefined;
@@ -82,7 +99,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     statusTimer.unref?.();
   }
 
-  function buildRecord(core: NonNullable<ReturnType<WorkTracker["onSettled"]>>, ctx: ExtensionContext): WorkRecord {
+  function buildRecord(core: WorkRecordCore, ctx: ExtensionContext): WorkRecord {
     const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
     return {
       ...core,
@@ -95,6 +112,18 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       mode: ctx.mode,
       ...(model !== undefined ? { model } : {}),
     };
+  }
+
+  /**
+   * Save an in-flight checkpoint of the run's current state, so a hard
+   * crash before the next one (or the final settle) still leaves a
+   * recoverable `interrupted` record. A no-op while idle.
+   */
+  function checkpoint(ctx: ExtensionContext): void {
+    const core = tracker.peek("interrupted");
+    if (core) {
+      inflight.save(buildRecord(core, ctx));
+    }
   }
 
   pi.on(
@@ -114,9 +143,10 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
   pi.on(
     "turn_end",
-    guarded((event) => {
+    guarded((event, ctx) => {
       const message = event.message;
       const usage = message && "usage" in message ? message.usage : undefined;
+      const cost = usage && typeof usage.cost === "object" && usage.cost !== null ? usage.cost.total : undefined;
       tracker.onTurnEnd(
         usage
           ? {
@@ -124,10 +154,11 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
               output: usage.output,
               cacheRead: usage.cacheRead,
               cacheWrite: usage.cacheWrite,
-              cost: usage.cost.total,
+              cost,
             }
           : undefined,
       );
+      checkpoint(ctx);
     }),
   );
 
@@ -140,8 +171,9 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
   pi.on(
     "tool_execution_end",
-    guarded((event) => {
+    guarded((event, ctx) => {
       tracker.onToolEnd(event.toolCallId, event.result);
+      checkpoint(ctx);
     }),
   );
 
@@ -163,10 +195,16 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     "agent_settled",
     guarded((_event, ctx) => {
       const core = tracker.onSettled();
-      if (core) {
-        log.append(buildRecord(core, ctx));
+      try {
+        if (core) {
+          log.append(buildRecord(core, ctx));
+        }
+      } finally {
+        // Always clean up, even when log.append above threw: an unpersisted
+        // checkpoint must not linger, and the status timer must not leak.
+        inflight.clear();
+        stopStatus(ctx);
       }
-      stopStatus(ctx);
     }),
   );
 
@@ -174,10 +212,27 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     "session_shutdown",
     guarded((_event, ctx) => {
       const core = tracker.onShutdown();
-      if (core) {
-        log.append(buildRecord(core, ctx));
+      try {
+        if (core) {
+          log.append(buildRecord(core, ctx));
+        }
+      } finally {
+        inflight.clear();
+        stopStatus(ctx);
       }
-      stopStatus(ctx);
+    }),
+  );
+
+  pi.on(
+    "session_start",
+    guarded((_event, ctx) => {
+      const recovered = inflight.recoverStale(isAlive);
+      for (const record of recovered) {
+        log.append(record);
+      }
+      if (recovered.length > 0 && ctx.hasUI) {
+        ctx.ui.notify(`kankaku: recovered ${recovered.length} interrupted record(s)`, "warning");
+      }
     }),
   );
 

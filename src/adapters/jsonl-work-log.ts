@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkLog } from "../ports/work-log.ts";
 import type { WorkRecord } from "../domain/work-record.ts";
+import { isWorkRecord } from "../domain/work-record.ts";
 
 const LOG_FILE_NAME = "worklog.jsonl";
 
@@ -34,7 +35,12 @@ export class JsonlWorkLog implements WorkLog {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        records.push(JSON.parse(trimmed) as WorkRecord);
+        const parsed: unknown = JSON.parse(trimmed);
+        if (isWorkRecord(parsed)) {
+          records.push(parsed);
+        }
+        // Tolerate a structurally invalid record (e.g. an incompatible
+        // schema or a torn write that still parses as JSON); skip it.
       } catch {
         // Tolerate malformed lines (e.g. a torn write); skip them.
       }

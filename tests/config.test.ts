@@ -63,6 +63,19 @@ test("loadConfig skips invalid KANKAKU_SEGMENTS entries but keeps valid ones", (
   );
 });
 
+test("loadConfig skips a segment rule tagged __proto__ (or another unsafe tag) but keeps a valid one", () => {
+  const config = loadConfig(
+    env({
+      KANKAKU_SEGMENTS: "__proto__=bash:x;constructor=bash:y;has space=bash:z;valid-tag_1=bash:git push",
+    }),
+  );
+
+  assert.deepEqual(
+    config.segmentRules.map((rule) => rule.tag),
+    ["valid-tag_1"],
+  );
+});
+
 test("loadConfig trims whitespace around KANKAKU_SEGMENTS entries", () => {
   const config = loadConfig(env({ KANKAKU_SEGMENTS: "  review = bash : gentle-ai review  ;  commit=bash:git commit  " }));
 

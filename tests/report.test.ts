@@ -119,6 +119,21 @@ test("summarize computes a tasks segment as the union of parent and child spans 
   assert.equal(summary.tasks.workMs, 60000);
 });
 
+test("summarize treats a missing or non-finite usage.cost as zero", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const record = makeRecord({
+    id: "r1",
+    startedAt: sameInstant,
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 } as unknown as WorkRecord["usage"],
+  });
+
+  const summary = summarize([record], { day });
+
+  assert.equal(summary.orchestrator.cost, 0);
+  assert.equal(summary.tasks.cost, 0);
+});
+
 test("formatReport renders a short human-readable summary including the tasks segment", () => {
   const sameInstant = "2026-09-10T10:00:00.000Z";
   const day = localDay(sameInstant);

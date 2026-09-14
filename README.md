@@ -164,10 +164,25 @@ runs it with `--no-extensions`, so kankaku never sees the reviewer's own
 prompt/tool events, only the `bash` call the orchestrator makes to invoke
 it.
 
+## Crash recovery
+
+While a run is open, each pi process periodically writes a checkpoint of
+its current record to `<KANKAKU_DIR>/inflight/<pid>.json` (after every
+`turn_end` and `tool_execution_end`), and removes it on a normal
+`agent_settled`/`session_shutdown`. If the process is killed outright
+(`kill -9`, power loss) before it can settle, the checkpoint file survives
+it. On the next pi start, `session_start` scans `inflight/` for checkpoints
+whose owning pid is no longer alive, appends each one to `worklog.jsonl` as
+`interrupted`, deletes the checkpoint file, and shows a
+`kankaku: recovered N interrupted record(s)` notice. `settledAt` on a
+recovered record is the time of its last checkpoint, not the actual crash
+time, so `wallMs`/`workMs` are a **lower bound** on the real duration.
+
 ## Environment variables
 
-- `KANKAKU_DIR`: directory for the work log, relative to the project cwd
-  unless given as an absolute path. Defaults to `.kankaku`.
+- `KANKAKU_DIR`: directory for the work log (`worklog.jsonl`) and the
+  crash-recovery checkpoints (`inflight/`, see above), relative to the
+  project cwd unless given as an absolute path. Defaults to `.kankaku`.
 - `KANKAKU_INTERACTIVE_TOOLS`: comma-separated list of tool names whose
   execution span counts as waiting time. Defaults to
   `ask_user_question,ask_user_choice`.

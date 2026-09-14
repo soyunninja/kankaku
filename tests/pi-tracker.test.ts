@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { createPiTracker } from "../src/adapters/pi-tracker.ts";
 import { WorkTracker } from "../src/domain/work-tracker.ts";
 import type { Clock } from "../src/ports/clock.ts";
+import type { InflightStore } from "../src/ports/inflight-store.ts";
 import type { WorkLog } from "../src/ports/work-log.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 
@@ -50,6 +51,28 @@ class FakeWorkLog implements WorkLog {
   }
   readAll(): WorkRecord[] {
     return this.records;
+  }
+}
+
+class FakeInflightStore implements InflightStore {
+  readonly saved: WorkRecord[] = [];
+  clearedCount = 0;
+  private readonly staleRecords: WorkRecord[];
+
+  constructor(staleRecords: WorkRecord[] = []) {
+    this.staleRecords = staleRecords;
+  }
+
+  save(record: WorkRecord): void {
+    this.saved.push(record);
+  }
+
+  clear(): void {
+    this.clearedCount++;
+  }
+
+  recoverStale(_isAlive: (pid: number) => boolean): WorkRecord[] {
+    return this.staleRecords.splice(0, this.staleRecords.length);
   }
 }
 
@@ -118,6 +141,7 @@ test("a full run with a subagent call and an interactive tool appends exactly on
   createPiTracker(pi as never, {
     tracker,
     log,
+    inflight: new FakeInflightStore(),
     role: "orchestrator",
     pid: 4242,
     parentPid: 4000,
@@ -193,7 +217,7 @@ test("session_shutdown while running appends an interrupted record", async () =>
   const pi = new FakePi();
   const ctx = makeFakeCtx();
 
-  createPiTracker(pi as never, { tracker, log, role: "orchestrator", pid: 1, parentPid: 0 });
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
 
   await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
   clock.advanceTo(300);
@@ -210,7 +234,7 @@ test("session_shutdown while idle appends nothing", async () => {
   const pi = new FakePi();
   const ctx = makeFakeCtx();
 
-  createPiTracker(pi as never, { tracker, log, role: "orchestrator", pid: 1, parentPid: 0 });
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
 
   await pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
 
@@ -225,7 +249,7 @@ test("registers a kankaku command that appends a durable summary entry", async (
   const notified: string[] = [];
   const ctx = makeFakeCtx({ ui: { notify: (msg: string) => notified.push(msg), setStatus: () => {} } });
 
-  createPiTracker(pi as never, { tracker, log, role: "orchestrator", pid: 1, parentPid: 0 });
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
 
   const command = pi.commands.get("kankaku");
   assert.ok(command);
@@ -247,17 +271,160 @@ test("a handler failure does not throw and notifies ui when available", async ()
     },
     readAll: () => [],
   };
+  const inflight = new FakeInflightStore();
   const pi = new FakePi();
   const notified: Array<{ message: string; type?: string }> = [];
-  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ctx = makeFakeCtx({
+    ui: {
+      notify: (message: string, type?: string) => notified.push({ message, type }),
+      setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
+    },
+  });
 
-  createPiTracker(pi as never, { tracker, log, role: "orchestrator", pid: 1, parentPid: 0 });
+  createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 1, parentPid: 0 });
 
   await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
   await assert.doesNotReject(() => pi.fire("agent_settled", { type: "agent_settled" }, ctx));
 
   assert.equal(notified.length, 1);
   assert.equal(notified[0]?.type, "error");
+  // the status timer and the in-flight checkpoint are cleaned up even though log.append threw
+  assert.deepEqual(statusCalls.at(-1), ["kankaku", undefined]);
+  assert.equal(inflight.clearedCount, 1);
+});
+
+test("session_shutdown also clears status and the in-flight checkpoint when log.append throws", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log: WorkLog = {
+    append: () => {
+      throw new Error("disk full");
+    },
+    readAll: () => [],
+  };
+  const inflight = new FakeInflightStore();
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ctx = makeFakeCtx({
+    ui: {
+      notify: (message: string, type?: string) => notified.push({ message, type }),
+      setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
+    },
+  });
+
+  createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 1, parentPid: 0 });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(300);
+  await assert.doesNotReject(() => pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx));
+
+  assert.equal(notified.length, 1);
+  assert.equal(notified[0]?.type, "error");
+  assert.deepEqual(statusCalls.at(-1), ["kankaku", undefined]);
+  assert.equal(inflight.clearedCount, 1);
+});
+
+test("turn_end with usage missing cost accumulates zero cost", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const inflight = new FakeInflightStore();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 1, parentPid: 0 });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire(
+    "turn_end",
+    { type: "turn_end", turnIndex: 0, message: { role: "assistant", usage: { input: 5, output: 1 } }, toolResults: [] },
+    ctx,
+  );
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  assert.equal(log.records[0]?.usage.cost, 0);
+  assert.equal(log.records[0]?.usage.input, 5);
+  assert.equal(log.records[0]?.usage.output, 1);
+});
+
+test("turn_end and tool_execution_end save an in-flight checkpoint with the eventual record's id", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const inflight = new FakeInflightStore();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 1, parentPid: 0 });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(500);
+  await pi.fire(
+    "turn_end",
+    { type: "turn_end", turnIndex: 0, message: { role: "assistant", usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: { total: 0.01 } } }, toolResults: [] },
+    ctx,
+  );
+
+  assert.equal(inflight.saved.length, 1);
+  assert.equal(inflight.saved[0]?.status, "interrupted");
+  assert.equal(inflight.saved[0]?.wallMs, 500);
+
+  clock.advanceTo(700);
+  await pi.fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: {} }, ctx);
+  clock.advanceTo(900);
+  await pi.fire("tool_execution_end", { type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: {}, isError: false }, ctx);
+
+  assert.equal(inflight.saved.length, 2);
+
+  clock.advanceTo(1000);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  assert.equal(inflight.saved[0]?.id, log.records[0]?.id);
+  assert.equal(inflight.saved[1]?.id, log.records[0]?.id);
+  assert.equal(inflight.clearedCount, 1);
+});
+
+test("session_start recovers stale checkpoints into the log and notifies", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const staleRecord = makeRecord({ id: "stale-1", status: "completed" });
+  const inflight = new FakeInflightStore([staleRecord]);
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 1, parentPid: 0 });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  assert.equal(log.records[0]?.id, "stale-1");
+  assert.equal(notified.length, 1);
+  assert.match(notified[0]!.message, /recovered 1/);
+  assert.equal(notified[0]!.type, "warning");
+});
+
+test("session_start with no stale checkpoints appends nothing and does not notify", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const inflight = new FakeInflightStore();
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 1, parentPid: 0 });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+
+  assert.equal(log.records.length, 0);
+  assert.equal(notified.length, 0);
 });
 
 test("'kankaku tasks' appends a durable report entry for the current session, unioning a background child's span", async () => {
@@ -311,7 +478,7 @@ test("'kankaku tasks' appends a durable report entry for the current session, un
   log.append(child);
   log.append(otherSessionTask);
 
-  createPiTracker(pi as never, { tracker, log, role: "orchestrator", pid: 1, parentPid: 0 });
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
 
   const command = pi.commands.get("kankaku");
   assert.ok(command);
@@ -340,7 +507,7 @@ test("'kankaku' falls back to notify when no UI is available", async () => {
   const notified: string[] = [];
   const ctx = makeFakeCtx({ hasUI: false, ui: { notify: (msg: string) => notified.push(msg), setStatus: () => {} } });
 
-  createPiTracker(pi as never, { tracker, log, role: "orchestrator", pid: 1, parentPid: 0 });
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
   await pi.commands.get("kankaku")!.handler("tasks", ctx);
 
   assert.equal(pi.entries.length, 0);
@@ -352,7 +519,7 @@ test("createPiTracker registers the kankaku-report entry renderer", () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
   const pi = new FakePi();
-  createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), role: "orchestrator", pid: 1, parentPid: 0 });
+  createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
   assert.ok(pi.renderers.has("kankaku-report"));
 });
 
@@ -387,7 +554,7 @@ test("'kankaku sessions all' appends a durable report entry with sessions across
   log.append(parent);
   log.append(child);
 
-  createPiTracker(pi as never, { tracker, log, role: "orchestrator", pid: 1, parentPid: 0 });
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
 
   const command = pi.commands.get("kankaku");
   assert.ok(command);

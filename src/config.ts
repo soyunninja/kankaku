@@ -22,11 +22,21 @@ const SUBAGENT_TOOL = "subagent_run";
  */
 const DEFAULT_SEGMENT_RULES: SegmentRule[] = [{ tag: "review", tool: "bash", pattern: /\bgentle-ai review\b/ }];
 
+/** Tags allowed for a segment rule: letters, digits, `_` and `-`, 1-32 chars. */
+const SAFE_TAG = /^[A-Za-z0-9_-]{1,32}$/;
+/** Property names that behave specially on a plain object; never usable as a tag. */
+const RESERVED_TAGS = new Set(["__proto__", "constructor", "prototype"]);
+
+function isSafeTag(tag: string): boolean {
+  return SAFE_TAG.test(tag) && !RESERVED_TAGS.has(tag);
+}
+
 /**
  * Parse `KANKAKU_SEGMENTS`, a `;`-separated list of `tag=tool:regex`
  * entries (example: `review=bash:gentle-ai review;commit=bash:git commit`).
- * Malformed entries (missing tag, tool or regex, or an invalid regex
- * source) are skipped rather than failing the whole variable.
+ * Malformed entries (missing tag, tool or regex, an invalid regex source,
+ * or a tag that is not a safe identifier such as `__proto__`) are skipped
+ * rather than failing the whole variable.
  */
 function parseSegmentRules(raw: string): SegmentRule[] {
   const rules: SegmentRule[] = [];
@@ -45,7 +55,7 @@ function parseSegmentRules(raw: string): SegmentRule[] {
 
     const tool = rest.slice(0, colonIndex).trim();
     const regexSource = rest.slice(colonIndex + 1).trim();
-    if (!tag || !tool || !regexSource) continue;
+    if (!tag || !tool || !regexSource || !isSafeTag(tag)) continue;
 
     try {
       rules.push({ tag, tool, pattern: new RegExp(regexSource) });

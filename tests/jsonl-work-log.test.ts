@@ -88,3 +88,19 @@ test("readAll skips malformed lines", () => {
     ["rec-1", "rec-2"],
   );
 });
+
+test("readAll skips a line that parses as JSON but is not a valid WorkRecord", () => {
+  const logDir = join(dir, ".kankaku");
+  const log = new JsonlWorkLog(logDir);
+  log.append(makeRecord({ id: "rec-1" }));
+
+  const file = join(logDir, "worklog.jsonl");
+  writeFileSync(file, `${JSON.stringify({ id: "structurally-invalid", schema: 1 })}\n`, { flag: "a" });
+  log.append(makeRecord({ id: "rec-2" }));
+
+  const records = log.readAll();
+  assert.deepEqual(
+    records.map((r) => r.id),
+    ["rec-1", "rec-2"],
+  );
+});

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildSessions, buildTasks, orphanSubagents } from "../src/domain/task-view.ts";
-import type { WorkRecord } from "../src/domain/work-record.ts";
+import { buildSessions, buildTasks, orphanSubagents, sumUsage } from "../src/domain/task-view.ts";
+import type { UsageTotals, WorkRecord } from "../src/domain/work-record.ts";
 
 function iso(secondsFromEpoch: number): string {
   return new Date(secondsFromEpoch * 1000).toISOString();
@@ -208,6 +208,27 @@ test("buildTasks treats a record without segments (older log line) as {}", () =>
   const tasks = buildTasks([parent]);
 
   assert.deepEqual(tasks[0]!.segments, {});
+});
+
+test("sumUsage treats a record lacking usage as empty usage", () => {
+  const totals: Array<UsageTotals | undefined> = [
+    undefined,
+    { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+  ];
+
+  const result = sumUsage(totals);
+
+  assert.deepEqual(result, { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0.5 });
+});
+
+test("sumUsage treats missing or non-finite numeric fields on a total as zero", () => {
+  const totals = [
+    { input: 1, cacheRead: 0, cacheWrite: Number.NaN, cost: 0.1 } as unknown as UsageTotals,
+  ];
+
+  const result = sumUsage(totals);
+
+  assert.deepEqual(result, { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.1 });
 });
 
 test("buildSessions sums segments across all of a session's tasks", () => {

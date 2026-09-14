@@ -1,5 +1,6 @@
 import { buildTasks } from "../domain/task-view.ts";
 import type { SessionView, TaskView } from "../domain/task-view.ts";
+import { finiteOrZero } from "../domain/work-record.ts";
 import type { WorkRecord, WorkRole } from "../domain/work-record.ts";
 
 export interface RoleTotals {
@@ -76,7 +77,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     totals.waitingMs += record.waitingMs;
     totals.wallMs += record.wallMs;
     totals.count += 1;
-    totals.cost += record.usage.cost;
+    totals.cost += finiteOrZero(record.usage.cost);
     addSegments(totals.segments, record.segments);
   }
 

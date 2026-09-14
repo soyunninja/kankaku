@@ -66,3 +66,44 @@ export type WorkRecord = WorkRecordCore & WorkRecordMetadata;
 export function emptyUsage(): UsageTotals {
   return { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 };
 }
+
+/** A finite number, or `0` for `undefined`/`NaN`/`Infinity`/non-numbers. */
+export function finiteOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+const ROLES = new Set<WorkRole>(["orchestrator", "subagent"]);
+const STATUSES = new Set<WorkStatus>(["completed", "aborted", "interrupted"]);
+
+/**
+ * Runtime guard for a {@link WorkRecord} read back from disk. `readAll`
+ * skips lines that parse as JSON but fail this check, so a torn write or a
+ * record from an incompatible schema does not crash task/session views.
+ */
+export function isWorkRecord(value: unknown): value is WorkRecord {
+  if (!value || typeof value !== "object") return false;
+  const record = value as Record<string, unknown>;
+
+  return (
+    typeof record["schema"] === "number" &&
+    typeof record["id"] === "string" &&
+    ROLES.has(record["role"] as WorkRole) &&
+    typeof record["pid"] === "number" &&
+    typeof record["parentPid"] === "number" &&
+    typeof record["project"] === "string" &&
+    typeof record["prompt"] === "string" &&
+    typeof record["startedAt"] === "string" &&
+    typeof record["settledAt"] === "string" &&
+    Number.isFinite(record["wallMs"]) &&
+    Number.isFinite(record["waitingMs"]) &&
+    Number.isFinite(record["workMs"]) &&
+    typeof record["runs"] === "number" &&
+    typeof record["turns"] === "number" &&
+    typeof record["tools"] === "object" &&
+    record["tools"] !== null &&
+    Array.isArray(record["subagents"]) &&
+    typeof record["usage"] === "object" &&
+    record["usage"] !== null &&
+    STATUSES.has(record["status"] as WorkStatus)
+  );
+}

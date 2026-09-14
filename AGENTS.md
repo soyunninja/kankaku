@@ -39,6 +39,9 @@ Read `README.md` for behaviour and the record schema before changing code.
   within one `WorkRecord`, and the sum of `segments` per tag across a
   task's or session's records — never a union at that level, since segment
   intervals are not persisted to `worklog.jsonl`.
+- Each process checkpoints its in-flight record to `.kankaku/inflight/<pid>.json`
+  (via `InflightStore`) so a hard crash still leaves an `interrupted` record,
+  recovered on the next `session_start`; see README "Crash recovery".
 
 ## Code conventions
 
