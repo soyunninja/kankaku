@@ -1,7 +1,7 @@
-import { isAbsolute, join } from "node:path";
 import type { WorkRecord } from "../domain/work-record.ts";
 import type { InflightStore } from "../ports/inflight-store.ts";
 import { FileInflightStore } from "./file-inflight-store.ts";
+import { resolveKankakuDir } from "./kankaku-dir.ts";
 
 /**
  * {@link InflightStore} that resolves a relative checkpoint directory
@@ -24,8 +24,7 @@ export class LazyFileInflightStore implements InflightStore {
 
   private resolveFor(cwd: string): FileInflightStore {
     if (!this.resolved) {
-      const dir = isAbsolute(this.dirOrRelative) ? this.dirOrRelative : join(cwd, this.dirOrRelative);
-      this.resolved = new FileInflightStore(dir, this.pid);
+      this.resolved = new FileInflightStore(resolveKankakuDir(this.dirOrRelative, cwd), this.pid);
     }
     return this.resolved;
   }

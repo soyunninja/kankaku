@@ -59,6 +59,10 @@ export interface WorkRecordMetadata {
   sessionFile?: string;
   mode?: string;
   model?: string;
+  /** Who this work is billed to. See {@link resolveClient} in `client-label.ts`. */
+  client?: string;
+  /** pi's session display name at the time this record settled. */
+  sessionName?: string;
 }
 
 export type WorkRecord = WorkRecordCore & WorkRecordMetadata;
@@ -104,6 +108,8 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     Array.isArray(record["subagents"]) &&
     typeof record["usage"] === "object" &&
     record["usage"] !== null &&
-    STATUSES.has(record["status"] as WorkStatus)
+    STATUSES.has(record["status"] as WorkStatus) &&
+    (record["client"] === undefined || typeof record["client"] === "string") &&
+    (record["sessionName"] === undefined || typeof record["sessionName"] === "string")
   );
 }

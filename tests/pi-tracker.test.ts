@@ -78,14 +78,24 @@ class FakeInflightStore implements InflightStore {
 
 type Handler = (event: unknown, ctx: unknown) => unknown;
 
+interface FakeCommandOptions {
+  handler: (args: string, ctx: unknown) => Promise<void>;
+  getArgumentCompletions?: (argumentPrefix: string) => unknown;
+}
+
 class FakePi {
   readonly handlers = new Map<string, Handler[]>();
-  readonly commands = new Map<string, { handler: (args: string, ctx: unknown) => Promise<void> }>();
+  readonly commands = new Map<string, FakeCommandOptions>();
   readonly entries: Array<{ customType: string; data: unknown }> = [];
   readonly renderers = new Map<string, unknown>();
+  sessionName: string | undefined = undefined;
 
   appendEntry(customType: string, data?: unknown): void {
     this.entries.push({ customType, data });
+  }
+
+  getSessionName(): string | undefined {
+    return this.sessionName;
   }
 
   registerEntryRenderer(customType: string, renderer: unknown): void {
@@ -98,7 +108,7 @@ class FakePi {
     this.handlers.set(event, list);
   }
 
-  registerCommand(name: string, options: { handler: (args: string, ctx: unknown) => Promise<void> }): void {
+  registerCommand(name: string, options: FakeCommandOptions): void {
     this.commands.set(name, options);
   }
 
@@ -118,6 +128,7 @@ function makeFakeCtx(overrides: Record<string, unknown> = {}) {
     sessionManager: {
       getSessionId: () => "session-1",
       getSessionFile: () => "/abs/project/path/.pi/sessions/session-1.json",
+      getEntries: () => [],
     },
     ui: {
       notify: () => {},
@@ -565,4 +576,491 @@ test("'kankaku sessions all' appends a durable report entry with sessions across
   const lines = (pi.entries[0]!.data as { lines: string[] }).lines;
   assert.match(lines[0]!, /^session-/); // sessionId truncated to its first 8 chars
   assert.match(lines[0]!, /tasks 1/);
+});
+
+test("buildRecord fills client from env config and sessionName from pi.getSessionName()", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  pi.sessionName = "billing sprint";
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    envClient: "acme",
+    resolveProjectClient: () => undefined,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  assert.equal(log.records[0]?.client, "acme");
+  assert.equal(log.records[0]?.sessionName, "billing sprint");
+});
+
+test("buildRecord falls back to the project client when env and session are absent", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    resolveProjectClient: () => "initech",
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.client, "initech");
+});
+
+test("session_start restores the session client from the last kankaku-client custom entry, taking precedence over env", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const entries = [
+    { type: "custom", customType: "kankaku-client", data: { client: "old-client" } },
+    { type: "message", data: {} },
+    { type: "custom", customType: "kankaku-client", data: { client: "acme" } },
+  ];
+  const ctx = makeFakeCtx({
+    sessionManager: {
+      getSessionId: () => "session-1",
+      getSessionFile: () => "/abs/project/path/.pi/sessions/session-1.json",
+      getEntries: () => entries,
+    },
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    envClient: "globex",
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.client, "acme");
+});
+
+test("session_start restores an undefined session client when the last kankaku-client entry cleared it", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const entries = [
+    { type: "custom", customType: "kankaku-client", data: { client: "acme" } },
+    { type: "custom", customType: "kankaku-client", data: { client: undefined } },
+  ];
+  const ctx = makeFakeCtx({
+    sessionManager: {
+      getSessionId: () => "session-1",
+      getSessionFile: () => "/abs/project/path/.pi/sessions/session-1.json",
+      getEntries: () => entries,
+    },
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    envClient: "globex",
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.client, "globex");
+});
+
+test("'kankaku client <name>' sets the session client, persists it, and confirms via the durable report card", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  const command = pi.commands.get("kankaku");
+  assert.ok(command);
+  await command!.handler("client acme", ctx);
+
+  assert.equal(pi.entries.length, 2);
+  assert.equal(pi.entries[0]!.customType, "kankaku-client");
+  assert.deepEqual(pi.entries[0]!.data, { client: "acme" });
+  assert.equal(pi.entries[1]!.customType, "kankaku-report");
+  const report = pi.entries[1]!.data as { lines: string[] };
+  assert.match(report.lines.join("\n"), /acme/);
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  assert.equal(log.records[0]?.client, "acme");
+});
+
+test("'kankaku client' rejects an invalid name and notifies without setting or persisting anything", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  const command = pi.commands.get("kankaku");
+  await command!.handler("client not valid!", ctx);
+
+  assert.equal(pi.entries.length, 0);
+  assert.equal(notified.length, 1);
+  assert.equal(notified[0]?.type, "error");
+});
+
+test("'kankaku client' with no argument shows the effective client and its source", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    envClient: "globex",
+  });
+
+  const command = pi.commands.get("kankaku");
+  await command!.handler("client", ctx);
+
+  assert.equal(pi.entries.length, 1);
+  const data = pi.entries[0]!.data as { lines: string[] };
+  const text = data.lines.join("\n");
+  assert.match(text, /globex/);
+  assert.match(text, /env/);
+});
+
+test("'kankaku client' shows no client when none of the sources resolve", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  const command = pi.commands.get("kankaku");
+  await command!.handler("client", ctx);
+
+  const data = pi.entries[0]!.data as { lines: string[] };
+  assert.match(data.lines.join("\n"), /none/i);
+});
+
+test("'kankaku client --clear' clears the session client label and falls back to the next source", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    envClient: "globex",
+  });
+
+  const command = pi.commands.get("kankaku");
+  await command!.handler("client acme", ctx);
+  await command!.handler("client --clear", ctx);
+
+  const clientEntries = pi.entries.filter((entry) => entry.customType === "kankaku-client");
+  assert.deepEqual(clientEntries.at(-1)!.data, { client: undefined });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  assert.equal(log.records[0]?.client, "globex");
+});
+
+test("kankaku command exposes getArgumentCompletions offering the known subcommands", async () => {
+  const pi = new FakePi();
+  createPiTracker(pi as never, {
+    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" }),
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+  });
+
+  const command = pi.commands.get("kankaku");
+  assert.ok(command?.getArgumentCompletions);
+  const items = (await command!.getArgumentCompletions!("")) as Array<{ value: string }>;
+  assert.deepEqual(
+    items.map((item) => item.value).sort(),
+    ["all", "client", "clients", "export", "sessions", "tasks"],
+  );
+});
+
+test("kankaku command's getArgumentCompletions offers distinct client names after 'client '", async () => {
+  const log = new FakeWorkLog();
+  log.append(makeRecord({ id: "r1", client: "acme" }));
+  log.append(makeRecord({ id: "r2", client: "globex", pid: 2 }));
+  log.append(makeRecord({ id: "r3", client: "acme", pid: 3 }));
+  const pi = new FakePi();
+  createPiTracker(pi as never, {
+    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" }),
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+  });
+
+  const command = pi.commands.get("kankaku");
+  const items = (await command!.getArgumentCompletions!("client ")) as Array<{ value: string }>;
+  assert.deepEqual(
+    items.map((item) => item.value),
+    ["acme", "globex"],
+  );
+});
+
+test("'kankaku clients' appends a durable report entry with per-client totals for today", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const notified: string[] = [];
+  const ctx = makeFakeCtx({ ui: { notify: (msg: string) => notified.push(msg), setStatus: () => {} } });
+
+  const now = Date.now();
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    client: "acme",
+    startedAt: new Date(now).toISOString(),
+    settledAt: new Date(now + 30000).toISOString(),
+    wallMs: 30000,
+    waitingMs: 0,
+    workMs: 30000,
+  });
+  log.append(parent);
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  const command = pi.commands.get("kankaku");
+  await command!.handler("clients", ctx);
+
+  assert.equal(notified.length, 0);
+  assert.equal(pi.entries.length, 1);
+  const data = pi.entries[0]!.data as { title: string; lines: string[] };
+  assert.match(data.title, /clients/);
+  assert.match(data.lines.join("\n"), /acme/);
+});
+
+test("'kankaku export' writes today's tasks as CSV by default and confirms via the durable report card", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const notified: string[] = [];
+  const ctx = makeFakeCtx({ ui: { notify: (msg: string) => notified.push(msg), setStatus: () => {} } });
+
+  const now = Date.now();
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: new Date(now).toISOString(),
+    settledAt: new Date(now + 30000).toISOString(),
+  });
+  log.append(parent);
+
+  const written: Array<{ name: string; content: string }> = [];
+  const writeExportFile = (name: string, content: string): string => {
+    written.push({ name, content });
+    return `/abs/project/path/.kankaku/export/${name}`;
+  };
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0, writeExportFile });
+
+  const command = pi.commands.get("kankaku");
+  await command!.handler("export", ctx);
+
+  assert.equal(notified.length, 0);
+  assert.equal(written.length, 1);
+  const today = new Date(now).toISOString().slice(0, 10);
+  assert.equal(written[0]!.name, `tasks-${today}.csv`);
+  assert.match(written[0]!.content, /^id,day,startedAt/);
+
+  assert.equal(pi.entries.length, 1);
+  const data = pi.entries[0]!.data as { title: string; lines: string[] };
+  assert.match(data.title, /export/);
+  assert.match(data.lines.join("\n"), /1 row/);
+  assert.match(data.lines.join("\n"), new RegExp(`export/tasks-${today}\\.csv`));
+});
+
+test("'kankaku export json all' writes every task as JSON with the 'all' filename suffix", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  const parentOld = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: "2020-01-01T00:00:00.000Z",
+    settledAt: "2020-01-01T00:00:30.000Z",
+  });
+  log.append(parentOld);
+
+  const written: Array<{ name: string; content: string }> = [];
+  const writeExportFile = (name: string, content: string): string => {
+    written.push({ name, content });
+    return `/abs/export/${name}`;
+  };
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0, writeExportFile });
+
+  const command = pi.commands.get("kankaku");
+  await command!.handler("export json all", ctx);
+
+  assert.equal(written.length, 1);
+  assert.equal(written[0]!.name, "tasks-all.json");
+  assert.deepEqual(JSON.parse(written[0]!.content)[0]?.id, "p1");
+});
+
+test("'kankaku export' notifies an error when export is not configured", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  const command = pi.commands.get("kankaku");
+  await command!.handler("export", ctx);
+
+  assert.equal(pi.entries.length, 0);
+  assert.equal(notified.length, 1);
+  assert.equal(notified[0]?.type, "error");
+});
+
+test("a subagent record never carries a client even when env and project sources resolve", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "subagent",
+    pid: 2,
+    parentPid: 1,
+    envClient: "acme",
+    resolveProjectClient: () => "initech",
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "child work", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  assert.equal(log.records[0]?.role, "subagent");
+  assert.equal("client" in log.records[0]!, false);
+});
+
+test("the status line shows a clock emoji followed by a space and mm:ss", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ctx = makeFakeCtx({
+    ui: { notify: () => {}, setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]) },
+  });
+
+  createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+
+  assert.deepEqual(statusCalls[0], ["kankaku", "🕒 00:00"]);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+});
+
+test("the project client is read once per run, not on every checkpoint", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  let reads = 0;
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    resolveProjectClient: () => {
+      reads += 1;
+      return "initech";
+    },
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  for (let i = 0; i < 3; i += 1) {
+    clock.advanceTo(10 * (i + 1));
+    await pi.fire("turn_end", { type: "turn_end", turnIndex: i, message: { role: "assistant", content: [] }, toolResults: [] }, ctx);
+  }
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(reads, 1);
+  assert.equal(log.records[0]?.client, "initech");
 });

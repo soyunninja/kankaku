@@ -88,6 +88,16 @@ test("loadConfig trims whitespace around KANKAKU_SEGMENTS entries", () => {
   );
 });
 
+test("loadConfig leaves client undefined when KANKAKU_CLIENT is unset", () => {
+  const config = loadConfig(env({}));
+  assert.equal(config.client, undefined);
+});
+
+test("loadConfig reads KANKAKU_CLIENT", () => {
+  const config = loadConfig(env({ KANKAKU_CLIENT: "acme" }));
+  assert.equal(config.client, "acme");
+});
+
 test("detectRole reports subagent when GENTLE_PI_AGENTS_CHILD=1", () => {
   assert.equal(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" })), "subagent");
 });

@@ -42,6 +42,10 @@ Read `README.md` for behaviour and the record schema before changing code.
 - Each process checkpoints its in-flight record to `.kankaku/inflight/<pid>.json`
   (via `InflightStore`) so a hard crash still leaves an `interrupted` record,
   recovered on the next `session_start`; see README "Crash recovery".
+- `client` (billing target) resolves session > `KANKAKU_CLIENT` env >
+  project `config.json`, via the pure `domain/client-label.ts#resolveClient`;
+  a subagent record never carries its own `client` — only the task view
+  exposes it, inherited from the orchestrator record. See README "Billing labels".
 
 ## Code conventions
 

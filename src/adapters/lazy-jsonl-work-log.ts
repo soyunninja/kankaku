@@ -1,7 +1,7 @@
-import { isAbsolute, join } from "node:path";
 import type { WorkRecord } from "../domain/work-record.ts";
 import type { WorkLog } from "../ports/work-log.ts";
 import { JsonlWorkLog } from "./jsonl-work-log.ts";
+import { resolveKankakuDir } from "./kankaku-dir.ts";
 
 /**
  * {@link WorkLog} that resolves a relative log directory lazily: against the
@@ -20,8 +20,7 @@ export class LazyJsonlWorkLog implements WorkLog {
 
   private resolveFor(cwd: string): JsonlWorkLog {
     if (!this.resolved) {
-      const dir = isAbsolute(this.dirOrRelative) ? this.dirOrRelative : join(cwd, this.dirOrRelative);
-      this.resolved = new JsonlWorkLog(dir);
+      this.resolved = new JsonlWorkLog(resolveKankakuDir(this.dirOrRelative, cwd));
     }
     return this.resolved;
   }

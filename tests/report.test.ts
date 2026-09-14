@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatReport, formatSessions, formatTasks, localDay, summarize } from "../src/adapters/report.ts";
+import { formatClients, formatReport, formatSessions, formatTasks, localDay, summarize, summarizeByClient } from "../src/adapters/report.ts";
 import { buildSessions, buildTasks } from "../src/domain/task-view.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 
@@ -359,6 +359,97 @@ test("formatTasks shows no segment text when the task has no segments", () => {
   const text = formatTasks(tasks);
 
   assert.equal(text.includes("review"), false);
+});
+
+test("formatTasks shows client:<name> after the time when the task has a client", () => {
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    client: "acme",
+    startedAt: "2026-09-10T12:00:00.000Z",
+    settledAt: "2026-09-10T12:00:30.000Z",
+  });
+
+  const tasks = buildTasks([parent]);
+  const text = formatTasks(tasks);
+
+  assert.match(text, /^\d\d:\d\d {2}client:acme {2}wall/);
+});
+
+test("formatTasks shows no client text when the task has no client", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+
+  const tasks = buildTasks([parent]);
+  const text = formatTasks(tasks);
+
+  assert.equal(text.includes("client:"), false);
+});
+
+test("summarizeByClient totals work, waiting, wall, cost and task count per client, grouping clientless tasks under (none)", () => {
+  const parentA = makeRecord({
+    id: "a1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    client: "acme",
+    startedAt: "2026-09-10T12:00:00.000Z",
+    settledAt: "2026-09-10T12:01:00.000Z",
+    wallMs: 60000,
+    waitingMs: 10000,
+    workMs: 50000,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 1 },
+  });
+  const parentB = makeRecord({
+    id: "a2",
+    role: "orchestrator",
+    pid: 101,
+    parentPid: 1,
+    client: "acme",
+    startedAt: "2026-09-10T13:00:00.000Z",
+    settledAt: "2026-09-10T13:00:30.000Z",
+    wallMs: 30000,
+    waitingMs: 0,
+    workMs: 30000,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+  });
+  const parentC = makeRecord({
+    id: "b1",
+    role: "orchestrator",
+    pid: 102,
+    parentPid: 1,
+    startedAt: "2026-09-10T14:00:00.000Z",
+    settledAt: "2026-09-10T14:00:10.000Z",
+    wallMs: 10000,
+    waitingMs: 0,
+    workMs: 10000,
+  });
+
+  const tasks = buildTasks([parentA, parentB, parentC]);
+  const totals = summarizeByClient(tasks);
+
+  assert.deepEqual(totals.get("acme"), { wallMs: 90000, waitingMs: 10000, workMs: 80000, cost: 1.5, count: 2 });
+  assert.deepEqual(totals.get("(none)"), { wallMs: 10000, waitingMs: 0, workMs: 10000, cost: 0, count: 1 });
+});
+
+test("formatClients renders one line per client sorted alphabetically, with (none) as a normal entry", () => {
+  const parentA = makeRecord({ id: "a1", pid: 100, parentPid: 1, client: "zeta", wallMs: 60000, waitingMs: 0, workMs: 60000 });
+  const parentB = makeRecord({ id: "b1", pid: 101, parentPid: 1, wallMs: 10000, waitingMs: 0, workMs: 10000 });
+  const parentC = makeRecord({ id: "c1", pid: 102, parentPid: 1, client: "acme", wallMs: 20000, waitingMs: 0, workMs: 20000 });
+
+  const tasks = buildTasks([parentA, parentB, parentC]);
+  const text = formatClients(summarizeByClient(tasks));
+  const lines = text.split("\n");
+
+  assert.match(lines[0]!, /^\(none\)/);
+  assert.match(lines[1]!, /^acme/);
+  assert.match(lines[2]!, /^zeta/);
+  assert.match(text, /tasks 1/);
+});
+
+test("formatClients reports 'no clients' for an empty list", () => {
+  assert.equal(formatClients(summarizeByClient([])), "no clients");
 });
 
 test("formatSessions appends segment pairs after the cost, only for non-zero tags", () => {

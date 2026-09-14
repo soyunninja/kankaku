@@ -257,3 +257,32 @@ test("buildSessions sums segments across all of a session's tasks", () => {
   assert.equal(sessions.length, 1);
   assert.deepEqual(sessions[0]!.segments, { review: 1500, commit: 200 });
 });
+
+test("buildTasks exposes the orchestrator's client and sessionName on the task", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1, client: "acme", sessionName: "billing sprint" });
+
+  const tasks = buildTasks([parent]);
+
+  assert.equal(tasks[0]!.client, "acme");
+  assert.equal(tasks[0]!.sessionName, "billing sprint");
+});
+
+test("buildTasks leaves client and sessionName undefined when the orchestrator has neither", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+
+  const tasks = buildTasks([parent]);
+
+  assert.equal(tasks[0]!.client, undefined);
+  assert.equal(tasks[0]!.sessionName, undefined);
+  assert.equal("client" in tasks[0]!, false);
+});
+
+test("buildTasks does not inherit client from a subagent child, only from the orchestrator", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1, client: "acme" });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 200, parentPid: 100, startedAt: iso(2), settledAt: iso(5) });
+
+  const tasks = buildTasks([parent, child]);
+
+  assert.equal(tasks[0]!.client, "acme");
+  assert.equal(tasks[0]!.subagents[0]?.client, undefined);
+});

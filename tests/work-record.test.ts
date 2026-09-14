@@ -60,6 +60,21 @@ test("isWorkRecord rejects a record whose subagents is not an array", () => {
   assert.equal(isWorkRecord(record), false);
 });
 
+test("isWorkRecord accepts a record without client or sessionName", () => {
+  const record = makeRecord();
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord accepts a record with string client and sessionName", () => {
+  const record = makeRecord({ client: "acme", sessionName: "my session" });
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord rejects a record with a non-string client or sessionName", () => {
+  assert.equal(isWorkRecord({ ...makeRecord(), client: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), sessionName: 42 }), false);
+});
+
 test("finiteOrZero returns the number for finite values", () => {
   assert.equal(finiteOrZero(5), 5);
   assert.equal(finiteOrZero(0), 0);

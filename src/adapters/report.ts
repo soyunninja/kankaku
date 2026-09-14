@@ -1,7 +1,10 @@
 import { buildTasks } from "../domain/task-view.ts";
 import type { SessionView, TaskView } from "../domain/task-view.ts";
+import { localDay } from "../domain/day.ts";
 import { finiteOrZero } from "../domain/work-record.ts";
 import type { WorkRecord, WorkRole } from "../domain/work-record.ts";
+
+export { localDay } from "../domain/day.ts";
 
 export interface RoleTotals {
   workMs: number;
@@ -34,15 +37,6 @@ export interface SummarizeOptions {
 }
 
 const ROLES: WorkRole[] = ["orchestrator", "subagent"];
-
-/** Local (not UTC) calendar day of an ISO timestamp, as `YYYY-MM-DD`. */
-export function localDay(iso: string): string {
-  const date = new Date(iso);
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-}
 
 function emptyTotals(): RoleTotals {
   return { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, segments: {} };
@@ -137,7 +131,7 @@ export function formatReport(summary: Summary): string {
   return lines.join(" | ");
 }
 
-/** Render one line per task: time, union-based wall/work, cost, non-zero segment tags, subagent count, and a truncated prompt. */
+/** Render one line per task: time, client (when present), union-based wall/work, cost, non-zero segment tags, subagent count, and a truncated prompt. */
 export function formatTasks(tasks: TaskView[]): string {
   if (tasks.length === 0) return "no tasks";
   return tasks
@@ -145,8 +139,55 @@ export function formatTasks(tasks: TaskView[]): string {
       const prompt = task.prompt.length > 60 ? task.prompt.slice(0, 60) : task.prompt;
       const segmentTags = formatSegmentTags(task.segments);
       const segmentPart = segmentTags !== undefined ? `  ${segmentTags}` : "";
-      return `${formatTime(task.startedAt)}  wall ${formatMinutes(task.wallMs)}  work ${formatMinutes(task.workMs)}  ${formatCost(task.usage.cost)}${segmentPart}  subagents ${task.subagents.length}  ${prompt}`;
+      const clientPart = task.client !== undefined ? `  client:${task.client}` : "";
+      return `${formatTime(task.startedAt)}${clientPart}  wall ${formatMinutes(task.wallMs)}  work ${formatMinutes(task.workMs)}  ${formatCost(task.usage.cost)}${segmentPart}  subagents ${task.subagents.length}  ${prompt}`;
     })
+    .join("\n");
+}
+
+export interface ClientTotals {
+  wallMs: number;
+  waitingMs: number;
+  workMs: number;
+  /** Estimated cost in USD, summed across this client's tasks. */
+  cost: number;
+  count: number;
+}
+
+/** Client name under which tasks without a resolved client are grouped. */
+const NO_CLIENT = "(none)";
+
+/**
+ * Aggregate tasks by billing client (see `domain/client-label.ts`), summing
+ * work/waiting/wall time, cost, and task count. Tasks without a `client`
+ * are grouped under `"(none)"`. Returned as a `Map` rather than a plain
+ * object so an attacker-controlled client name can never repoint a
+ * prototype property.
+ */
+export function summarizeByClient(tasks: TaskView[]): Map<string, ClientTotals> {
+  const totals = new Map<string, ClientTotals>();
+  for (const task of tasks) {
+    const key = task.client ?? NO_CLIENT;
+    const entry = totals.get(key) ?? { wallMs: 0, waitingMs: 0, workMs: 0, cost: 0, count: 0 };
+    entry.wallMs += task.wallMs;
+    entry.waitingMs += task.waitingMs;
+    entry.workMs += task.workMs;
+    entry.cost += finiteOrZero(task.usage.cost);
+    entry.count += 1;
+    totals.set(key, entry);
+  }
+  return totals;
+}
+
+/** Render one line per client, sorted alphabetically, with work/waiting/wall time, cost, and task count. */
+export function formatClients(totals: Map<string, ClientTotals>): string {
+  if (totals.size === 0) return "no clients";
+  return Array.from(totals.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(
+      ([client, t]) =>
+        `${client}  work ${formatMinutes(t.workMs)}  waiting ${formatMinutes(t.waitingMs)}  wall ${formatMinutes(t.wallMs)}  ${formatCost(t.cost)}  tasks ${t.count}`,
+    )
     .join("\n");
 }
 

@@ -22,6 +22,10 @@ export interface TaskView {
   orchestrator: WorkRecord;
   subagents: WorkRecord[];
   usage: UsageTotals;
+  /** Who this task is billed to, from the orchestrator record only — subagent children do not carry their own. */
+  client?: string;
+  /** pi's session display name, from the orchestrator record. */
+  sessionName?: string;
   /**
    * Per-tag total milliseconds across the orchestrator and every subagent,
    * summed rather than unioned: unlike `wallMs`, segment intervals are not
@@ -148,6 +152,8 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
   return {
     id: orchestrator.id,
     ...(orchestrator.sessionId !== undefined ? { sessionId: orchestrator.sessionId } : {}),
+    ...(orchestrator.client !== undefined ? { client: orchestrator.client } : {}),
+    ...(orchestrator.sessionName !== undefined ? { sessionName: orchestrator.sessionName } : {}),
     project: orchestrator.project,
     prompt: orchestrator.prompt,
     startedAt: orchestrator.startedAt,

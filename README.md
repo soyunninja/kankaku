@@ -55,6 +55,8 @@ Each line in `worklog.jsonl` is one JSON object:
   "sessionFile": "…",
   "mode": "tui",
   "model": "anthropic/claude-opus",
+  "client": "acme",
+  "sessionName": "billing sprint",
   "prompt": "first 200 chars of the first prompt",
   "startedAt": "2026-09-10T16:00:00.000Z",
   "settledAt": "2026-09-10T16:04:10.000Z",
@@ -123,14 +125,47 @@ Arguments are whitespace-separated and order-insensitive:
   session are shown instead.
 - `/kankaku sessions` — one line per session (id, time range, union
   wall/work, cost, task count) for today. Add `all` for every day.
+- `/kankaku client <name>` — set the billing client for the current pi
+  session. `/kankaku client` alone shows the effective client and which
+  source it came from; `/kankaku client --clear` removes the session-level
+  override. See "Billing labels" below.
+- `/kankaku clients` — one line per client (work/waiting/wall time, cost,
+  task count) for today. Add `all` for every day. Tasks with no resolved
+  client are grouped under `(none)`.
 
 Cost figures are the sum of `usage.cost` as priced by pi's model table
 (per-million-token rates in `models.json`, adjustable with `modelOverrides`).
 For subscription-based providers this is an estimate at API list prices, not
 an invoice.
 
-While an agent is running, pi's status bar shows a `⏱ mm:ss` indicator with
+While an agent is running, pi's status bar shows a `🕒 mm:ss` indicator with
 the elapsed time for the current run.
+
+## Billing labels
+
+Every `WorkRecord` can carry a `client` — who the work is billed to — so
+reports and exports can be grouped by client. The effective client is
+resolved from three sources, in decreasing precedence:
+
+1. **Session** — set with `/kankaku client <name>` (see above), persisted as
+   a `kankaku-client` custom session entry and restored on session reload.
+2. **`KANKAKU_CLIENT`** — the environment variable, a per-process default.
+3. **Project** — `client` in `<KANKAKU_DIR>/config.json` (e.g.
+   `{"client": "acme"}`), the project's own default.
+
+A client name must match `/^[A-Za-z0-9._-]{1,64}$/`; anything else (empty,
+too long, containing spaces or other characters) is ignored and resolution
+falls through to the next source.
+
+A `subagent_run` child process does not resolve its own client — a
+subagent's own `WorkRecord` never carries `client`. Instead, the **task**
+view (see "Task and session views") exposes the client from its
+orchestrator record only, so `/kankaku tasks`, `/kankaku clients`, and the
+export all see subagent work grouped under the task's (i.e. the
+orchestrator's) client.
+
+`sessionName` is also attached to every record from `pi.getSessionName()`,
+so reports can show which named session produced a task.
 
 ## Tagged segments
 
@@ -178,6 +213,35 @@ whose owning pid is no longer alive, appends each one to `worklog.jsonl` as
 recovered record is the time of its last checkpoint, not the actual crash
 time, so `wallMs`/`workMs` are a **lower bound** on the real duration.
 
+## Export
+
+`/kankaku export [csv|json] [all]` writes one flat row per task (today's
+tasks by default, or every task with `all`) to
+`<KANKAKU_DIR>/export/tasks-<YYYY-MM-DD or all>.<csv|json>`, and confirms
+with the file's path and row count via the durable report card. Format
+defaults to `csv`; each subagent's own time is folded into its task's row
+rather than exported separately (see "Task and session views").
+
+Columns (in this order for CSV; the same fields for JSON):
+
+| Column | Meaning |
+| --- | --- |
+| `id` | Task id (the orchestrator record's `id`). |
+| `day` | Local calendar day (`YYYY-MM-DD`) the task started on. |
+| `startedAt` / `endedAt` | ISO timestamps of the task's span. |
+| `client` | Billing client, or empty when unresolved. |
+| `sessionName` | pi session display name, or empty. |
+| `sessionId` | pi session id, or empty. |
+| `project` | Project cwd. |
+| `status` | `completed`, `aborted`, or `interrupted`. |
+| `prompt` | First 200 chars of the prompt, newlines collapsed to spaces. |
+| `wallMs` / `waitingMs` / `workMs` | Union-based task timings (see "Task and session views"). |
+| `cost` | Estimated USD cost, orchestrator plus subagents. |
+| `tokensIn` / `tokensOut` / `cacheRead` | Token usage totals. |
+| `subagentCount` | Number of subagent records matched to the task. |
+| `segments` | JSON-encoded per-tag segment totals (see "Tagged segments"). |
+| `model` | The orchestrator record's model, or empty. |
+
 ## Environment variables
 
 - `KANKAKU_DIR`: directory for the work log (`worklog.jsonl`) and the
@@ -188,6 +252,9 @@ time, so `wallMs`/`workMs` are a **lower bound** on the real duration.
   `ask_user_question,ask_user_choice`.
 - `KANKAKU_SEGMENTS`: `;`-separated `tag=tool:regex` rules for tagged
   segments (see above). Defaults to the single `review` rule.
+- `KANKAKU_CLIENT`: default billing client for this project (see "Billing
+  labels" above). Lower precedence than the session-level
+  `/kankaku client` override, higher than `<KANKAKU_DIR>/config.json`.
 
 ## Limitations
 

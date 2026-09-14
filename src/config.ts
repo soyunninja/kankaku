@@ -9,6 +9,8 @@ export interface KankakuConfig {
   subagentTool: string;
   /** Rules that tag a tool execution's span under a named segment (e.g. `review`). */
   segmentRules: SegmentRule[];
+  /** Default billing client for this project, from `KANKAKU_CLIENT`. See `domain/client-label.ts`. */
+  client?: string;
 }
 
 const DEFAULT_DIR = ".kankaku";
@@ -80,11 +82,14 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): KankakuConfig 
   const segmentsRaw = env["KANKAKU_SEGMENTS"]?.trim();
   const segmentRules = segmentsRaw ? parseSegmentRules(segmentsRaw) : DEFAULT_SEGMENT_RULES;
 
+  const client = env["KANKAKU_CLIENT"]?.trim() || undefined;
+
   return {
     dir,
     interactiveTools,
     subagentTool: SUBAGENT_TOOL,
     segmentRules,
+    ...(client !== undefined ? { client } : {}),
   };
 }
 
