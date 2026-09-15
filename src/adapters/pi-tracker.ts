@@ -66,11 +66,12 @@ export interface KankakuReportData {
   lines: string[];
 }
 
-function formatElapsed(ms: number): string {
+function formatElapsed(ms: number, client?: string): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return `🕒 ${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  const elapsed = `🕒 ${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  return client ? `${elapsed} · ${client}` : elapsed;
 }
 
 function notifyError(ctx: ExtensionContext, error: unknown): void {
@@ -120,10 +121,11 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   function startStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
     runStartedAt = Date.now();
-    ctx.ui.setStatus(STATUS_KEY, formatElapsed(0));
+    const client = role === "orchestrator" ? resolveClient(runClientSources()) : undefined;
+    ctx.ui.setStatus(STATUS_KEY, formatElapsed(0, client));
     statusTimer = setInterval(() => {
       if (runStartedAt === undefined) return;
-      ctx.ui.setStatus(STATUS_KEY, formatElapsed(Date.now() - runStartedAt));
+      ctx.ui.setStatus(STATUS_KEY, formatElapsed(Date.now() - runStartedAt, client));
     }, statusIntervalMs);
     statusTimer.unref?.();
   }

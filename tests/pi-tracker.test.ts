@@ -1064,3 +1064,28 @@ test("the project client is read once per run, not on every checkpoint", async (
   assert.equal(reads, 1);
   assert.equal(log.records[0]?.client, "initech");
 });
+
+test("the status line shows the client next to the elapsed time when one resolves", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ctx = makeFakeCtx({
+    ui: { notify: () => {}, setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]) },
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    envClient: "acme",
+  });
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+
+  assert.deepEqual(statusCalls[0], ["kankaku", "🕒 00:00 · acme"]);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  assert.deepEqual(statusCalls.at(-1), ["kankaku", undefined]);
+});
