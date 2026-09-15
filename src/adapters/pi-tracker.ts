@@ -67,11 +67,15 @@ export interface KankakuReportData {
   lines: string[];
 }
 
+// U+FE0F forces emoji presentation so terminals do not fall back to monochrome text glyphs.
+const CLOCK_EMOJI = "\u{1F552}\uFE0F";
+const CLIENT_EMOJI = "\u{1F4BC}\uFE0F";
+
 function formatElapsed(ms: number, client?: string): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  const elapsed = `🕒 ${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  const elapsed = `${CLOCK_EMOJI} ${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
   return client ? `${elapsed} · ${client}` : elapsed;
 }
 
@@ -117,14 +121,14 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     showIdleStatus(ctx);
   }
 
-  /** While idle, keep the billing client visible (`🏷 <client>`), or clear the status when none resolves. */
+  /** While idle, keep the billing client visible (`💼 <client>`), or clear the status when none resolves. */
   function showIdleStatus(ctx: ExtensionContext): void {
     if (!ctx.hasUI) return;
     // Reuse the project client cached for the run when one is still held, so
     // settling does not re-read config.json; otherwise resolve it fresh.
     const sources = runProjectClient ? clientSources(runProjectClient.value) : clientSources();
     const client = role === "orchestrator" ? resolveClient(sources) : undefined;
-    ctx.ui.setStatus(STATUS_KEY, client ? `🏷 ${client}` : undefined);
+    ctx.ui.setStatus(STATUS_KEY, client ? `${CLIENT_EMOJI} ${client}` : undefined);
   }
 
   function startStatus(ctx: ExtensionContext): void {

@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+
+const CLOCK = "\u{1F552}\uFE0F";
+const CLIENT = "\u{1F4BC}\uFE0F";
 import { createPiTracker } from "../src/adapters/pi-tracker.ts";
 import { WorkTracker } from "../src/domain/work-tracker.ts";
 import type { Clock } from "../src/ports/clock.ts";
@@ -1029,7 +1032,7 @@ test("the status line shows a clock emoji followed by a space and mm:ss", async 
   createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
   await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
 
-  assert.deepEqual(statusCalls[0], ["zz-kankaku", "🕒 00:00"]);
+  assert.deepEqual(statusCalls[0], ["zz-kankaku", `${CLOCK} 00:00`]);
   await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
 });
 
@@ -1085,9 +1088,9 @@ test("the status line shows the client next to the elapsed time when one resolve
   });
   await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
 
-  assert.deepEqual(statusCalls[0], ["zz-kankaku", "🕒 00:00 · acme"]);
+  assert.deepEqual(statusCalls[0], ["zz-kankaku", `${CLOCK} 00:00 · acme`]);
   await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
-  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 acme"]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", `${CLIENT} acme`]);
 });
 
 test("the client stays visible in the status bar while idle, and clears when no client resolves", async () => {
@@ -1110,19 +1113,19 @@ test("the client stays visible in the status bar while idle, and clears when no 
   });
 
   await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
-  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 acme"]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", `${CLIENT} acme`]);
 
   await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
-  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🕒 00:00 · acme"]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", `${CLOCK} 00:00 · acme`]);
 
   await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
-  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 acme"]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", `${CLIENT} acme`]);
 
   await pi.commands.get("kankaku")!.handler("client globex", ctx);
-  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 globex"]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", `${CLIENT} globex`]);
 
   await pi.commands.get("kankaku")!.handler("client --clear", ctx);
-  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 acme"]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", `${CLIENT} acme`]);
 });
 
 test("no idle status is shown when no client resolves", async () => {

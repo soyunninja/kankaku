@@ -138,7 +138,7 @@ Cost figures are the sum of `usage.cost` as priced by pi's model table
 For subscription-based providers this is an estimate at API list prices, not
 an invoice.
 
-While an agent is running, pi's status bar shows a `🕒 mm:ss · <client>` indicator (the client part appears only when one resolves); while idle it shows `🏷 <client>`, or nothing when no client resolves. The entry is keyed `zz-kankaku` so it sorts last among extension statuses. The running indicator carries
+While an agent is running, pi's status bar shows a `🕒 mm:ss · <client>` indicator (the client part appears only when one resolves); while idle it shows `💼 <client>`, or nothing when no client resolves. The entry is keyed `zz-kankaku` so it sorts last among extension statuses. The running indicator carries
 the elapsed time for the current run.
 
 ## Billing labels
