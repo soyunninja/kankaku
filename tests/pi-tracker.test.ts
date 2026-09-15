@@ -301,7 +301,7 @@ test("a handler failure does not throw and notifies ui when available", async ()
   assert.equal(notified.length, 1);
   assert.equal(notified[0]?.type, "error");
   // the status timer and the in-flight checkpoint are cleaned up even though log.append threw
-  assert.deepEqual(statusCalls.at(-1), ["kankaku", undefined]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", undefined]);
   assert.equal(inflight.clearedCount, 1);
 });
 
@@ -333,7 +333,7 @@ test("session_shutdown also clears status and the in-flight checkpoint when log.
 
   assert.equal(notified.length, 1);
   assert.equal(notified[0]?.type, "error");
-  assert.deepEqual(statusCalls.at(-1), ["kankaku", undefined]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", undefined]);
   assert.equal(inflight.clearedCount, 1);
 });
 
@@ -1029,7 +1029,7 @@ test("the status line shows a clock emoji followed by a space and mm:ss", async 
   createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
   await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
 
-  assert.deepEqual(statusCalls[0], ["kankaku", "🕒 00:00"]);
+  assert.deepEqual(statusCalls[0], ["zz-kankaku", "🕒 00:00"]);
   await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
 });
 
@@ -1085,7 +1085,56 @@ test("the status line shows the client next to the elapsed time when one resolve
   });
   await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
 
-  assert.deepEqual(statusCalls[0], ["kankaku", "🕒 00:00 · acme"]);
+  assert.deepEqual(statusCalls[0], ["zz-kankaku", "🕒 00:00 · acme"]);
   await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
-  assert.deepEqual(statusCalls.at(-1), ["kankaku", undefined]);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 acme"]);
+});
+
+test("the client stays visible in the status bar while idle, and clears when no client resolves", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ctx = makeFakeCtx({
+    ui: { notify: () => {}, setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]) },
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    envClient: "acme",
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 acme"]);
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🕒 00:00 · acme"]);
+
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 acme"]);
+
+  await pi.commands.get("kankaku")!.handler("client globex", ctx);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 globex"]);
+
+  await pi.commands.get("kankaku")!.handler("client --clear", ctx);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", "🏷 acme"]);
+});
+
+test("no idle status is shown when no client resolves", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ctx = makeFakeCtx({
+    ui: { notify: () => {}, setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]) },
+  });
+
+  createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", undefined]);
 });

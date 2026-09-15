@@ -57,7 +57,8 @@ function defaultIsAlive(pid: number): boolean {
   }
 }
 
-const STATUS_KEY = "kankaku";
+// Footer statuses are sorted alphabetically by key; "zz-" keeps kankaku last.
+const STATUS_KEY = "zz-kankaku";
 const REPORT_ENTRY_TYPE = "kankaku-report";
 
 /** Durable report rendered inside the chat transcript; never sent to the LLM. */
@@ -112,10 +113,18 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       clearInterval(statusTimer);
       statusTimer = undefined;
     }
-    if (ctx.hasUI) {
-      ctx.ui.setStatus(STATUS_KEY, undefined);
-    }
     runStartedAt = undefined;
+    showIdleStatus(ctx);
+  }
+
+  /** While idle, keep the billing client visible (`🏷 <client>`), or clear the status when none resolves. */
+  function showIdleStatus(ctx: ExtensionContext): void {
+    if (!ctx.hasUI) return;
+    // Reuse the project client cached for the run when one is still held, so
+    // settling does not re-read config.json; otherwise resolve it fresh.
+    const sources = runProjectClient ? clientSources(runProjectClient.value) : clientSources();
+    const client = role === "orchestrator" ? resolveClient(sources) : undefined;
+    ctx.ui.setStatus(STATUS_KEY, client ? `🏷 ${client}` : undefined);
   }
 
   function startStatus(ctx: ExtensionContext): void {
@@ -298,6 +307,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     "session_start",
     guarded((_event, ctx) => {
       sessionClient = restoreSessionClient(ctx);
+      showIdleStatus(ctx);
 
       const recovered = inflight.recoverStale(isAlive);
       for (const record of recovered) {
@@ -332,6 +342,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     if (rest.length === 1 && rest[0] === "--clear") {
       sessionClient = undefined;
       pi.appendEntry<KankakuClientEntryData>(CLIENT_ENTRY_TYPE, { client: undefined });
+      showIdleStatus(ctx);
       showReport(ctx, { title: "client", lines: ["client label cleared for this session"] });
       return;
     }
@@ -352,6 +363,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     }
     sessionClient = name;
     pi.appendEntry<KankakuClientEntryData>(CLIENT_ENTRY_TYPE, { client: name });
+    showIdleStatus(ctx);
     showReport(ctx, { title: "client", lines: [`client set to ${name}`] });
   }
 
