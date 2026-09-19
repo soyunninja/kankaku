@@ -1,4 +1,5 @@
 import type { SegmentRule } from "./domain/segment-rule.ts";
+import type { PromptPrivacyMode } from "./domain/hub-entry.ts";
 
 export interface KankakuConfig {
   /** Directory for the work log, relative to the project cwd unless absolute. */
@@ -121,6 +122,35 @@ export function loadMachine(env: NodeJS.ProcessEnv, hostname: () => string): str
 /** Hosts allowed to use a plain-HTTP hub URL. */
 function isLocalHost(hostname: string): boolean {
   return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
+}
+
+/** Hub sync (Phase 2) configuration, read from the environment. See README "Hub (PocketBase)" sync section. */
+export interface SyncConfig {
+  /** `KANKAKU_SYNC_PROMPT`. Defaults to `"none"` — the conservative default (proposal §8). */
+  promptMode: PromptPrivacyMode;
+  /** `KANKAKU_SYNC_WINDOW_HOURS`. Defaults to 24; falls back to the default for a non-positive or non-numeric value. */
+  windowHours: number;
+  /** `KANKAKU_SYNC_RECORDS`. Defaults to enabled; `"0"` disables uploading `work_records` children. */
+  syncRecords: boolean;
+  /** `KANKAKU_SYNC_AUTO`. Defaults to enabled; `"0"` disables the fire-and-forget session_start/agent_settled sync. */
+  auto: boolean;
+}
+
+const VALID_PROMPT_MODES = new Set<PromptPrivacyMode>(["none", "truncated", "full"]);
+const DEFAULT_SYNC_WINDOW_HOURS = 24;
+
+export function loadSyncConfig(env: NodeJS.ProcessEnv = process.env): SyncConfig {
+  const promptRaw = env["KANKAKU_SYNC_PROMPT"]?.trim();
+  const promptMode: PromptPrivacyMode = promptRaw && VALID_PROMPT_MODES.has(promptRaw as PromptPrivacyMode) ? (promptRaw as PromptPrivacyMode) : "none";
+
+  const windowRaw = env["KANKAKU_SYNC_WINDOW_HOURS"]?.trim();
+  const parsedWindow = windowRaw ? Number(windowRaw) : NaN;
+  const windowHours = Number.isFinite(parsedWindow) && parsedWindow > 0 ? parsedWindow : DEFAULT_SYNC_WINDOW_HOURS;
+
+  const syncRecords = env["KANKAKU_SYNC_RECORDS"]?.trim() !== "0";
+  const auto = env["KANKAKU_SYNC_AUTO"]?.trim() !== "0";
+
+  return { promptMode, windowHours, syncRecords, auto };
 }
 
 export type HubUrlValidation = { ok: true } | { ok: false; reason: string };

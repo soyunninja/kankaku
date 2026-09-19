@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectRole, loadConfig, loadHubEnvCredentials, loadMachine, validateHubUrl } from "../src/config.ts";
+import { detectRole, loadConfig, loadHubEnvCredentials, loadMachine, loadSyncConfig, validateHubUrl } from "../src/config.ts";
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return { ...overrides } as NodeJS.ProcessEnv;
@@ -144,4 +144,35 @@ test("validateHubUrl rejects plain HTTP for a non-local host", () => {
 test("validateHubUrl rejects a URL that does not parse", () => {
   const result = validateHubUrl("not a url");
   assert.equal(result.ok, false);
+});
+
+test("loadSyncConfig defaults to the conservative prompt mode, a 24h window, records and auto-sync enabled", () => {
+  const config = loadSyncConfig(env({}));
+  assert.equal(config.promptMode, "none");
+  assert.equal(config.windowHours, 24);
+  assert.equal(config.syncRecords, true);
+  assert.equal(config.auto, true);
+});
+
+test("loadSyncConfig reads KANKAKU_SYNC_PROMPT, falling back to none for an unrecognised value", () => {
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_PROMPT: "truncated" })).promptMode, "truncated");
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_PROMPT: "full" })).promptMode, "full");
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_PROMPT: "bogus" })).promptMode, "none");
+});
+
+test("loadSyncConfig reads KANKAKU_SYNC_WINDOW_HOURS, falling back to 24 for a non-positive or non-numeric value", () => {
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_WINDOW_HOURS: "6" })).windowHours, 6);
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_WINDOW_HOURS: "0" })).windowHours, 24);
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_WINDOW_HOURS: "-3" })).windowHours, 24);
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_WINDOW_HOURS: "not-a-number" })).windowHours, 24);
+});
+
+test("loadSyncConfig: KANKAKU_SYNC_RECORDS=0 disables work_records upload", () => {
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_RECORDS: "0" })).syncRecords, false);
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_RECORDS: "1" })).syncRecords, true);
+});
+
+test("loadSyncConfig: KANKAKU_SYNC_AUTO=0 disables automatic sync", () => {
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_AUTO: "0" })).auto, false);
+  assert.equal(loadSyncConfig(env({})).auto, true);
 });
