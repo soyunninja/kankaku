@@ -57,6 +57,11 @@ Each line in `worklog.jsonl` is one JSON object:
   "model": "anthropic/claude-opus",
   "client": "acme",
   "sessionName": "billing sprint",
+  "clientId": "pocketbase-record-id",
+  "clientName": "Acme",
+  "projectId": "pocketbase-record-id",
+  "projectName": "Portal",
+  "machine": "laptop",
   "prompt": "first 200 chars of the first prompt",
   "startedAt": "2026-09-10T16:00:00.000Z",
   "settledAt": "2026-09-10T16:04:10.000Z",
@@ -76,6 +81,11 @@ Each line in `worklog.jsonl` is one JSON object:
 `status` is one of `completed`, `aborted` (the last assistant message had
 `stopReason: "aborted"`), or `interrupted` (pi shut down while still
 running).
+
+`clientId`, `clientName`, `projectId`, `projectName` and `machine` are only
+present once a hub is configured (see "Hub (PocketBase)"); every report and
+export written before this feature, or by a user without a hub, is
+unaffected.
 
 ## Task and session views
 
@@ -128,10 +138,25 @@ Arguments are whitespace-separated and order-insensitive:
 - `/kankaku client <name>` — set the billing client for the current pi
   session. `/kankaku client` alone shows the effective client and which
   source it came from; `/kankaku client --clear` removes the session-level
-  override. See "Billing labels" below.
+  override. See "Billing labels" below. When a hub is configured, `<name>`
+  must match a catalog client's code or name (case-insensitive) instead of
+  being free text — see "Hub (PocketBase)".
 - `/kankaku clients` — one line per client (work/waiting/wall time, cost,
   task count) for today. Add `all` for every day. Tasks with no resolved
   client are grouped under `(none)`.
+
+The following are available only when a hub is configured (see "Hub
+(PocketBase)" below):
+
+- `/kankaku target` — show the effective client/project and which source
+  produced it. `/kankaku target pick` runs the picker again (works
+  mid-session; the new target applies to records settled afterwards).
+  `/kankaku target clear` clears the session-level target.
+- `/kankaku catalog refresh` — force a catalog refresh and report the
+  client/project counts.
+- `/kankaku projects` — one line per project (work/waiting/wall time, cost,
+  task count) for today. Add `all` for every day. Tasks with no resolved
+  project are grouped under `(no project)`.
 
 Cost figures are the sum of `usage.cost` as priced by pi's model table
 (per-million-token rates in `models.json`, adjustable with `modelOverrides`).
@@ -166,6 +191,88 @@ orchestrator's) client.
 
 `sessionName` is also attached to every record from `pi.getSessionName()`,
 so reports can show which named session produced a task.
+
+## Hub (PocketBase)
+
+kankaku can optionally resolve the billing client (and a project) **from a
+PocketBase instance** instead of free text, so `cajamar`/`Cajamar`/`cjamar`
+can no longer become three different clients. This is phase 1 of the hub
+integration (catalog + selection only): nothing is uploaded anywhere.
+
+### Configuration
+
+Set `KANKAKU_PB_URL`, `KANKAKU_PB_EMAIL`, `KANKAKU_PB_PASSWORD`, or write
+`~/.kankaku/credentials.json`:
+
+```json
+{ "url": "https://pb.example.com", "email": "bot@example.com", "password": "secret" }
+```
+
+Environment variables take precedence over the file, field by field. The
+hub URL must be HTTPS unless it points at `localhost`/`127.0.0.1`/`::1`; a
+plain-HTTP URL for any other host is refused (surfaced once via a
+notification). The project's own `<KANKAKU_DIR>/config.json` is never read
+for credentials — it is project-local and frequently committed.
+
+`KANKAKU_MACHINE` optionally names this machine (for a multi-machine setup
+later); it defaults to the OS hostname and is attached to every record as
+`machine` once the hub is configured.
+
+**When no hub is configured, kankaku behaves exactly as it does today** —
+this whole feature is additive and every existing behaviour, record shape,
+and report stays unchanged.
+
+### Selection
+
+On `session_start`, for the orchestrator role with a UI available:
+
+1. **Session** — restored from the last `kankaku-target` session entry
+   (including a remembered "skipped" choice, so a reload does not ask
+   again).
+2. **Project config** — `clientId`/`projectId` in `<KANKAKU_DIR>/config.json`.
+3. **`repo_paths`** — the current working directory matched against each
+   project's `repo_paths` (exact match, or a subdirectory of one; the
+   longest match wins).
+4. Otherwise, a picker: `ctx.ui.select` for the client (active clients,
+   sorted by name, plus "— skip —"), then for the project (active projects
+   of that client, plus "(no project)" and "— skip —"). Declining at either
+   step — "— skip —" or dismissing the dialog — cancels the whole pick and
+   is remembered for the session.
+
+After a pick, kankaku asks whether to remember it for this repository; a
+"yes" merges `clientId`/`projectId` into `<KANKAKU_DIR>/config.json`.
+
+An id from any source that no longer resolves to an active, non-"unassigned"
+catalog entry is treated as absent for that source and resolution falls
+through to the next one, exactly like the legacy client precedence.
+
+Once a hub target is active for a run, the legacy `client` label is set to
+the target's client `code` (so every existing report/export keeps grouping
+correctly), and the record additionally carries `clientId`, `clientName`,
+and — when a project is selected — `projectId`/`projectName`. A subagent
+never resolves its own target, exactly like the legacy `client` label — the
+task view exposes it from the orchestrator record only.
+
+The status bar shows `💼 <client> · <project>` (or just `💼 <client>` without
+a project) in place of the legacy client label, both idle and during a run.
+
+### Caching and offline behaviour
+
+The catalog (clients/projects) is cached machine-wide at
+`~/.kankaku/catalog.json` with a 6-hour TTL. On startup: a fresh cache is
+used as-is; a stale cache is used immediately while a refresh happens in
+the background; when there is no cache at all, one refresh is awaited
+(bounded by the hub client's own request timeout, 3s by default) before
+falling back. If the hub is unreachable and there is no cache, kankaku
+notifies once (`kankaku: hub unreachable, using local labels`) and
+continues exactly as it would without a hub configured. `/kankaku catalog
+refresh` forces a refresh on demand.
+
+### Privacy
+
+Nothing is uploaded to the hub in this phase — it is read-only (clients and
+projects only). Records still only ever leave the machine if a later sync
+phase is enabled.
 
 ## Tagged segments
 
@@ -264,6 +371,12 @@ Columns (in this order for CSV; the same fields for JSON):
 - `KANKAKU_CLIENT`: default billing client for this project (see "Billing
   labels" above). Lower precedence than the session-level
   `/kankaku client` override, higher than `<KANKAKU_DIR>/config.json`.
+- `KANKAKU_PB_URL`, `KANKAKU_PB_EMAIL`, `KANKAKU_PB_PASSWORD`: hub
+  (PocketBase) credentials (see "Hub (PocketBase)" above). Take precedence,
+  field by field, over `~/.kankaku/credentials.json`.
+- `KANKAKU_MACHINE`: this machine's display name for the hub, attached to
+  every record as `machine` once the hub is configured. Defaults to the OS
+  hostname.
 
 ## Limitations
 
@@ -278,5 +391,9 @@ Columns (in this order for CSV; the same fields for JSON):
 
 ## Roadmap
 
+- Hub sync (phase 2): push consolidated task rows to PocketBase (outbox
+  pattern, idempotent upsert by task id) so a task/project manager can
+  report AI time and cost per project. The catalog/selection layer in "Hub
+  (PocketBase)" above is phase 1, already shipped.
 - Remote sync service: the `id` and `schema` fields are already in place for
   a future `synced` cursor that uploads records to a remote store.

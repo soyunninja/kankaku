@@ -10,13 +10,16 @@ Read `README.md` for behaviour and the record schema before changing code.
 - `src/domain/` is pure: no I/O, no `Date.now()`, no pi imports. Time comes
   from the injected `Clock` port. `WorkTracker` is the only stateful domain
   object and it must stay deterministic under test.
-- `src/ports/` holds interfaces only (`Clock`, `WorkLog`).
+- `src/ports/` holds interfaces only (`Clock`, `WorkLog`, `Catalog`).
 - `src/adapters/` talks to the outside world: pi events and UI
   (`pi-tracker.ts`, wiring `status-bar.ts` for the footer clock/client
-  status, `session-client.ts` for the session billing-client override, and
-  `kankaku-command.ts` for the `/kankaku` command), the filesystem
-  (`jsonl-work-log.ts`, `lazy-jsonl-work-log.ts`), and report formatting
-  (`report.ts`).
+  status, `session-client.ts` for the session billing-client override,
+  `session-target.ts` and `target-picker.ts` for the hub client/project
+  picker, and `kankaku-command.ts` for the `/kankaku` command), the
+  filesystem (`jsonl-work-log.ts`, `lazy-jsonl-work-log.ts`,
+  `project-config.ts`, `cached-catalog.ts`, `hub-credentials.ts`), the hub
+  HTTP layer (`pocketbase-client.ts`, generic; `pocketbase-catalog.ts`,
+  maps records to domain types), and report formatting (`report.ts`).
 - `src/extension.ts` only wires config, tracker, log and adapter together.
   Do not put logic there.
 - Dependencies point inwards: adapters import domain and ports; domain
@@ -49,6 +52,18 @@ Read `README.md` for behaviour and the record schema before changing code.
   project `config.json`, via the pure `domain/client-label.ts#resolveClient`;
   a subagent record never carries its own `client` — only the task view
   exposes it, inherited from the orchestrator record. See README "Billing labels".
+- Hub identity (`clientId`/`projectId`) is an **id, not a name** — never
+  free-text when the hub is configured. Resolution is session > project
+  `config.json` > catalog `repo_paths` match for the cwd > none, via the
+  pure `domain/work-target.ts#resolveWorkTarget`; an id that no longer
+  resolves to an active, non-"unassigned" catalog entry falls through to
+  the next source, exactly like `client`. A subagent never resolves its own
+  target — only the task view exposes `clientId`/`clientName`/`projectId`/
+  `projectName`, inherited from the orchestrator record. When a hub target
+  is active, the legacy `client` label is set to the target's `code` (kept
+  valid against `CLIENT_PATTERN`, or omitted rather than breaking the
+  record) so every existing report/export keeps grouping correctly. See
+  README "Hub (PocketBase)".
 
 ## Code conventions
 
