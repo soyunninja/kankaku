@@ -5,8 +5,10 @@ import { isValidClient } from "../domain/client-label.ts";
 import { exportRows, toCsv, toJson } from "../domain/export.ts";
 import { buildSessions, buildTasks } from "../domain/task-view.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
+import type { SyncState } from "../domain/sync-plan.ts";
 import type { Catalog } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
+import type { SyncSummary } from "./sync-runner.ts";
 import {
   formatClients,
   formatProjects,
@@ -38,9 +40,18 @@ export function notifyError(ctx: ExtensionContext, error: unknown): void {
 
 const COMMAND_TOKENS = ["all", "tasks", "sessions", "client", "clients", "export"];
 /** Only offered when the hub is configured, so completions are unchanged for users without one. */
-const HUB_COMMAND_TOKENS = ["target", "projects", "catalog"];
+const HUB_COMMAND_TOKENS = ["target", "projects", "catalog", "sync", "backfill"];
 const TARGET_TOKENS = ["pick", "clear"];
 const CATALOG_TOKENS = ["refresh"];
+const SYNC_TOKENS = ["all", "status"];
+
+/** Drives `/kankaku sync [all|status]` and `/kankaku backfill`. Present only when the hub is configured. */
+export interface SyncCommandDeps {
+  /** Run one sync pass; `full: true` re-evaluates every task (`/kankaku sync all`, `/kankaku backfill`). Never throws. */
+  run: (options?: { full?: boolean }) => Promise<SyncSummary>;
+  /** `/kankaku sync status`: the persisted state plus a locally-computed pending count. No network. */
+  status: () => { state: SyncState | undefined; pending: number };
+}
 
 export interface KankakuCommandDeps {
   log: WorkLog;
@@ -61,6 +72,8 @@ export interface KankakuCommandDeps {
   sessionTarget?: SessionTarget;
   /** Present only when the hub is configured. Drives `/kankaku catalog refresh` and the hub-aware `/kankaku client <name>`. */
   catalog?: Catalog;
+  /** Present only when the hub is configured. Drives `/kankaku sync [all|status]` and `/kankaku backfill`. */
+  sync?: SyncCommandDeps;
 }
 
 export interface KankakuCommand {
@@ -239,6 +252,77 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     notifyError(ctx, new Error(`unknown catalog subcommand: ${rest.join(" ")}`));
   }
 
+  /** Render a {@link SyncSummary} as report lines: counts, any stop reason, the new watermark, and the unassigned breakdown. */
+  function formatSyncSummary(summary: SyncSummary): string[] {
+    const lines = [`uploaded ${summary.uploaded}, updated ${summary.updated}, skipped ${summary.skipped}, failed ${summary.failed.length}`];
+
+    if (summary.locked) lines.push("another sync is already in progress; nothing was attempted");
+    if (summary.error) lines.push(`stopped early: ${summary.error}`);
+    if (summary.syncedThrough) lines.push(`synced through ${summary.syncedThrough}`);
+
+    const unassignedEntries = Object.entries(summary.unassigned).sort(([a], [b]) => a.localeCompare(b));
+    if (unassignedEntries.length > 0) {
+      lines.push("unassigned (Sin determinar):");
+      for (const [label, count] of unassignedEntries) lines.push(`  ${label}: ${count}`);
+    }
+
+    if (summary.failed.length > 0) {
+      lines.push("failed:");
+      for (const entry of summary.failed) lines.push(`  ${entry.id}: ${entry.reason}`);
+    }
+
+    return lines;
+  }
+
+  /** Handle `/kankaku sync [all|status]`; `rest` excludes the leading `sync` token. */
+  async function handleSyncCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+    const sync = deps.sync;
+    if (!sync) {
+      notifyError(ctx, new Error("hub is not configured"));
+      return;
+    }
+
+    if (rest.length === 1 && rest[0] === "status") {
+      const { state, pending } = sync.status();
+      const lines = [state?.syncedThrough ? `synced through ${state.syncedThrough}` : "never synced", `pending: ${pending}`];
+      if (state?.lastError) lines.push(`last error: ${state.lastError.message} (at ${state.lastError.at})`);
+      showReport(ctx, { title: "sync status", lines });
+      return;
+    }
+
+    if (rest.length > 0 && !(rest.length === 1 && rest[0] === "all")) {
+      notifyError(ctx, new Error(`unknown sync subcommand: ${rest.join(" ")}`));
+      return;
+    }
+
+    const full = rest[0] === "all";
+    const summary = await sync.run({ full });
+    showReport(ctx, { title: full ? "sync (all)" : "sync", lines: formatSyncSummary(summary) });
+  }
+
+  /** Handle `/kankaku backfill`: a full sync, reported as the "Sin determinar" breakdown that needs reassigning in the web. */
+  async function handleBackfillCommand(ctx: ExtensionContext): Promise<void> {
+    const sync = deps.sync;
+    if (!sync) {
+      notifyError(ctx, new Error("hub is not configured"));
+      return;
+    }
+
+    const summary = await sync.run({ full: true });
+    const unassignedEntries = Object.entries(summary.unassigned).sort(([a], [b]) => a.localeCompare(b));
+
+    const lines =
+      unassignedEntries.length > 0
+        ? [
+            ...unassignedEntries.map(([label, count]) => `${label}: ${count} task(s) -> Sin determinar`),
+            "reassign these in the hub web app's unassigned queue",
+          ]
+        : ["no unassigned tasks"];
+
+    if (summary.error) lines.push(`stopped early: ${summary.error}`);
+    showReport(ctx, { title: "backfill", lines });
+  }
+
   /** Handle `/kankaku export [csv|json] [all]`; `rest` excludes the leading `export` token. Default format is csv. */
   function handleExportCommand(rest: string[], ctx: ExtensionContext): void {
     if (!deps.writeExportFile) {
@@ -267,7 +351,9 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       "'export [csv|json] [all]' to write today's (or every) task as a file. " +
       "When a hub (PocketBase) is configured: 'target' to show the effective client/project and its source, " +
       "'target pick' to run the picker again, 'target clear' to clear the session target, " +
-      "'catalog refresh' to force a catalog refresh, 'projects' for per-project totals today ('projects all' for every day). " +
+      "'catalog refresh' to force a catalog refresh, 'projects' for per-project totals today ('projects all' for every day), " +
+      "'sync' to push pending tasks to the hub ('sync all' for a full re-evaluation, 'sync status' for the watermark/pending count/last error), " +
+      "'backfill' to run a full sync and report how many tasks went to Sin determinar, grouped by their old label. " +
       "With a hub configured, 'client <name>' instead validates against the catalog (code or name) and sets the target.",
     getArgumentCompletions: (argumentPrefix: string): AutocompleteItem[] => {
       const clientMatch = /^client\s+(\S*)$/.exec(argumentPrefix);
@@ -286,6 +372,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       if (catalogMatch) {
         const prefix = catalogMatch[1] ?? "";
         return CATALOG_TOKENS.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
+      }
+      const syncMatch = /^sync\s+(\S*)$/.exec(argumentPrefix);
+      if (syncMatch) {
+        const prefix = syncMatch[1] ?? "";
+        return SYNC_TOKENS.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
       }
       const tokens = deps.sessionTarget ? [...COMMAND_TOKENS, ...HUB_COMMAND_TOKENS] : COMMAND_TOKENS;
       return tokens.filter((value) => value.startsWith(argumentPrefix)).map((value) => ({ value, label: value }));
@@ -311,6 +402,16 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
 
         if (tokens[0] === "catalog") {
           await handleCatalogCommand(tokens.slice(1), ctx);
+          return;
+        }
+
+        if (tokens[0] === "sync") {
+          await handleSyncCommand(tokens.slice(1), ctx);
+          return;
+        }
+
+        if (tokens[0] === "backfill") {
+          await handleBackfillCommand(ctx);
           return;
         }
 

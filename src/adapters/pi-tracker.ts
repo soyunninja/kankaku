@@ -10,6 +10,7 @@ import { createSessionClient } from "./session-client.ts";
 import type { SessionTarget } from "./session-target.ts";
 import { createStatusBar } from "./status-bar.ts";
 import { notifyError, registerKankakuCommand } from "./kankaku-command.ts";
+import type { SyncCommandDeps } from "./kankaku-command.ts";
 
 export type { KankakuReportData } from "./kankaku-command.ts";
 
@@ -54,6 +55,19 @@ export interface PiTrackerDeps {
   catalog?: Catalog;
   /** A configured-but-rejected hub URL (see `adapters/hub-credentials.ts`); surfaced once via `ctx.ui.notify` on the first `session_start`. */
   hubConfigError?: string;
+  /** Present only when the hub is configured; forwarded to `/kankaku sync [all|status]` and `/kankaku backfill`. */
+  sync?: SyncCommandDeps;
+  /**
+   * `KANKAKU_SYNC_AUTO` (default enabled): when `true` and `sync` is
+   * present, fire-and-forget a sync on `session_start` (orchestrator role
+   * only, after crash recovery) and again after `agent_settled`. Both go
+   * through `sync.run`, which callers are expected to wrap with a
+   * single-flight guard (see `adapters/sync-runner.ts#singleFlight`) so
+   * these two triggers never race. Never awaited; errors are swallowed
+   * (`sync.run` never throws) and surfaced at most once per session via a
+   * quiet notification, never on success.
+   */
+  autoSyncEnabled?: boolean;
 }
 
 /** Default `isAlive`: probe with signal 0 — no signal is sent, only existence/permission is checked. */
@@ -127,7 +141,27 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     writeExportFile: deps.writeExportFile,
     sessionTarget: deps.sessionTarget,
     catalog: deps.catalog,
+    sync: deps.sync,
   });
+
+  /** At most one quiet auto-sync failure notification per session; never notified on success. */
+  let autoSyncErrorNotified = false;
+
+  /** Fire-and-forget a sync (orchestrator role, `sync` configured, auto-sync enabled). Never awaited, never throws. */
+  function triggerAutoSync(ctx: ExtensionContext): void {
+    if (!deps.sync || role !== "orchestrator" || deps.autoSyncEnabled === false) return;
+    void deps.sync
+      .run()
+      .then((summary) => {
+        if (!summary.error || autoSyncErrorNotified) return;
+        autoSyncErrorNotified = true;
+        if (ctx.hasUI) ctx.ui.notify(`kankaku: sync failed: ${summary.error}`, "warning");
+      })
+      .catch(() => {
+        // sync.run is expected to never throw (see adapters/sync-runner.ts);
+        // this catch only guards against a misbehaving implementation.
+      });
+  }
 
   /** `log.append` plus cache invalidation, so every append this process makes keeps the completion cache correct. */
   function appendRecord(record: WorkRecord): void {
@@ -266,6 +300,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
         statusBar.stop(ctx);
         sessionClient.endRun();
         deps.sessionTarget?.endRun();
+        triggerAutoSync(ctx);
       }
     }),
   );
@@ -316,6 +351,10 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
         await deps.sessionTarget.ensurePicked(pi, ctx);
         statusBar.showIdle(ctx);
       }
+
+      // Fire-and-forget, after recovery so a just-recovered interrupted
+      // record is included. See README "Hub (PocketBase)" sync section.
+      triggerAutoSync(ctx);
     }),
   );
 }

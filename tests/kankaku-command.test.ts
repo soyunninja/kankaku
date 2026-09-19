@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerKankakuCommand } from "../src/adapters/kankaku-command.ts";
+import type { SyncCommandDeps } from "../src/adapters/kankaku-command.ts";
+import type { SyncState } from "../src/domain/sync-plan.ts";
+import type { SyncSummary } from "../src/adapters/sync-runner.ts";
 import type { SessionClient } from "../src/adapters/session-client.ts";
 import { createSessionTarget } from "../src/adapters/session-target.ts";
 import type { ClientSourceName } from "../src/domain/client-label.ts";
@@ -262,7 +265,7 @@ test("getArgumentCompletions includes target/projects/catalog only when the hub 
   const tokens = (await pi.commands.get("kankaku")!.getArgumentCompletions!("")) as Array<{ value: string }>;
   assert.deepEqual(
     tokens.map((t) => t.value).sort(),
-    ["all", "catalog", "client", "clients", "export", "projects", "sessions", "target", "tasks"],
+    ["all", "backfill", "catalog", "client", "clients", "export", "projects", "sessions", "sync", "target", "tasks"],
   );
 });
 
@@ -483,4 +486,197 @@ test("'client <name>' notifies an error listing valid codes when the hub is conf
 
   assert.match(notified[0]?.message ?? "", /unknown client: nope/);
   assert.match(notified[0]?.message ?? "", /acme, globex/);
+});
+
+function emptySyncSummary(overrides: Partial<SyncSummary> = {}): SyncSummary {
+  return { uploaded: 0, updated: 0, skipped: 0, failed: [], unassigned: {}, syncedThrough: undefined, durationMs: 1, ...overrides };
+}
+
+class FakeSync implements SyncCommandDeps {
+  runCalls: Array<{ full?: boolean } | undefined> = [];
+  runResult: SyncSummary = emptySyncSummary();
+  statusResult: { state: SyncState | undefined; pending: number } = { state: undefined, pending: 0 };
+
+  run(options?: { full?: boolean }): Promise<SyncSummary> {
+    this.runCalls.push(options);
+    return Promise.resolve(this.runResult);
+  }
+  status() {
+    return this.statusResult;
+  }
+}
+
+test("'sync' notifies an error when the hub is not configured", async () => {
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler("sync", makeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }));
+
+  assert.match(notified[0]?.message ?? "", /hub is not configured/);
+});
+
+test("'sync' with no args runs an incremental sync and reports the summary", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+  sync.runResult = emptySyncSummary({ uploaded: 2, updated: 1, skipped: 3 });
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync,
+  });
+
+  await pi.commands.get("kankaku")!.handler("sync", makeCtx());
+
+  assert.deepEqual(sync.runCalls, [{ full: false }]);
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.equal(data.title, "sync");
+  assert.match(data.lines[0]!, /uploaded 2, updated 1, skipped 3, failed 0/);
+});
+
+test("'sync all' runs a full sync", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync,
+  });
+
+  await pi.commands.get("kankaku")!.handler("sync all", makeCtx());
+
+  assert.deepEqual(sync.runCalls, [{ full: true }]);
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.equal(data.title, "sync (all)");
+});
+
+test("'sync status' reports the watermark, pending count and last error without running a sync", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+  sync.statusResult = {
+    state: { target: "https://pb.example.com", syncedThrough: "2026-09-20T00:00:00.000Z", hashes: {}, lastError: { message: "boom", at: "2026-09-20T01:00:00.000Z" } },
+    pending: 4,
+  };
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync,
+  });
+
+  await pi.commands.get("kankaku")!.handler("sync status", makeCtx());
+
+  assert.equal(sync.runCalls.length, 0);
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.equal(data.title, "sync status");
+  assert.match(data.lines.join("\n"), /synced through 2026-09-20T00:00:00\.000Z/);
+  assert.match(data.lines.join("\n"), /pending: 4/);
+  assert.match(data.lines.join("\n"), /last error: boom/);
+});
+
+test("'sync' reports a stopped-early error and does not crash the command", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+  sync.runResult = emptySyncSummary({ uploaded: 1, error: "network down" });
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync,
+  });
+
+  await pi.commands.get("kankaku")!.handler("sync", makeCtx());
+
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.match(data.lines.join("\n"), /stopped early: network down/);
+});
+
+test("'backfill' runs a full sync and reports tasks routed to Sin determinar, grouped by legacy label", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+  sync.runResult = emptySyncSummary({ uploaded: 3, unassigned: { cajamar: 2, "otra-empresa": 1 } });
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync,
+  });
+
+  await pi.commands.get("kankaku")!.handler("backfill", makeCtx());
+
+  assert.deepEqual(sync.runCalls, [{ full: true }]);
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.equal(data.title, "backfill");
+  assert.match(data.lines.join("\n"), /cajamar: 2 task\(s\)/);
+  assert.match(data.lines.join("\n"), /otra-empresa: 1 task\(s\)/);
+  assert.match(data.lines.join("\n"), /reassign these in the hub web app/);
+});
+
+test("'backfill' reports 'no unassigned tasks' when nothing was routed to Sin determinar", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync,
+  });
+
+  await pi.commands.get("kankaku")!.handler("backfill", makeCtx());
+
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.deepEqual(data.lines, ["no unassigned tasks"]);
+});
+
+test("getArgumentCompletions includes sync/backfill only when the hub is configured", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sessionTarget: createSessionTarget({
+      role: "orchestrator",
+      catalog: new FakeCatalog(),
+      resolveProjectConfigIds: () => undefined,
+      persistProjectConfig: () => {},
+    }),
+    sync,
+  });
+
+  const completions = pi.commands.get("kankaku")!.getArgumentCompletions!("") as Array<{ value: string }>;
+  const values = completions.map((c) => c.value);
+  assert.ok(values.includes("sync"));
+  assert.ok(values.includes("backfill"));
+});
+
+test("getArgumentCompletions offers 'all'/'status' after 'sync '", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync: new FakeSync(),
+  });
+
+  const completions = pi.commands.get("kankaku")!.getArgumentCompletions!("sync ") as Array<{ value: string }>;
+  assert.deepEqual(
+    completions.map((c) => c.value),
+    ["all", "status"],
+  );
 });

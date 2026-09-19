@@ -5,6 +5,7 @@ const CLOCK = "\u{1F552}\uFE0F";
 const CLIENT = "\u{1F4BC}\uFE0F";
 import { createPiTracker } from "../src/adapters/pi-tracker.ts";
 import { createSessionTarget } from "../src/adapters/session-target.ts";
+import type { SyncCommandDeps } from "../src/adapters/kankaku-command.ts";
 import { localDay } from "../src/domain/day.ts";
 import { WorkTracker } from "../src/domain/work-tracker.ts";
 import type { Clock } from "../src/ports/clock.ts";
@@ -12,6 +13,7 @@ import type { Catalog, CatalogSnapshot } from "../src/ports/catalog.ts";
 import type { InflightStore } from "../src/ports/inflight-store.ts";
 import type { WorkLog } from "../src/ports/work-log.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
+import type { SyncSummary } from "../src/adapters/sync-runner.ts";
 
 class FakeCatalog implements Catalog {
   snapshot: CatalogSnapshot | undefined;
@@ -1435,4 +1437,183 @@ test("session_start shows the picker when the hub is configured and nothing reso
 
   assert.equal(sessionTarget.effectiveTarget()?.clientId, "c-acme");
   assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", `${CLIENT} Acme`]);
+});
+
+class FakeSync implements SyncCommandDeps {
+  runCalls = 0;
+  runResult: SyncSummary = { uploaded: 0, updated: 0, skipped: 0, failed: [], unassigned: {}, syncedThrough: undefined, durationMs: 1 };
+
+  run(): Promise<SyncSummary> {
+    this.runCalls += 1;
+    return Promise.resolve(this.runResult);
+  }
+  status() {
+    return { state: undefined, pending: 0 };
+  }
+}
+
+/** Flush pending microtasks so a fire-and-forget `.then()` chain (triggerAutoSync) has a chance to run. */
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+test("auto-sync: agent_settled fires sync.run() for the orchestrator role when configured and enabled", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sync,
+  });
+
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  await flushMicrotasks();
+
+  assert.equal(sync.runCalls, 1);
+});
+
+test("auto-sync: session_start fires sync.run() after crash recovery", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sync,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await flushMicrotasks();
+
+  assert.equal(sync.runCalls, 1);
+});
+
+test("auto-sync: a subagent process never triggers a sync", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "subagent",
+    pid: 2,
+    parentPid: 1,
+    sync,
+  });
+
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await flushMicrotasks();
+
+  assert.equal(sync.runCalls, 0);
+});
+
+test("auto-sync: KANKAKU_SYNC_AUTO=0 (autoSyncEnabled: false) disables both triggers", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sync,
+    autoSyncEnabled: false,
+  });
+
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await flushMicrotasks();
+
+  assert.equal(sync.runCalls, 0);
+});
+
+test("auto-sync: without a hub configured (no sync deps), nothing is triggered and nothing throws", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+  });
+
+  await assert.doesNotReject(() => pi.fire("agent_settled", { type: "agent_settled" }, ctx));
+});
+
+test("auto-sync never notifies on success", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sync,
+  });
+
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  await flushMicrotasks();
+
+  assert.equal(notified.length, 0);
+});
+
+test("auto-sync notifies at most once per session on failure", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+  const sync = new FakeSync();
+  sync.runResult = { uploaded: 0, updated: 0, skipped: 0, failed: [], unassigned: {}, syncedThrough: undefined, durationMs: 1, error: "network down" };
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sync,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await flushMicrotasks();
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  await flushMicrotasks();
+
+  assert.equal(sync.runCalls, 2);
+  assert.equal(notified.length, 1);
+  assert.match(notified[0]!.message, /sync failed: network down/);
 });

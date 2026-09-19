@@ -1,7 +1,7 @@
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { detectRole, loadConfig, loadMachine } from "./config.ts";
+import { detectRole, loadConfig, loadMachine, loadSyncConfig } from "./config.ts";
 import { WorkTracker } from "./domain/work-tracker.ts";
 import { LazyJsonlWorkLog } from "./adapters/lazy-jsonl-work-log.ts";
 import { LazyFileInflightStore } from "./adapters/lazy-file-inflight-store.ts";
@@ -13,8 +13,13 @@ import { PocketBaseClient } from "./adapters/pocketbase-client.ts";
 import { createPocketBaseCatalogFetcher } from "./adapters/pocketbase-catalog.ts";
 import { CachedCatalog } from "./adapters/cached-catalog.ts";
 import { createSessionTarget } from "./adapters/session-target.ts";
+import { resolveKankakuDir } from "./adapters/kankaku-dir.ts";
+import { SyncStateStore } from "./adapters/sync-state-store.ts";
+import { PocketBaseSink } from "./adapters/pocketbase-sink.ts";
+import { computeSyncStatus, runSync, singleFlight } from "./adapters/sync-runner.ts";
 import type { Catalog } from "./ports/catalog.ts";
 import type { SessionTarget } from "./adapters/session-target.ts";
+import type { SyncCommandDeps } from "./adapters/kankaku-command.ts";
 
 export default function kankaku(pi: ExtensionAPI): void {
   const config = loadConfig();
@@ -40,17 +45,20 @@ export default function kankaku(pi: ExtensionAPI): void {
   let sessionTarget: SessionTarget | undefined;
   let machine: string | undefined;
   let hubConfigError: string | undefined;
+  let sync: SyncCommandDeps | undefined;
+  let autoSyncEnabled: boolean | undefined;
 
   const hub = resolveHubCredentials({ env: process.env, homeDir: homedir() });
   hubConfigError = hub.invalidReason;
 
   if (hub.credentials) {
-    const client = new PocketBaseClient({ url: hub.credentials.url, email: hub.credentials.email, password: hub.credentials.password });
+    const credentials = hub.credentials;
+    const client = new PocketBaseClient({ url: credentials.url, email: credentials.email, password: credentials.password });
     catalog = new CachedCatalog({
       // Machine-wide cache: several projects on the same machine share one
       // catalog fetch, and it survives across projects.
       filePath: join(homedir(), ".kankaku", "catalog.json"),
-      url: hub.credentials.url,
+      url: credentials.url,
       clock: { now: () => Date.now() },
       fetchCatalog: createPocketBaseCatalogFetcher(client),
     });
@@ -64,6 +72,39 @@ export default function kankaku(pi: ExtensionAPI): void {
     });
 
     machine = loadMachine(process.env, () => hostname());
+
+    // Sync (Phase 2): pushes consolidated task rows to the hub. See README
+    // "Hub (PocketBase)" sync section. `worklog.jsonl` and the crash-recovery
+    // checkpoints above are entirely unaffected by any of this.
+    const syncConfig = loadSyncConfig(process.env);
+    const syncStateStore = new SyncStateStore({ dir: resolveKankakuDir(config.dir, process.cwd()), pid: process.pid });
+    const catalogRef = catalog;
+    const machineName = machine;
+
+    const runOnce = (options?: { full?: boolean }) => {
+      const snapshot = catalogRef.read();
+      const sink = new PocketBaseSink({
+        client,
+        clients: snapshot?.clients ?? [],
+        projects: snapshot?.projects ?? [],
+        machine: machineName,
+        promptMode: syncConfig.promptMode,
+        syncRecords: syncConfig.syncRecords,
+      });
+      return runSync(
+        { log, sink, stateStore: syncStateStore, clock: { now: () => Date.now() }, target: credentials.url, windowHours: syncConfig.windowHours },
+        options,
+      );
+    };
+
+    sync = {
+      // Single-flight: the same wrapped function backs the manual /kankaku
+      // sync command and both automatic triggers (pi-tracker.ts), so they
+      // never race within this process.
+      run: singleFlight(runOnce),
+      status: () => computeSyncStatus(log, syncStateStore, credentials.url, syncConfig.windowHours),
+    };
+    autoSyncEnabled = syncConfig.auto;
   }
 
   createPiTracker(pi, {
@@ -80,5 +121,7 @@ export default function kankaku(pi: ExtensionAPI): void {
     ...(catalog !== undefined ? { catalog } : {}),
     ...(machine !== undefined ? { machine } : {}),
     ...(hubConfigError !== undefined ? { hubConfigError } : {}),
+    ...(sync !== undefined ? { sync } : {}),
+    ...(autoSyncEnabled !== undefined ? { autoSyncEnabled } : {}),
   });
 }
