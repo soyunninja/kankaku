@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectRole, loadConfig } from "../src/config.ts";
+import { detectRole, loadConfig, loadHubEnvCredentials, loadMachine, validateHubUrl } from "../src/config.ts";
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return { ...overrides } as NodeJS.ProcessEnv;
@@ -105,4 +105,43 @@ test("detectRole reports subagent when GENTLE_PI_AGENTS_CHILD=1", () => {
 test("detectRole defaults to orchestrator", () => {
   assert.equal(detectRole(env({})), "orchestrator");
   assert.equal(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "0" })), "orchestrator");
+});
+
+test("loadHubEnvCredentials reads KANKAKU_PB_URL/EMAIL/PASSWORD", () => {
+  const creds = loadHubEnvCredentials(
+    env({ KANKAKU_PB_URL: "https://pb.example.com", KANKAKU_PB_EMAIL: "bot@example.com", KANKAKU_PB_PASSWORD: "secret" }),
+  );
+  assert.deepEqual(creds, { url: "https://pb.example.com", email: "bot@example.com", password: "secret" });
+});
+
+test("loadHubEnvCredentials leaves fields undefined when unset or blank", () => {
+  const creds = loadHubEnvCredentials(env({ KANKAKU_PB_URL: "  " }));
+  assert.deepEqual(creds, { url: undefined, email: undefined, password: undefined });
+});
+
+test("loadMachine reads KANKAKU_MACHINE, defaulting to the injected hostname", () => {
+  assert.equal(loadMachine(env({ KANKAKU_MACHINE: "my-laptop" }), () => "real-hostname"), "my-laptop");
+  assert.equal(loadMachine(env({}), () => "real-hostname"), "real-hostname");
+  assert.equal(loadMachine(env({ KANKAKU_MACHINE: "  " }), () => "real-hostname"), "real-hostname");
+});
+
+test("validateHubUrl accepts https URLs", () => {
+  assert.deepEqual(validateHubUrl("https://pb.example.com"), { ok: true });
+});
+
+test("validateHubUrl accepts plain HTTP only for localhost/127.0.0.1/::1", () => {
+  assert.deepEqual(validateHubUrl("http://localhost:8090"), { ok: true });
+  assert.deepEqual(validateHubUrl("http://127.0.0.1:8090"), { ok: true });
+  assert.deepEqual(validateHubUrl("http://[::1]:8090"), { ok: true });
+});
+
+test("validateHubUrl rejects plain HTTP for a non-local host", () => {
+  const result = validateHubUrl("http://pb.example.com");
+  assert.equal(result.ok, false);
+  assert.match((result as { ok: false; reason: string }).reason, /refusing non-HTTPS/);
+});
+
+test("validateHubUrl rejects a URL that does not parse", () => {
+  const result = validateHubUrl("not a url");
+  assert.equal(result.ok, false);
 });

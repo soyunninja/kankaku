@@ -96,3 +96,50 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): KankakuConfig 
 export function detectRole(env: NodeJS.ProcessEnv = process.env): "orchestrator" | "subagent" {
   return env["GENTLE_PI_AGENTS_CHILD"] === "1" ? "subagent" : "orchestrator";
 }
+
+/** Hub (PocketBase) credentials read from the environment; any field can be absent. */
+export interface HubEnvCredentials {
+  url?: string;
+  email?: string;
+  password?: string;
+}
+
+/** Read `KANKAKU_PB_URL`/`KANKAKU_PB_EMAIL`/`KANKAKU_PB_PASSWORD`. Empty/whitespace-only values are treated as absent. */
+export function loadHubEnvCredentials(env: NodeJS.ProcessEnv = process.env): HubEnvCredentials {
+  return {
+    url: env["KANKAKU_PB_URL"]?.trim() || undefined,
+    email: env["KANKAKU_PB_EMAIL"]?.trim() || undefined,
+    password: env["KANKAKU_PB_PASSWORD"]?.trim() || undefined,
+  };
+}
+
+/** `KANKAKU_MACHINE`, or `hostname()` when unset/blank. Injected so this stays testable without touching `os.hostname`. */
+export function loadMachine(env: NodeJS.ProcessEnv, hostname: () => string): string {
+  return env["KANKAKU_MACHINE"]?.trim() || hostname();
+}
+
+/** Hosts allowed to use a plain-HTTP hub URL. */
+function isLocalHost(hostname: string): boolean {
+  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
+}
+
+export type HubUrlValidation = { ok: true } | { ok: false; reason: string };
+
+/**
+ * A hub URL must be HTTPS, unless it points at localhost/127.0.0.1/::1 (a
+ * local PocketBase instance for development). Also rejects a URL that does
+ * not parse at all.
+ */
+export function validateHubUrl(url: string): HubUrlValidation {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { ok: false, reason: `kankaku: invalid hub URL: ${url}` };
+  }
+
+  if (parsed.protocol === "https:") return { ok: true };
+  if (parsed.protocol === "http:" && isLocalHost(parsed.hostname)) return { ok: true };
+
+  return { ok: false, reason: `kankaku: refusing non-HTTPS hub URL (only localhost is allowed over plain HTTP): ${url}` };
+}
