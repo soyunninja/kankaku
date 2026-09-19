@@ -286,3 +286,41 @@ test("buildTasks does not inherit client from a subagent child, only from the or
   assert.equal(tasks[0]!.client, "acme");
   assert.equal(tasks[0]!.subagents[0]?.client, undefined);
 });
+
+test("buildTasks exposes the orchestrator's hub clientId/clientName/projectId/projectName on the task", () => {
+  const parent = makeRecord({
+    id: "p1",
+    pid: 100,
+    parentPid: 1,
+    clientId: "c-acme",
+    clientName: "Acme",
+    projectId: "p-portal",
+    projectName: "Portal",
+  });
+
+  const tasks = buildTasks([parent]);
+
+  assert.equal(tasks[0]!.clientId, "c-acme");
+  assert.equal(tasks[0]!.clientName, "Acme");
+  assert.equal(tasks[0]!.projectId, "p-portal");
+  assert.equal(tasks[0]!.projectName, "Portal");
+});
+
+test("buildTasks leaves hub fields undefined when the orchestrator has none, and does not inherit them from a subagent child", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+  const child = makeRecord({
+    id: "c1",
+    role: "subagent",
+    pid: 200,
+    parentPid: 100,
+    startedAt: iso(2),
+    settledAt: iso(5),
+    clientId: "c-acme",
+    clientName: "Acme",
+  });
+
+  const tasks = buildTasks([parent, child]);
+
+  assert.equal(tasks[0]!.clientId, undefined);
+  assert.equal("clientId" in tasks[0]!, false);
+});

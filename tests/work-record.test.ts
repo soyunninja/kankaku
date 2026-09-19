@@ -81,6 +81,29 @@ test("isWorkRecord rejects a record with a non-string client or sessionName", ()
   assert.equal(isWorkRecord({ ...makeRecord(), sessionName: 42 }), false);
 });
 
+test("isWorkRecord accepts a record with string hub metadata fields", () => {
+  const record = makeRecord({
+    clientId: "c-acme",
+    clientName: "Acme",
+    projectId: "p-portal",
+    projectName: "Portal",
+    machine: "laptop",
+  });
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord accepts a record without any hub metadata fields", () => {
+  assert.equal(isWorkRecord(makeRecord()), true);
+});
+
+test("isWorkRecord rejects a record with a non-string hub metadata field", () => {
+  assert.equal(isWorkRecord({ ...makeRecord(), clientId: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), clientName: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), projectId: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), projectName: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), machine: 42 }), false);
+});
+
 test("finiteOrZero returns the number for finite values", () => {
   assert.equal(finiteOrZero(5), 5);
   assert.equal(finiteOrZero(0), 0);

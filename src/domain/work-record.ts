@@ -63,6 +63,16 @@ export interface WorkRecordMetadata {
   client?: string;
   /** pi's session display name at the time this record settled. */
   sessionName?: string;
+  /** Hub (PocketBase) client record id, when a hub target is active for this run. See `domain/work-target.ts`. */
+  clientId?: string;
+  /** Hub client display name, denormalised alongside `clientId` for readability. */
+  clientName?: string;
+  /** Hub (PocketBase) project record id, when the active hub target has a project. */
+  projectId?: string;
+  /** Hub project display name, denormalised alongside `projectId`. */
+  projectName?: string;
+  /** This machine's hostname, or `KANKAKU_MACHINE`, set only when the hub is configured. */
+  machine?: string;
 }
 
 export type WorkRecord = WorkRecordCore & WorkRecordMetadata;
@@ -115,6 +125,11 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     record["usage"] !== null &&
     STATUSES.has(record["status"] as WorkStatus) &&
     (record["client"] === undefined || typeof record["client"] === "string") &&
-    (record["sessionName"] === undefined || typeof record["sessionName"] === "string")
+    (record["sessionName"] === undefined || typeof record["sessionName"] === "string") &&
+    (record["clientId"] === undefined || typeof record["clientId"] === "string") &&
+    (record["clientName"] === undefined || typeof record["clientName"] === "string") &&
+    (record["projectId"] === undefined || typeof record["projectId"] === "string") &&
+    (record["projectName"] === undefined || typeof record["projectName"] === "string") &&
+    (record["machine"] === undefined || typeof record["machine"] === "string")
   );
 }

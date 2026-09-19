@@ -26,6 +26,14 @@ export interface TaskView {
   client?: string;
   /** pi's session display name, from the orchestrator record. */
   sessionName?: string;
+  /** Hub client record id, from the orchestrator record only. See `domain/work-target.ts`. */
+  clientId?: string;
+  /** Hub client display name, from the orchestrator record only. */
+  clientName?: string;
+  /** Hub project record id, from the orchestrator record only. */
+  projectId?: string;
+  /** Hub project display name, from the orchestrator record only. */
+  projectName?: string;
   /**
    * Per-tag total milliseconds across the orchestrator and every subagent,
    * summed rather than unioned: unlike `wallMs`, segment intervals are not
@@ -154,6 +162,10 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
     ...(orchestrator.sessionId !== undefined ? { sessionId: orchestrator.sessionId } : {}),
     ...(orchestrator.client !== undefined ? { client: orchestrator.client } : {}),
     ...(orchestrator.sessionName !== undefined ? { sessionName: orchestrator.sessionName } : {}),
+    ...(orchestrator.clientId !== undefined ? { clientId: orchestrator.clientId } : {}),
+    ...(orchestrator.clientName !== undefined ? { clientName: orchestrator.clientName } : {}),
+    ...(orchestrator.projectId !== undefined ? { projectId: orchestrator.projectId } : {}),
+    ...(orchestrator.projectName !== undefined ? { projectName: orchestrator.projectName } : {}),
     project: orchestrator.project,
     prompt: orchestrator.prompt,
     startedAt: orchestrator.startedAt,
