@@ -201,9 +201,11 @@ it.
 
 ## Crash recovery
 
-While a run is open, each pi process periodically writes a checkpoint of
-its current record to `<KANKAKU_DIR>/inflight/<pid>.json` (after every
-`turn_end` and `tool_execution_end`), and removes it on a normal
+While a run is open, each pi process writes a checkpoint of its current
+record to `<KANKAKU_DIR>/inflight/<pid>.json` — first as soon as the run
+starts (`before_agent_start`), so even a crash on the very first turn still
+leaves a checkpoint, and then again after every `turn_end` and
+`tool_execution_end` — and removes it on a normal
 `agent_settled`/`session_shutdown`. If the process is killed outright
 (`kill -9`, power loss) before it can settle, the checkpoint file survives
 it. On the next pi start, `session_start` scans `inflight/` for checkpoints

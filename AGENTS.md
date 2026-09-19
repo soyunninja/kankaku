@@ -12,8 +12,11 @@ Read `README.md` for behaviour and the record schema before changing code.
   object and it must stay deterministic under test.
 - `src/ports/` holds interfaces only (`Clock`, `WorkLog`).
 - `src/adapters/` talks to the outside world: pi events and UI
-  (`pi-tracker.ts`), the filesystem (`jsonl-work-log.ts`,
-  `lazy-jsonl-work-log.ts`), and report formatting (`report.ts`).
+  (`pi-tracker.ts`, wiring `status-bar.ts` for the footer clock/client
+  status, `session-client.ts` for the session billing-client override, and
+  `kankaku-command.ts` for the `/kankaku` command), the filesystem
+  (`jsonl-work-log.ts`, `lazy-jsonl-work-log.ts`), and report formatting
+  (`report.ts`).
 - `src/extension.ts` only wires config, tracker, log and adapter together.
   Do not put logic there.
 - Dependencies point inwards: adapters import domain and ports; domain

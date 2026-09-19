@@ -49,10 +49,31 @@ class FakeClock implements Clock {
 
 class FakeWorkLog implements WorkLog {
   readonly records: WorkRecord[] = [];
+  readAllCalls = 0;
+  /** Overridable to simulate the log's cheap change signal moving, mirroring the optional port method. */
+  versionValue: string | number = "unchanged";
+
   append(record: WorkRecord): void {
     this.records.push(record);
   }
   readAll(): WorkRecord[] {
+    this.readAllCalls++;
+    return this.records;
+  }
+  version(): string | number {
+    return this.versionValue;
+  }
+}
+
+/** A {@link WorkLog} with no `version()` method at all, matching an adapter that predates the port addition. */
+class FakeWorkLogWithoutVersion implements WorkLog {
+  readonly records: WorkRecord[] = [];
+  readAllCalls = 0;
+  append(record: WorkRecord): void {
+    this.records.push(record);
+  }
+  readAll(): WorkRecord[] {
+    this.readAllCalls++;
     return this.records;
   }
 }
@@ -224,6 +245,24 @@ test("a full run with a subagent call and an interactive tool appends exactly on
   assert.equal(record.usage.input, 10);
 });
 
+test("before_agent_start alone saves an in-flight checkpoint, so a crash on the first turn is still recoverable", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const inflight = new FakeInflightStore();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 1, parentPid: 0 });
+
+  clock.advanceTo(50);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+
+  assert.equal(inflight.saved.length, 1);
+  assert.equal(inflight.saved[0]?.status, "interrupted");
+  assert.equal(inflight.saved[0]?.wallMs, 0);
+});
+
 test("session_shutdown while running appends an interrupted record", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
@@ -376,6 +415,10 @@ test("turn_end and tool_execution_end save an in-flight checkpoint with the even
   createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 1, parentPid: 0 });
 
   await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+
+  // before_agent_start itself already saved a checkpoint (see the dedicated test above).
+  assert.equal(inflight.saved.length, 1);
+
   clock.advanceTo(500);
   await pi.fire(
     "turn_end",
@@ -383,16 +426,16 @@ test("turn_end and tool_execution_end save an in-flight checkpoint with the even
     ctx,
   );
 
-  assert.equal(inflight.saved.length, 1);
-  assert.equal(inflight.saved[0]?.status, "interrupted");
-  assert.equal(inflight.saved[0]?.wallMs, 500);
+  assert.equal(inflight.saved.length, 2);
+  assert.equal(inflight.saved[1]?.status, "interrupted");
+  assert.equal(inflight.saved[1]?.wallMs, 500);
 
   clock.advanceTo(700);
   await pi.fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "call-1", toolName: "bash", args: {} }, ctx);
   clock.advanceTo(900);
   await pi.fire("tool_execution_end", { type: "tool_execution_end", toolCallId: "call-1", toolName: "bash", result: {}, isError: false }, ctx);
 
-  assert.equal(inflight.saved.length, 2);
+  assert.equal(inflight.saved.length, 3);
 
   clock.advanceTo(1000);
   await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
@@ -400,6 +443,7 @@ test("turn_end and tool_execution_end save an in-flight checkpoint with the even
   assert.equal(log.records.length, 1);
   assert.equal(inflight.saved[0]?.id, log.records[0]?.id);
   assert.equal(inflight.saved[1]?.id, log.records[0]?.id);
+  assert.equal(inflight.saved[2]?.id, log.records[0]?.id);
   assert.equal(inflight.clearedCount, 1);
 });
 
@@ -860,6 +904,83 @@ test("kankaku command's getArgumentCompletions offers distinct client names afte
   const items = (await command!.getArgumentCompletions!("client ")) as Array<{ value: string }>;
   assert.deepEqual(
     items.map((item) => item.value),
+    ["acme", "globex"],
+  );
+});
+
+test("kankaku command's getArgumentCompletions caches client names and does not call readAll again when nothing changed", async () => {
+  const log = new FakeWorkLogWithoutVersion();
+  log.append(makeRecord({ id: "r1", client: "acme" }));
+  const pi = new FakePi();
+  createPiTracker(pi as never, {
+    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" }),
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+  });
+
+  const command = pi.commands.get("kankaku");
+  await command!.getArgumentCompletions!("client ");
+  await command!.getArgumentCompletions!("client a");
+  await command!.getArgumentCompletions!("client ");
+
+  assert.equal(log.readAllCalls, 1);
+});
+
+test("kankaku command's getArgumentCompletions refreshes the client name cache after this process appends a record", async () => {
+  const clock = new FakeClock(0);
+  const log = new FakeWorkLogWithoutVersion();
+  log.append(makeRecord({ id: "r1", client: "acme" }));
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  const command = pi.commands.get("kankaku");
+  const first = (await command!.getArgumentCompletions!("client ")) as Array<{ value: string }>;
+  assert.deepEqual(first.map((item) => item.value), ["acme"]);
+  assert.equal(log.readAllCalls, 1);
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  // the settled record above has no client set, but the append itself must invalidate the cache
+  log.records[1]!.client = "globex";
+
+  const second = (await command!.getArgumentCompletions!("client ")) as Array<{ value: string }>;
+  assert.deepEqual(second.map((item) => item.value), ["acme", "globex"]);
+  assert.equal(log.readAllCalls, 2);
+});
+
+test("kankaku command's getArgumentCompletions refreshes the client name cache when the log's version() changes", async () => {
+  const log = new FakeWorkLog();
+  log.versionValue = "v1";
+  log.append(makeRecord({ id: "r1", client: "acme" }));
+  const pi = new FakePi();
+  createPiTracker(pi as never, {
+    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" }),
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+  });
+
+  const command = pi.commands.get("kankaku");
+  await command!.getArgumentCompletions!("client ");
+  await command!.getArgumentCompletions!("client ");
+  assert.equal(log.readAllCalls, 1); // unchanged version, no re-read
+
+  log.versionValue = "v2"; // simulates another process appending to the shared log file
+  log.records.push(makeRecord({ id: "r2", client: "globex", pid: 9 }));
+  const third = (await command!.getArgumentCompletions!("client ")) as Array<{ value: string }>;
+
+  assert.equal(log.readAllCalls, 2);
+  assert.deepEqual(
+    third.map((item) => item.value),
     ["acme", "globex"],
   );
 });
