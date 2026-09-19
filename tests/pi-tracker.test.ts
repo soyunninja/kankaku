@@ -5,6 +5,7 @@ const CLOCK = "\u{1F552}\uFE0F";
 const CLIENT = "\u{1F4BC}\uFE0F";
 import { createPiTracker } from "../src/adapters/pi-tracker.ts";
 import { createSessionTarget } from "../src/adapters/session-target.ts";
+import { localDay } from "../src/domain/day.ts";
 import { WorkTracker } from "../src/domain/work-tracker.ts";
 import type { Clock } from "../src/ports/clock.ts";
 import type { Catalog, CatalogSnapshot } from "../src/ports/catalog.ts";
@@ -1068,7 +1069,7 @@ test("'kankaku export' writes today's tasks as CSV by default and confirms via t
 
   assert.equal(notified.length, 0);
   assert.equal(written.length, 1);
-  const today = new Date(now).toISOString().slice(0, 10);
+  const today = localDay(new Date(now).toISOString());
   assert.equal(written[0]!.name, `tasks-${today}.csv`);
   assert.match(written[0]!.content, /^id,day,startedAt/);
 
