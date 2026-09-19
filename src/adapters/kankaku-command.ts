@@ -4,9 +4,22 @@ import { Box, Text } from "@earendil-works/pi-tui";
 import { isValidClient } from "../domain/client-label.ts";
 import { exportRows, toCsv, toJson } from "../domain/export.ts";
 import { buildSessions, buildTasks } from "../domain/task-view.ts";
+import { formatWorkTargetLabel } from "../domain/work-target.ts";
+import type { Catalog } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
-import { formatClients, formatReport, formatSessions, formatTasks, localDay, summarize, summarizeByClient } from "./report.ts";
+import {
+  formatClients,
+  formatProjects,
+  formatReport,
+  formatSessions,
+  formatTasks,
+  localDay,
+  summarize,
+  summarizeByClient,
+  summarizeByProject,
+} from "./report.ts";
 import type { SessionClient } from "./session-client.ts";
+import type { SessionTarget } from "./session-target.ts";
 
 const REPORT_ENTRY_TYPE = "kankaku-report";
 
@@ -24,6 +37,10 @@ export function notifyError(ctx: ExtensionContext, error: unknown): void {
 }
 
 const COMMAND_TOKENS = ["all", "tasks", "sessions", "client", "clients", "export"];
+/** Only offered when the hub is configured, so completions are unchanged for users without one. */
+const HUB_COMMAND_TOKENS = ["target", "projects", "catalog"];
+const TARGET_TOKENS = ["pick", "clear"];
+const CATALOG_TOKENS = ["refresh"];
 
 export interface KankakuCommandDeps {
   log: WorkLog;
@@ -36,6 +53,14 @@ export interface KankakuCommandDeps {
    * configured.
    */
   writeExportFile?: (name: string, content: string) => string;
+  /**
+   * Present only when the hub (PocketBase) is configured. Drives `/kankaku
+   * target [pick|clear]` and makes `/kankaku client <name>` validate
+   * against the catalog instead of accepting free text.
+   */
+  sessionTarget?: SessionTarget;
+  /** Present only when the hub is configured. Drives `/kankaku catalog refresh` and the hub-aware `/kankaku client <name>`. */
+  catalog?: Catalog;
 }
 
 export interface KankakuCommand {
@@ -101,7 +126,15 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     ctx.ui.notify(`${report.title}\n${report.lines.join("\n")}`);
   }
 
-  /** Handle `/kankaku client [<name> | --clear]`; `rest` excludes the leading `client` token. */
+  /**
+   * Handle `/kankaku client [<name> | --clear]`; `rest` excludes the
+   * leading `client` token. When the hub is configured, setting a name
+   * (not `--clear` or empty) is the legacy compatibility path: it
+   * validates against the catalog (case-insensitive exact match of a
+   * client `code` or `name`) and sets the session hub target with no
+   * project, instead of the free-text legacy client. `--clear` and the
+   * no-argument report stay on the legacy client for both cases.
+   */
   function handleClientCommand(rest: string[], ctx: ExtensionContext): void {
     if (rest.length === 1 && rest[0] === "--clear") {
       sessionClient.set(pi, undefined);
@@ -119,6 +152,25 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     }
 
     const name = rest.join(" ");
+
+    if (deps.sessionTarget) {
+      const clients = (deps.catalog?.read()?.clients ?? []).filter((client) => client.active && !client.unassigned);
+      const lowerName = name.toLowerCase();
+      const match = clients.find((client) => client.code.toLowerCase() === lowerName || client.name.toLowerCase() === lowerName);
+      if (!match) {
+        const validCodes = clients
+          .map((client) => client.code)
+          .sort()
+          .join(", ");
+        notifyError(ctx, new Error(`unknown client: ${name}${validCodes ? ` (valid: ${validCodes})` : ""}`));
+        return;
+      }
+      deps.sessionTarget.setExplicit(pi, { clientId: match.id });
+      deps.refreshIdleStatus(ctx);
+      showReport(ctx, { title: "client", lines: [`client set to ${match.name} (${match.code})`] });
+      return;
+    }
+
     if (!isValidClient(name)) {
       notifyError(ctx, new Error(`invalid client name: ${name}`));
       return;
@@ -126,6 +178,65 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     sessionClient.set(pi, name);
     deps.refreshIdleStatus(ctx);
     showReport(ctx, { title: "client", lines: [`client set to ${name}`] });
+  }
+
+  /** Handle `/kankaku target [pick|clear]`; `rest` excludes the leading `target` token. */
+  async function handleTargetCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+    const sessionTarget = deps.sessionTarget;
+    if (!sessionTarget) {
+      notifyError(ctx, new Error("hub is not configured"));
+      return;
+    }
+
+    if (rest.length === 1 && rest[0] === "clear") {
+      sessionTarget.clear(pi);
+      deps.refreshIdleStatus(ctx);
+      showReport(ctx, { title: "target", lines: ["target cleared for this session"] });
+      return;
+    }
+
+    if (rest.length === 1 && rest[0] === "pick") {
+      await sessionTarget.pick(pi, ctx);
+      deps.refreshIdleStatus(ctx);
+      const target = sessionTarget.effectiveTarget();
+      const line = target ? `target set to ${formatWorkTargetLabel(target)}` : "target skipped";
+      showReport(ctx, { title: "target", lines: [line] });
+      return;
+    }
+
+    if (rest.length === 0) {
+      const target = sessionTarget.effectiveTarget();
+      const source = sessionTarget.effectiveSource();
+      const line = target !== undefined ? `target: ${formatWorkTargetLabel(target)} (from ${source})` : "target: none";
+      showReport(ctx, { title: "target", lines: [line] });
+      return;
+    }
+
+    notifyError(ctx, new Error(`unknown target subcommand: ${rest.join(" ")}`));
+  }
+
+  /** Handle `/kankaku catalog refresh`; `rest` excludes the leading `catalog` token. */
+  async function handleCatalogCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+    const catalog = deps.catalog;
+    if (!catalog) {
+      notifyError(ctx, new Error("hub is not configured"));
+      return;
+    }
+
+    if (rest.length === 1 && rest[0] === "refresh") {
+      const snapshot = await catalog.refresh();
+      if (!snapshot) {
+        notifyError(ctx, new Error("hub unreachable; catalog not refreshed"));
+        return;
+      }
+      showReport(ctx, {
+        title: "catalog",
+        lines: [`refreshed: ${snapshot.clients.length} client(s), ${snapshot.projects.length} project(s)`],
+      });
+      return;
+    }
+
+    notifyError(ctx, new Error(`unknown catalog subcommand: ${rest.join(" ")}`));
   }
 
   /** Handle `/kankaku export [csv|json] [all]`; `rest` excludes the leading `export` token. Default format is csv. */
@@ -153,7 +264,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       "'tasks' for this session's tasks ('tasks all' for every session), 'sessions' for today's sessions, " +
       "'client <name>' to set the session billing client, 'client' to show the effective one and its source, " +
       "'client --clear' to clear it, 'clients' for per-client totals today ('clients all' for every day), " +
-      "'export [csv|json] [all]' to write today's (or every) task as a file.",
+      "'export [csv|json] [all]' to write today's (or every) task as a file. " +
+      "When a hub (PocketBase) is configured: 'target' to show the effective client/project and its source, " +
+      "'target pick' to run the picker again, 'target clear' to clear the session target, " +
+      "'catalog refresh' to force a catalog refresh, 'projects' for per-project totals today ('projects all' for every day). " +
+      "With a hub configured, 'client <name>' instead validates against the catalog (code or name) and sets the target.",
     getArgumentCompletions: (argumentPrefix: string): AutocompleteItem[] => {
       const clientMatch = /^client\s+(\S*)$/.exec(argumentPrefix);
       if (clientMatch) {
@@ -162,7 +277,18 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
           .filter((name) => name.startsWith(prefix))
           .map((name) => ({ value: name, label: name }));
       }
-      return COMMAND_TOKENS.filter((value) => value.startsWith(argumentPrefix)).map((value) => ({ value, label: value }));
+      const targetMatch = /^target\s+(\S*)$/.exec(argumentPrefix);
+      if (targetMatch) {
+        const prefix = targetMatch[1] ?? "";
+        return TARGET_TOKENS.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
+      }
+      const catalogMatch = /^catalog\s+(\S*)$/.exec(argumentPrefix);
+      if (catalogMatch) {
+        const prefix = catalogMatch[1] ?? "";
+        return CATALOG_TOKENS.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
+      }
+      const tokens = deps.sessionTarget ? [...COMMAND_TOKENS, ...HUB_COMMAND_TOKENS] : COMMAND_TOKENS;
+      return tokens.filter((value) => value.startsWith(argumentPrefix)).map((value) => ({ value, label: value }));
     },
     handler: async (args, ctx) => {
       try {
@@ -178,6 +304,16 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
           return;
         }
 
+        if (tokens[0] === "target") {
+          await handleTargetCommand(tokens.slice(1), ctx);
+          return;
+        }
+
+        if (tokens[0] === "catalog") {
+          await handleCatalogCommand(tokens.slice(1), ctx);
+          return;
+        }
+
         const all = tokens.includes("all");
         const records = log.readAll();
         const today = localDay(new Date().toISOString());
@@ -187,6 +323,15 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
           showReport(ctx, {
             title: all ? "clients (all days)" : "clients (today)",
             lines: formatClients(summarizeByClient(tasks)).split("\n"),
+          });
+          return;
+        }
+
+        if (tokens.includes("projects")) {
+          const tasks = buildTasks(records).filter((task) => all || localDay(task.startedAt) === today);
+          showReport(ctx, {
+            title: all ? "projects (all days)" : "projects (today)",
+            lines: formatProjects(summarizeByProject(tasks)).split("\n"),
           });
           return;
         }

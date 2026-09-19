@@ -4,11 +4,27 @@ import { test } from "node:test";
 const CLOCK = "\u{1F552}\uFE0F";
 const CLIENT = "\u{1F4BC}\uFE0F";
 import { createPiTracker } from "../src/adapters/pi-tracker.ts";
+import { createSessionTarget } from "../src/adapters/session-target.ts";
 import { WorkTracker } from "../src/domain/work-tracker.ts";
 import type { Clock } from "../src/ports/clock.ts";
+import type { Catalog, CatalogSnapshot } from "../src/ports/catalog.ts";
 import type { InflightStore } from "../src/ports/inflight-store.ts";
 import type { WorkLog } from "../src/ports/work-log.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
+
+class FakeCatalog implements Catalog {
+  snapshot: CatalogSnapshot | undefined;
+
+  read(): CatalogSnapshot | undefined {
+    return this.snapshot;
+  }
+  isStale(): boolean {
+    return false;
+  }
+  async refresh(): Promise<CatalogSnapshot | undefined> {
+    return this.snapshot;
+  }
+}
 
 function makeRecord(overrides: Partial<WorkRecord> = {}): WorkRecord {
   return {
@@ -1261,4 +1277,161 @@ test("no idle status is shown when no client resolves", async () => {
   createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
   await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
   assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", undefined]);
+});
+
+test("session_start notifies a hub config error exactly once, even across repeated session_start events", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    hubConfigError: "kankaku: refusing non-HTTPS hub URL",
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("session_start", { type: "session_start", reason: "reload" }, ctx);
+
+  assert.equal(notified.filter((n) => n.message.includes("refusing non-HTTPS")).length, 1);
+});
+
+test("buildRecord attaches clientId/clientName/projectId/projectName and machine when a hub target resolves for the run", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  const catalog = new FakeCatalog();
+  catalog.snapshot = {
+    fetchedAt: 0,
+    url: "https://pb.example.com",
+    clients: [{ id: "c-acme", name: "Acme", code: "acme", active: true }],
+    projects: [{ id: "p-portal", name: "Portal", clientId: "c-acme", repoPaths: [], active: true }],
+  };
+  const sessionTarget = createSessionTarget({
+    role: "orchestrator",
+    catalog,
+    resolveProjectConfigIds: () => ({ clientId: "c-acme", projectId: "p-portal" }),
+    persistProjectConfig: () => {},
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sessionTarget,
+    machine: "laptop",
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi" }, ctx);
+  clock.advanceTo(1000);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  const record = log.records[0]!;
+  assert.equal(record.client, "acme");
+  assert.equal(record.clientId, "c-acme");
+  assert.equal(record.clientName, "Acme");
+  assert.equal(record.projectId, "p-portal");
+  assert.equal(record.projectName, "Portal");
+  assert.equal(record.machine, "laptop");
+});
+
+test("buildRecord omits every hub field for a subagent, even when a hub is configured for the process", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  const catalog = new FakeCatalog();
+  catalog.snapshot = {
+    fetchedAt: 0,
+    url: "https://pb.example.com",
+    clients: [{ id: "c-acme", name: "Acme", code: "acme", active: true }],
+    projects: [],
+  };
+  const sessionTarget = createSessionTarget({
+    role: "subagent",
+    catalog,
+    resolveProjectConfigIds: () => ({ clientId: "c-acme" }),
+    persistProjectConfig: () => {},
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "subagent",
+    pid: 1,
+    parentPid: 0,
+    sessionTarget,
+    machine: "laptop",
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi" }, ctx);
+  clock.advanceTo(1000);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  const record = log.records[0]!;
+  assert.equal(record.clientId, undefined);
+  assert.equal("clientId" in record, false);
+  assert.equal(record.client, undefined);
+  assert.equal(record.machine, "laptop");
+});
+
+test("session_start shows the picker when the hub is configured and nothing resolves, and updates the idle status afterwards", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const selectResponses = ["Acme", "(no project)"];
+  let selectIndex = 0;
+  const ctx = makeFakeCtx({
+    ui: {
+      notify: () => {},
+      setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
+      select: async () => selectResponses[selectIndex++],
+      confirm: async () => false,
+    },
+  });
+
+  const catalog = new FakeCatalog();
+  catalog.snapshot = {
+    fetchedAt: 0,
+    url: "https://pb.example.com",
+    clients: [{ id: "c-acme", name: "Acme", code: "acme", active: true }],
+    projects: [],
+  };
+  const sessionTarget = createSessionTarget({
+    role: "orchestrator",
+    catalog,
+    resolveProjectConfigIds: () => undefined,
+    persistProjectConfig: () => {},
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sessionTarget,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+
+  assert.equal(sessionTarget.effectiveTarget()?.clientId, "c-acme");
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", `${CLIENT} Acme`]);
 });

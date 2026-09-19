@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { formatClients, formatReport, formatSessions, formatTasks, localDay, summarize, summarizeByClient } from "../src/adapters/report.ts";
+import {
+  formatClients,
+  formatProjects,
+  formatReport,
+  formatSessions,
+  formatTasks,
+  localDay,
+  summarize,
+  summarizeByClient,
+  summarizeByProject,
+} from "../src/adapters/report.ts";
 import { buildSessions, buildTasks } from "../src/domain/task-view.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 
@@ -491,6 +501,69 @@ test("formatClients renders one line per client sorted alphabetically, with (non
 
 test("formatClients reports 'no clients' for an empty list", () => {
   assert.equal(formatClients(summarizeByClient([])), "no clients");
+});
+
+test("summarizeByProject totals work/waiting/wall/cost/count per projectId, grouping projectless tasks under (no project)", () => {
+  const parentA = makeRecord({
+    id: "a1",
+    pid: 100,
+    parentPid: 1,
+    projectId: "p-portal",
+    projectName: "Portal",
+    startedAt: "2026-09-10T12:00:00.000Z",
+    settledAt: "2026-09-10T12:01:00.000Z",
+    waitingMs: 10000,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 1 },
+  });
+  const parentB = makeRecord({
+    id: "a2",
+    pid: 101,
+    parentPid: 1,
+    projectId: "p-portal",
+    projectName: "Portal",
+    startedAt: "2026-09-10T13:00:00.000Z",
+    settledAt: "2026-09-10T13:00:30.000Z",
+    waitingMs: 0,
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+  });
+  const parentC = makeRecord({
+    id: "b1",
+    pid: 102,
+    parentPid: 1,
+    startedAt: "2026-09-10T14:00:00.000Z",
+    settledAt: "2026-09-10T14:00:10.000Z",
+    waitingMs: 0,
+  });
+
+  const tasks = buildTasks([parentA, parentB, parentC]);
+  const totals = summarizeByProject(tasks);
+
+  assert.deepEqual(totals.get("p-portal"), { name: "Portal", wallMs: 90000, waitingMs: 10000, workMs: 80000, cost: 1.5, count: 2 });
+  assert.deepEqual(totals.get("(no project)"), { name: "(no project)", wallMs: 10000, waitingMs: 0, workMs: 10000, cost: 0, count: 1 });
+});
+
+test("summarizeByProject falls back to the projectId as the display name when projectName is missing", () => {
+  const parent = makeRecord({ id: "a1", pid: 100, parentPid: 1, projectId: "p-portal" });
+  const totals = summarizeByProject(buildTasks([parent]));
+
+  assert.equal(totals.get("p-portal")?.name, "p-portal");
+});
+
+test("formatProjects renders one line per project sorted by name, with (no project) as a normal entry", () => {
+  const parentA = makeRecord({ id: "a1", pid: 100, parentPid: 1, projectId: "p-z", projectName: "Zeta", wallMs: 60000, workMs: 60000 });
+  const parentB = makeRecord({ id: "b1", pid: 101, parentPid: 1, wallMs: 10000, workMs: 10000 });
+  const parentC = makeRecord({ id: "c1", pid: 102, parentPid: 1, projectId: "p-a", projectName: "Acme", wallMs: 20000, workMs: 20000 });
+
+  const text = formatProjects(summarizeByProject(buildTasks([parentA, parentB, parentC])));
+  const lines = text.split("\n");
+
+  assert.match(lines[0]!, /^\(no project\)/);
+  assert.match(lines[1]!, /^Acme/);
+  assert.match(lines[2]!, /^Zeta/);
+});
+
+test("formatProjects reports 'no projects' for an empty list", () => {
+  assert.equal(formatProjects(summarizeByProject([])), "no projects");
 });
 
 test("formatSessions appends segment pairs after the cost, only for non-zero tags", () => {

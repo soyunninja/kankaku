@@ -187,6 +187,54 @@ export function summarizeByClient(tasks: TaskView[]): Map<string, ClientTotals> 
   return totals;
 }
 
+export interface ProjectTotals {
+  /** Display name: the project's `projectName`, or `"(no project)"` for the ungrouped bucket. */
+  name: string;
+  wallMs: number;
+  waitingMs: number;
+  workMs: number;
+  /** Estimated cost in USD, summed across this project's tasks. */
+  cost: number;
+  count: number;
+}
+
+/** Key (and display name) under which tasks without a resolved project are grouped. */
+const NO_PROJECT = "(no project)";
+
+/**
+ * Aggregate tasks by hub project (see `domain/work-target.ts`), keyed by
+ * `projectId` (so two projects that happen to share a display name are
+ * never merged) with the name denormalised alongside for display. Tasks
+ * without a `projectId` are grouped under `"(no project)"`.
+ */
+export function summarizeByProject(tasks: TaskView[]): Map<string, ProjectTotals> {
+  const totals = new Map<string, ProjectTotals>();
+  for (const task of tasks) {
+    const key = task.projectId ?? NO_PROJECT;
+    const name = task.projectId !== undefined ? (task.projectName ?? task.projectId) : NO_PROJECT;
+    const entry = totals.get(key) ?? { name, wallMs: 0, waitingMs: 0, workMs: 0, cost: 0, count: 0 };
+    entry.wallMs += task.wallMs;
+    entry.waitingMs += task.waitingMs;
+    entry.workMs += task.workMs;
+    entry.cost += finiteOrZero(task.usage.cost);
+    entry.count += 1;
+    totals.set(key, entry);
+  }
+  return totals;
+}
+
+/** Render one line per project, sorted alphabetically by display name, with work/waiting/wall time, cost, and task count. */
+export function formatProjects(totals: Map<string, ProjectTotals>): string {
+  if (totals.size === 0) return "no projects";
+  return Array.from(totals.values())
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(
+      (t) =>
+        `${t.name}  work ${formatMinutes(t.workMs)}  waiting ${formatMinutes(t.waitingMs)}  wall ${formatMinutes(t.wallMs)}  ${formatCost(t.cost)}  tasks ${t.count}`,
+    )
+    .join("\n");
+}
+
 /** Render one line per client, sorted alphabetically, with work/waiting/wall time, cost, and task count. */
 export function formatClients(totals: Map<string, ClientTotals>): string {
   if (totals.size === 0) return "no clients";

@@ -1,9 +1,13 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isValidClient } from "../domain/client-label.ts";
+import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import type { WorkRecord, WorkRecordCore, WorkRole } from "../domain/work-record.ts";
 import type { WorkTracker } from "../domain/work-tracker.ts";
+import type { Catalog } from "../ports/catalog.ts";
 import type { InflightStore } from "../ports/inflight-store.ts";
 import type { WorkLog } from "../ports/work-log.ts";
 import { createSessionClient } from "./session-client.ts";
+import type { SessionTarget } from "./session-target.ts";
 import { createStatusBar } from "./status-bar.ts";
 import { notifyError, registerKankakuCommand } from "./kankaku-command.ts";
 
@@ -36,6 +40,20 @@ export interface PiTrackerDeps {
    * is not configured.
    */
   writeExportFile?: (name: string, content: string) => string;
+  /**
+   * Present only when the hub (PocketBase) is configured; see README "Hub
+   * (PocketBase)". Drives the session-start picker and the `/kankaku
+   * target`/`catalog` commands. Absent entirely when the hub is not
+   * configured, so behaviour and record shape are unchanged for users
+   * without one.
+   */
+  sessionTarget?: SessionTarget;
+  /** This machine's hostname or `KANKAKU_MACHINE`; only attached to records when `sessionTarget` is present. */
+  machine?: string;
+  /** Present only when the hub is configured; forwarded to `/kankaku catalog refresh` and the hub-aware `/kankaku client`. */
+  catalog?: Catalog;
+  /** A configured-but-rejected hub URL (see `adapters/hub-credentials.ts`); surfaced once via `ctx.ui.notify` on the first `session_start`. */
+  hubConfigError?: string;
 }
 
 /** Default `isAlive`: probe with signal 0 — no signal is sent, only existence/permission is checked. */
@@ -60,6 +78,17 @@ function guarded<E>(fn: (event: E, ctx: ExtensionContext) => void): (event: E, c
   };
 }
 
+/** Async counterpart of {@link guarded}: also catches a rejected promise, e.g. from the target picker's `ctx.ui.select`. */
+function guardedAsync<E>(fn: (event: E, ctx: ExtensionContext) => Promise<void>): (event: E, ctx: ExtensionContext) => Promise<void> {
+  return async (event, ctx) => {
+    try {
+      await fn(event, ctx);
+    } catch (error) {
+      notifyError(ctx, error);
+    }
+  };
+}
+
 /**
  * Wires pi lifecycle events to a {@link WorkTracker}, persisting finished
  * records to a {@link WorkLog} and exposing the `/kankaku` report command.
@@ -74,10 +103,21 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     resolveProjectClient: deps.resolveProjectClient,
   });
 
+  /** Prefer the hub target's display label over the legacy client label, when one is active. */
+  function runDisplayLabel(): string | undefined {
+    const target = deps.sessionTarget?.runTarget();
+    return target ? formatWorkTargetLabel(target) : sessionClient.runClient();
+  }
+
+  function idleDisplayLabel(): string | undefined {
+    const target = deps.sessionTarget?.idleTarget();
+    return target ? formatWorkTargetLabel(target) : sessionClient.idleClient();
+  }
+
   const statusBar = createStatusBar({
     intervalMs: deps.statusIntervalMs,
-    resolveRunClient: () => sessionClient.runClient(),
-    resolveIdleClient: () => sessionClient.idleClient(),
+    resolveRunClient: runDisplayLabel,
+    resolveIdleClient: idleDisplayLabel,
   });
 
   const kankakuCommand = registerKankakuCommand(pi, {
@@ -85,6 +125,8 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     sessionClient,
     refreshIdleStatus: (ctx) => statusBar.showIdle(ctx),
     writeExportFile: deps.writeExportFile,
+    sessionTarget: deps.sessionTarget,
+    catalog: deps.catalog,
   });
 
   /** `log.append` plus cache invalidation, so every append this process makes keeps the completion cache correct. */
@@ -95,9 +137,14 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
   function buildRecord(core: WorkRecordCore, ctx: ExtensionContext): WorkRecord {
     const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
-    // Subagent children never carry their own client: they inherit the
-    // orchestrator's label at task level (see task-view.ts).
-    const client = sessionClient.runClient();
+    // Subagent children never carry their own client/target: they inherit
+    // the orchestrator's at task level (see task-view.ts).
+    const target = deps.sessionTarget?.runTarget();
+    // When a hub target is active, the legacy `client` label is the
+    // client's code (kept valid against CLIENT_PATTERN so every existing
+    // report/export keeps working); an invalid code is omitted rather than
+    // breaking the record. Without a hub target, behaviour is unchanged.
+    const client = target ? (isValidClient(target.clientCode) ? target.clientCode : undefined) : sessionClient.runClient();
     const sessionName = pi.getSessionName();
     return {
       ...core,
@@ -111,6 +158,15 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       ...(model !== undefined ? { model } : {}),
       ...(client !== undefined ? { client } : {}),
       ...(sessionName !== undefined ? { sessionName } : {}),
+      ...(target !== undefined
+        ? {
+            clientId: target.clientId,
+            clientName: target.clientName,
+            ...(target.projectId !== undefined ? { projectId: target.projectId } : {}),
+            ...(target.projectName !== undefined ? { projectName: target.projectName } : {}),
+          }
+        : {}),
+      ...(deps.machine !== undefined ? { machine: deps.machine } : {}),
     };
   }
 
@@ -209,6 +265,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
         inflight.clear();
         statusBar.stop(ctx);
         sessionClient.endRun();
+        deps.sessionTarget?.endRun();
       }
     }),
   );
@@ -225,14 +282,23 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
         inflight.clear();
         statusBar.stop(ctx);
         sessionClient.endRun();
+        deps.sessionTarget?.endRun();
       }
     }),
   );
 
+  let hubConfigErrorNotified = false;
+
   pi.on(
     "session_start",
-    guarded((_event, ctx) => {
+    guardedAsync(async (_event, ctx) => {
+      if (deps.hubConfigError && !hubConfigErrorNotified) {
+        hubConfigErrorNotified = true;
+        if (ctx.hasUI) ctx.ui.notify(deps.hubConfigError, "error");
+      }
+
       sessionClient.restore(ctx);
+      deps.sessionTarget?.restore(ctx);
       statusBar.showIdle(ctx);
 
       const recovered = inflight.recoverStale(isAlive);
@@ -241,6 +307,14 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       }
       if (recovered.length > 0 && ctx.hasUI) {
         ctx.ui.notify(`kankaku: recovered ${recovered.length} interrupted record(s)`, "warning");
+      }
+
+      // Runs after recovery so a freshly picked target does not affect
+      // records recovered from before this session started. See README
+      // "Hub (PocketBase)": a no-op unless orchestrator + hasUI + configured.
+      if (deps.sessionTarget) {
+        await deps.sessionTarget.ensurePicked(pi, ctx);
+        statusBar.showIdle(ctx);
       }
     }),
   );
