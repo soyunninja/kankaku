@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import type { WorkLog } from "../ports/work-log.ts";
 import type { WorkRecord } from "../domain/work-record.ts";
@@ -25,6 +25,20 @@ export class JsonlWorkLog implements WorkLog {
   append(record: WorkRecord): void {
     mkdirSync(this.dir, { recursive: true });
     appendFileSync(this.filePath, `${JSON.stringify(record)}\n`);
+  }
+
+  /**
+   * Cheap change signal: `mtimeMs:size` of the log file, computed with a
+   * single `statSync` rather than reading the file. `"0:0"` when the file
+   * does not exist yet (before the first `append`).
+   */
+  version(): string {
+    try {
+      const stats = statSync(this.filePath);
+      return `${stats.mtimeMs}:${stats.size}`;
+    } catch {
+      return "0:0";
+    }
   }
 
   readAll(): WorkRecord[] {

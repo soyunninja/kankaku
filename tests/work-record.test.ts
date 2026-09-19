@@ -49,6 +49,12 @@ test("isWorkRecord rejects a record with a non-finite duration field", () => {
   assert.equal(isWorkRecord(record), false);
 });
 
+test("isWorkRecord rejects a record with a negative wallMs, waitingMs or workMs", () => {
+  assert.equal(isWorkRecord(makeRecord({ wallMs: -1 })), false);
+  assert.equal(isWorkRecord(makeRecord({ waitingMs: -1 })), false);
+  assert.equal(isWorkRecord(makeRecord({ workMs: -1 })), false);
+});
+
 test("isWorkRecord rejects a record with an invalid role or status", () => {
   assert.equal(isWorkRecord(makeRecord({ role: "manager" as never })), false);
   assert.equal(isWorkRecord(makeRecord({ status: "unknown" as never })), false);

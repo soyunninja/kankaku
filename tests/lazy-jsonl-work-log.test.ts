@@ -58,6 +58,17 @@ test("append resolves the directory against the record project and later reads i
   );
 });
 
+test("version delegates to the resolved log, resolving against the fallback cwd when nothing was appended yet", () => {
+  const cwd = mkdtempSync(join(tmpdir(), "kankaku-lazy-"));
+  const log = new LazyJsonlWorkLog(".kankaku", () => cwd);
+
+  const before = log.version();
+  log.append(makeRecord(cwd, "first"));
+  const after = log.version();
+
+  assert.notEqual(after, before);
+});
+
 test("an absolute directory is used as-is", () => {
   const dir = join(mkdtempSync(join(tmpdir(), "kankaku-lazy-")), "abs-log");
   const log = new LazyJsonlWorkLog(dir, () => "/ignored");

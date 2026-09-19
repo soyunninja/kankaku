@@ -158,7 +158,9 @@ export class WorkTracker {
         agent: openSubagent.agent,
         mode: openSubagent.mode,
         ...(taskId !== undefined ? { taskId } : {}),
-        ms: this.clock.now() - openSubagent.start,
+        // Clamped to >= 0: a backward clock jump while the subagent was
+        // running must never produce a negative duration.
+        ms: Math.max(0, this.clock.now() - openSubagent.start),
       });
       return;
     }
@@ -228,16 +230,18 @@ export class WorkTracker {
     if (!state) {
       throw new Error("buildRecord called without an open run");
     }
-    const wallMs = settledAt - state.startedAt;
+    // Clamped to >= 0: a backward clock jump (system clock adjustment, NTP
+    // correction) must never produce a negative duration.
+    const wallMs = Math.max(0, settledAt - state.startedAt);
 
     const closedSpans = state.waitingSpans.map((span) => ({ start: span.start, end: span.end ?? settledAt }));
-    const waitingMs = unionMs(clampIntervals(closedSpans, state.startedAt, settledAt));
-    const workMs = wallMs - waitingMs;
+    const waitingMs = Math.max(0, unionMs(clampIntervals(closedSpans, state.startedAt, settledAt)));
+    const workMs = Math.max(0, wallMs - waitingMs);
 
     const segmentEntries: Array<[string, number]> = [];
     for (const [tag, spans] of state.segmentSpans) {
       const closedTagSpans = spans.map((span) => ({ start: span.start, end: span.end ?? settledAt }));
-      const tagMs = unionMs(clampIntervals(closedTagSpans, state.startedAt, settledAt));
+      const tagMs = Math.max(0, unionMs(clampIntervals(closedTagSpans, state.startedAt, settledAt)));
       if (tagMs > 0) {
         segmentEntries.push([tag, tagMs]);
       }

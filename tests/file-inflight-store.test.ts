@@ -106,3 +106,51 @@ test("recoverStale returns an empty array when the inflight directory does not e
   const reader = new FileInflightStore(join(dir, "does-not-exist"), 999);
   assert.deepEqual(reader.recoverStale(() => false), []);
 });
+
+test("recoverStale deletes a stray .tmp file whose writer pid is dead", () => {
+  mkdirSync(join(dir, "inflight"), { recursive: true });
+  const tmpFile = join(dir, "inflight", "42.json.8888.1700000000000.tmp");
+  writeFileSync(tmpFile, "{}");
+
+  const reader = new FileInflightStore(dir, 999);
+  const recovered = reader.recoverStale(() => false);
+
+  assert.equal(recovered.length, 0);
+  assert.equal(existsSync(tmpFile), false);
+});
+
+test("recoverStale leaves a stray .tmp file whose writer pid is alive", () => {
+  mkdirSync(join(dir, "inflight"), { recursive: true });
+  const tmpFile = join(dir, "inflight", "42.json.8888.1700000000000.tmp");
+  writeFileSync(tmpFile, "{}");
+
+  const reader = new FileInflightStore(dir, 999);
+  const recovered = reader.recoverStale(() => true);
+
+  assert.equal(recovered.length, 0);
+  assert.ok(existsSync(tmpFile));
+});
+
+test("recoverStale never deletes a .tmp file written by the current process, even if isAlive claims it is dead", () => {
+  mkdirSync(join(dir, "inflight"), { recursive: true });
+  const tmpFile = join(dir, "inflight", `42.json.${process.pid}.1700000000000.tmp`);
+  writeFileSync(tmpFile, "{}");
+
+  const reader = new FileInflightStore(dir, 999);
+  const recovered = reader.recoverStale(() => false);
+
+  assert.equal(recovered.length, 0);
+  assert.ok(existsSync(tmpFile));
+});
+
+test("recoverStale deletes a .tmp file whose writer pid cannot be parsed", () => {
+  mkdirSync(join(dir, "inflight"), { recursive: true });
+  const tmpFile = join(dir, "inflight", "garbage.tmp");
+  writeFileSync(tmpFile, "{}");
+
+  const reader = new FileInflightStore(dir, 999);
+  const recovered = reader.recoverStale(() => false);
+
+  assert.equal(recovered.length, 0);
+  assert.equal(existsSync(tmpFile), false);
+});

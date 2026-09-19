@@ -213,6 +213,13 @@ whose owning pid is no longer alive, appends each one to `worklog.jsonl` as
 recovered record is the time of its last checkpoint, not the actual crash
 time, so `wallMs`/`workMs` are a **lower bound** on the real duration.
 
+The same scan also sweeps `inflight/` for orphaned `.tmp` files: `save`
+writes to a temp file before renaming it into place, and a process killed
+between those two steps leaves the temp file behind. A stray `.tmp` file is
+deleted once its writer pid is no longer alive (or its name cannot be
+parsed); one still owned by a live writer — including this very process's
+own in-progress write — is left alone.
+
 ## Export
 
 `/kankaku export [csv|json] [all]` writes one flat row per task (today's

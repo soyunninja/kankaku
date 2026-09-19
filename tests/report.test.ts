@@ -190,6 +190,47 @@ test("formatTasks reports 'no tasks' for an empty list", () => {
   assert.equal(formatTasks([]), "no tasks");
 });
 
+test("formatTasks appends an ellipsis marker when the prompt is truncated", () => {
+  const longPrompt = "x".repeat(100);
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    prompt: longPrompt,
+    startedAt: "2026-09-10T12:00:00.000Z",
+    settledAt: "2026-09-10T12:00:30.000Z",
+    wallMs: 30000,
+    waitingMs: 0,
+    workMs: 30000,
+  });
+
+  const text = formatTasks(buildTasks([parent]));
+
+  assert.match(text, /x{59}…(?!x)/);
+});
+
+test("formatTasks does not append an ellipsis when the prompt fits within the limit", () => {
+  const shortPrompt = "x".repeat(60);
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    prompt: shortPrompt,
+    startedAt: "2026-09-10T12:00:00.000Z",
+    settledAt: "2026-09-10T12:00:30.000Z",
+    wallMs: 30000,
+    waitingMs: 0,
+    workMs: 30000,
+  });
+
+  const text = formatTasks(buildTasks([parent]));
+
+  assert.ok(text.includes(shortPrompt));
+  assert.equal(text.includes("…"), false);
+});
+
 test("formatSessions renders one line per session with truncated id, time range, wall/work, and task count", () => {
   const parent = makeRecord({
     id: "p1",

@@ -6,6 +6,9 @@ import type { InflightStore } from "../ports/inflight-store.ts";
 
 const INFLIGHT_DIR_NAME = "inflight";
 const JSON_EXT = ".json";
+const TMP_EXT = ".tmp";
+/** Matches `save`'s tmp filename: `<ownerPid>.json.<writerPid>.<timestamp>.tmp`. */
+const TMP_NAME_PATTERN = /\.json\.(\d+)\.\d+\.tmp$/;
 
 function safeUnlink(filePath: string): void {
   try {
@@ -13,6 +16,14 @@ function safeUnlink(filePath: string): void {
   } catch {
     // Best effort: another process may have already removed it.
   }
+}
+
+/** The writer pid embedded in a `save` tmp filename, or `undefined` when it cannot be parsed. */
+function parseTmpWriterPid(entry: string): number | undefined {
+  const match = TMP_NAME_PATTERN.exec(entry);
+  if (!match) return undefined;
+  const pid = Number(match[1]);
+  return Number.isFinite(pid) ? pid : undefined;
 }
 
 /**
@@ -56,6 +67,11 @@ export class FileInflightStore implements InflightStore {
     const ownFileName = `${this.pid}${JSON_EXT}`;
 
     for (const entry of readdirSync(this.inflightDir)) {
+      if (entry.endsWith(TMP_EXT)) {
+        this.sweepTmpEntry(entry, isAlive);
+        continue;
+      }
+
       if (!entry.endsWith(JSON_EXT) || entry === ownFileName) continue;
 
       const filePath = join(this.inflightDir, entry);
@@ -79,5 +95,21 @@ export class FileInflightStore implements InflightStore {
     }
 
     return recovered;
+  }
+
+  /**
+   * Delete a stray `save()` tmp file left behind by a writer that crashed
+   * between the write and the rename. Deleted when the writer pid is not
+   * alive, or when the filename cannot be parsed at all (nothing to check
+   * liveness against). A tmp file written by this very process is always
+   * left alone regardless of what `isAlive` reports, since a concurrent
+   * `save()` in this process may still be renaming it into place.
+   */
+  private sweepTmpEntry(entry: string, isAlive: (pid: number) => boolean): void {
+    const writerPid = parseTmpWriterPid(entry);
+    if (writerPid === process.pid) return;
+    if (writerPid === undefined || !isAlive(writerPid)) {
+      safeUnlink(join(this.inflightDir, entry));
+    }
   }
 }

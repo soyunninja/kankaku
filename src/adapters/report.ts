@@ -131,12 +131,20 @@ export function formatReport(summary: Summary): string {
   return lines.join(" | ");
 }
 
-/** Render one line per task: time, client (when present), union-based wall/work, cost, non-zero segment tags, subagent count, and a truncated prompt. */
+/** Maximum visible width of a task prompt before it is truncated with an ellipsis marker. */
+const PROMPT_DISPLAY_LIMIT = 60;
+
+/** Truncate `text` to `limit` visible characters, appending `…` (counted within the limit) when it was cut. */
+function truncateWithEllipsis(text: string, limit: number): string {
+  return text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
+}
+
+/** Render one line per task: time, client (when present), union-based wall/work, cost, non-zero segment tags, subagent count, and a truncated prompt (`…` marks a cut). */
 export function formatTasks(tasks: TaskView[]): string {
   if (tasks.length === 0) return "no tasks";
   return tasks
     .map((task) => {
-      const prompt = task.prompt.length > 60 ? task.prompt.slice(0, 60) : task.prompt;
+      const prompt = truncateWithEllipsis(task.prompt, PROMPT_DISPLAY_LIMIT);
       const segmentTags = formatSegmentTags(task.segments);
       const segmentPart = segmentTags !== undefined ? `  ${segmentTags}` : "";
       const clientPart = task.client !== undefined ? `  client:${task.client}` : "";

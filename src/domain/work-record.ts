@@ -79,6 +79,11 @@ export function finiteOrZero(value: unknown): number {
 const ROLES = new Set<WorkRole>(["orchestrator", "subagent"]);
 const STATUSES = new Set<WorkStatus>(["completed", "aborted", "interrupted"]);
 
+/** A finite, non-negative number: durations such as `wallMs` can never be negative. */
+function isNonNegativeFinite(value: unknown): boolean {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
 /**
  * Runtime guard for a {@link WorkRecord} read back from disk. `readAll`
  * skips lines that parse as JSON but fail this check, so a torn write or a
@@ -98,9 +103,9 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     typeof record["prompt"] === "string" &&
     typeof record["startedAt"] === "string" &&
     typeof record["settledAt"] === "string" &&
-    Number.isFinite(record["wallMs"]) &&
-    Number.isFinite(record["waitingMs"]) &&
-    Number.isFinite(record["workMs"]) &&
+    isNonNegativeFinite(record["wallMs"]) &&
+    isNonNegativeFinite(record["waitingMs"]) &&
+    isNonNegativeFinite(record["workMs"]) &&
     typeof record["runs"] === "number" &&
     typeof record["turns"] === "number" &&
     typeof record["tools"] === "object" &&

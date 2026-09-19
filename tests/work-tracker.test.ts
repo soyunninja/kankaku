@@ -475,6 +475,48 @@ test("peek when idle returns undefined", () => {
   assert.equal(tracker.peek("interrupted"), undefined);
 });
 
+test("wallMs, waitingMs and workMs are clamped to zero when the clock jumps backward before settle", () => {
+  const clock = new FakeClock(1000);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(500); // clock jumped backward
+  const record = tracker.onSettled();
+
+  assert.equal(record?.wallMs, 0);
+  assert.equal(record?.waitingMs, 0);
+  assert.equal(record?.workMs, 0);
+});
+
+test("wallMs, waitingMs and workMs are clamped to zero when the clock jumps backward before shutdown", () => {
+  const clock = new FakeClock(1000);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(200); // clock jumped backward
+  const record = tracker.onShutdown();
+
+  assert.equal(record?.wallMs, 0);
+  assert.equal(record?.waitingMs, 0);
+  assert.equal(record?.workMs, 0);
+});
+
+test("a subagent span's ms is clamped to zero when the clock jumps backward mid-span", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  clock.advanceTo(9000);
+  tracker.onToolStart("call-1", "subagent_run", { agent: "sdd-explore", mode: "task" });
+  clock.advanceTo(3000); // clock jumped backward while the subagent was running
+  tracker.onToolEnd("call-1", {});
+  clock.advanceTo(9100);
+
+  const record = tracker.onSettled();
+
+  assert.equal(record?.subagents[0]?.ms, 0);
+});
+
 test("a run with no segment rules produces an empty segments object", () => {
   const clock = new FakeClock(0);
   const tracker = makeTracker(clock, []);

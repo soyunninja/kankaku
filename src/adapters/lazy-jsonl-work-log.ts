@@ -32,4 +32,8 @@ export class LazyJsonlWorkLog implements WorkLog {
   readAll(): WorkRecord[] {
     return this.resolveFor(this.fallbackCwd()).readAll();
   }
+
+  version(): string {
+    return this.resolveFor(this.fallbackCwd()).version();
+  }
 }

@@ -89,6 +89,23 @@ test("readAll skips malformed lines", () => {
   );
 });
 
+test("version changes after an append and is stable when nothing changed", () => {
+  const logDir = join(dir, ".kankaku");
+  const log = new JsonlWorkLog(logDir);
+
+  const beforeAny = log.version();
+  assert.equal(log.version(), beforeAny); // stable with no file yet
+
+  log.append(makeRecord({ id: "rec-1" }));
+  const afterFirst = log.version();
+  assert.notEqual(afterFirst, beforeAny);
+  assert.equal(log.version(), afterFirst); // stable with no further writes
+
+  log.append(makeRecord({ id: "rec-2" }));
+  const afterSecond = log.version();
+  assert.notEqual(afterSecond, afterFirst);
+});
+
 test("readAll skips a line that parses as JSON but is not a valid WorkRecord", () => {
   const logDir = join(dir, ".kankaku");
   const log = new JsonlWorkLog(logDir);
