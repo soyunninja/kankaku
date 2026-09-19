@@ -1,0 +1,231 @@
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { formatWorkTargetLabel, resolveWorkTarget, resolveWorkTargetSource } from "../domain/work-target.ts";
+import type { WorkTarget, WorkTargetCandidate, WorkTargetSessionOverride, WorkTargetSourceName } from "../domain/work-target.ts";
+import type { WorkRole } from "../domain/work-record.ts";
+import type { Catalog, CatalogSnapshot } from "../ports/catalog.ts";
+import { pickTarget } from "./target-picker.ts";
+
+/** Persisted as a `kankaku-target` custom session entry so the session-level target survives a reload. */
+export interface KankakuTargetEntryData {
+  clientId?: string;
+  projectId?: string;
+  /** `true` when the user explicitly declined the picker; distinct from "no entry yet". */
+  skipped?: boolean;
+}
+
+export const TARGET_ENTRY_TYPE = "kankaku-target";
+
+export interface SessionTargetDeps {
+  role: WorkRole;
+  catalog: Catalog;
+  /** Lazily reads `clientId`/`projectId` from `<kankaku dir>/config.json`. */
+  resolveProjectConfigIds: () => WorkTargetCandidate | undefined;
+  /** Persist `clientId`/`projectId` into `<kankaku dir>/config.json`, merging existing keys. */
+  persistProjectConfig: (ids: WorkTargetCandidate) => void;
+  /** Current working directory, matched against catalog `repo_paths`. Defaults to `process.cwd()`. */
+  cwd?: () => string;
+}
+
+export interface SessionTarget {
+  /** Restore the session-level target (or its remembered "skipped" state) from the last `kankaku-target` entry. */
+  restore(ctx: ExtensionContext): void;
+  /**
+   * The `session_start` flow: resolves silently from the project config
+   * file or catalog `repo_paths`, or — only when nothing resolves and no
+   * session entry (pick or skip) already exists — shows the picker. A
+   * no-op unless `role === "orchestrator"` and `ctx.hasUI`.
+   */
+  ensurePicked(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void>;
+  /** Force the picker again, e.g. `/kankaku target pick`. Ignores any existing session override. */
+  pick(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void>;
+  /** Set the session target directly, bypassing the picker (the legacy `/kankaku client <name>` compatibility path). */
+  setExplicit(pi: ExtensionAPI, ids: WorkTargetCandidate): void;
+  /** Clear the session-level override; resolution falls back to the project config file / `repo_paths`. */
+  clear(pi: ExtensionAPI): void;
+  /** Current effective target (session > project config > repoPaths), regardless of role. */
+  effectiveTarget(): WorkTarget | undefined;
+  /** Which source produced {@link effectiveTarget}. */
+  effectiveSource(): WorkTargetSourceName | undefined;
+  /** Role-gated target for the in-progress run (`undefined` for a subagent); caches the project config read for the run. */
+  runTarget(): WorkTarget | undefined;
+  /** Role-gated target to show while idle, reusing the run's cached project config read when still held. */
+  idleTarget(): WorkTarget | undefined;
+  /** Drop the per-run cached project config read; call when a run settles or the session shuts down. */
+  endRun(): void;
+}
+
+function candidateFrom(target: WorkTarget): WorkTargetCandidate {
+  return { clientId: target.clientId, ...(target.projectId !== undefined ? { projectId: target.projectId } : {}) };
+}
+
+function entryDataFrom(ids: WorkTargetCandidate): KankakuTargetEntryData {
+  return { clientId: ids.clientId, ...(ids.projectId !== undefined ? { projectId: ids.projectId } : {}) };
+}
+
+/**
+ * Owns the session-level hub target override (`/kankaku target pick`), its
+ * restore/persist round-trip through session entries, and target
+ * resolution for both the in-progress run and the idle status line. See
+ * README "Hub (PocketBase)" and `domain/work-target.ts#resolveWorkTarget`.
+ */
+export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
+  const cwd = deps.cwd ?? (() => process.cwd());
+
+  /** Session-level override, restored on `session_start` or set by an explicit pick/skip/legacy command. */
+  let sessionOverride: WorkTargetSessionOverride;
+  /** Project config ids read once per run (first record build) so checkpoints do not hit the filesystem repeatedly. */
+  let runProjectIds: { value: WorkTargetCandidate | undefined } | undefined;
+  /** Only notify "hub unreachable" once per process for the silent `ensurePicked`/`pick` path. */
+  let notifiedUnreachable = false;
+
+  function restore(ctx: ExtensionContext): void {
+    const entries = ctx.sessionManager.getEntries();
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i] as { type: string; customType?: string; data?: unknown };
+      if (entry.type === "custom" && entry.customType === TARGET_ENTRY_TYPE) {
+        const data = entry.data as KankakuTargetEntryData | undefined;
+        if (data?.skipped === true) {
+          sessionOverride = "skipped";
+        } else if (typeof data?.clientId === "string") {
+          sessionOverride = { clientId: data.clientId, ...(typeof data.projectId === "string" ? { projectId: data.projectId } : {}) };
+        } else {
+          sessionOverride = undefined;
+        }
+        return;
+      }
+    }
+    sessionOverride = undefined;
+  }
+
+  function computeTarget(projectIds: WorkTargetCandidate | undefined): WorkTarget | undefined {
+    const snapshot = deps.catalog.read();
+    return resolveWorkTarget({
+      session: sessionOverride,
+      project: projectIds,
+      cwd: cwd(),
+      clients: snapshot?.clients ?? [],
+      projects: snapshot?.projects ?? [],
+    });
+  }
+
+  function effectiveTarget(): WorkTarget | undefined {
+    return computeTarget(deps.resolveProjectConfigIds());
+  }
+
+  function effectiveSource(): WorkTargetSourceName | undefined {
+    const snapshot = deps.catalog.read();
+    return resolveWorkTargetSource({
+      session: sessionOverride,
+      project: deps.resolveProjectConfigIds(),
+      cwd: cwd(),
+      clients: snapshot?.clients ?? [],
+      projects: snapshot?.projects ?? [],
+    });
+  }
+
+  function runIds(): WorkTargetCandidate | undefined {
+    if (!runProjectIds) {
+      runProjectIds = { value: deps.resolveProjectConfigIds() };
+    }
+    return runProjectIds.value;
+  }
+
+  function runTarget(): WorkTarget | undefined {
+    return deps.role === "orchestrator" ? computeTarget(runIds()) : undefined;
+  }
+
+  function idleTarget(): WorkTarget | undefined {
+    const ids = runProjectIds ? runProjectIds.value : deps.resolveProjectConfigIds();
+    return deps.role === "orchestrator" ? computeTarget(ids) : undefined;
+  }
+
+  function endRun(): void {
+    runProjectIds = undefined;
+  }
+
+  function notifyUnreachableOnce(ctx: ExtensionContext): void {
+    if (notifiedUnreachable) return;
+    notifiedUnreachable = true;
+    if (ctx.hasUI) ctx.ui.notify("kankaku: hub unreachable, using local labels", "warning");
+  }
+
+  /**
+   * Resolve a catalog snapshot to show the picker with: the cached
+   * snapshot immediately when fresh; the cached snapshot immediately with
+   * a fire-and-forget refresh when stale; or, when there is no cache at
+   * all, one awaited refresh (bounded by the hub client's own timeout).
+   * Notifies "hub unreachable" at most once when no snapshot is available
+   * at all.
+   */
+  async function getSnapshot(ctx: ExtensionContext): Promise<CatalogSnapshot | undefined> {
+    const cached = deps.catalog.read();
+    if (cached) {
+      if (deps.catalog.isStale()) {
+        void deps.catalog.refresh();
+      }
+      return cached;
+    }
+
+    const fresh = await deps.catalog.refresh();
+    if (!fresh) {
+      notifyUnreachableOnce(ctx);
+    }
+    return fresh;
+  }
+
+  async function runPicker(pi: ExtensionAPI, ctx: ExtensionContext, snapshot: CatalogSnapshot): Promise<void> {
+    const result = await pickTarget(ctx, snapshot);
+
+    if (result.kind === "skipped") {
+      sessionOverride = "skipped";
+      pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, { skipped: true });
+      return;
+    }
+
+    const ids = candidateFrom(result.target);
+    sessionOverride = ids;
+    pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, entryDataFrom(ids));
+
+    const remember = await ctx.ui.confirm("kankaku", `Remember ${formatWorkTargetLabel(result.target)} for this repository?`);
+    if (remember) {
+      deps.persistProjectConfig(ids);
+    }
+  }
+
+  async function ensurePicked(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+    if (deps.role !== "orchestrator" || !ctx.hasUI) return;
+    if (sessionOverride !== undefined) return;
+
+    const snapshot = await getSnapshot(ctx);
+    if (!snapshot) return;
+
+    const projectIds = deps.resolveProjectConfigIds();
+    const resolved = resolveWorkTarget({
+      project: projectIds,
+      cwd: cwd(),
+      clients: snapshot.clients,
+      projects: snapshot.projects,
+    });
+    if (resolved) return;
+
+    await runPicker(pi, ctx, snapshot);
+  }
+
+  async function pick(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
+    const snapshot = await getSnapshot(ctx);
+    if (!snapshot) return;
+    await runPicker(pi, ctx, snapshot);
+  }
+
+  function setExplicit(pi: ExtensionAPI, ids: WorkTargetCandidate): void {
+    sessionOverride = ids;
+    pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, entryDataFrom(ids));
+  }
+
+  function clear(pi: ExtensionAPI): void {
+    sessionOverride = undefined;
+    pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, {});
+  }
+
+  return { restore, ensurePicked, pick, setExplicit, clear, effectiveTarget, effectiveSource, runTarget, idleTarget, endRun };
+}
