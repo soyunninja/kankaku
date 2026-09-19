@@ -268,11 +268,101 @@ notifies once (`kankaku: hub unreachable, using local labels`) and
 continues exactly as it would without a hub configured. `/kankaku catalog
 refresh` forces a refresh on demand.
 
-### Privacy
+### Privacy (catalog)
 
-Nothing is uploaded to the hub in this phase — it is read-only (clients and
-projects only). Records still only ever leave the machine if a later sync
-phase is enabled.
+The catalog itself (clients/projects) is read-only — nothing about *that*
+data is ever written back. Whether your own work records ever leave the
+machine is a separate, opt-in decision: see "Sync" below.
+
+### Sync
+
+Once a hub is configured, kankaku can push consolidated **task** rows (see
+"Task and session views" above) to PocketBase, so a project/task manager
+can report AI time and cost per project. This is an outbox pattern:
+`worklog.jsonl` stays the local source of truth, append-only and never
+rewritten, exactly as without a hub. A separate sync step reads it and
+uploads what is pending — nothing in a pi event handler ever waits on the
+network.
+
+**What gets uploaded.** One `task_entries` row per task — never raw
+`WorkRecord`s re-aggregated on the server. The union-of-intervals rule
+(`wallMs`, "Task and session views") is computed exactly once, locally, by
+`buildTasks`; the hub only ever sums already-consolidated rows. When
+`KANKAKU_SYNC_RECORDS` is not `0` (the default), each task's underlying
+`WorkRecord`s are also uploaded as `work_records`, raw per-run detail for
+drilling into a task — these rows overlap each other and must never be
+summed, unlike `task_entries`.
+
+**Idempotency and the revisit window.** Every task is upserted by its id
+(the orchestrator record's `id`), never blindly created — safe to
+re-send. A task is not final the moment its orchestrator settles: a
+background subagent can settle *after* it and extend the task's union
+(`wallMs`, cost, subagent count) for a task that may already be in
+PocketBase. So every sync revisits a trailing window behind its own
+watermark — `KANKAKU_SYNC_WINDOW_HOURS`, 24h by default — and re-evaluates
+every task whose `endedAt` falls inside it. A cheap content hash per task
+(`<KANKAKU_DIR>/sync-state.json`) means an unchanged task inside the window
+costs nothing: running `/kankaku sync` twice in a row performs zero writes.
+
+**Assignment is create-only.** You (or whoever reassigns work in the hub's
+web app) can move a task from one client/project to another directly in
+PocketBase — for example, moving a "Sin determinar" row to its real
+client once you have identified it. A later re-sync of that same task
+**must never undo that**: on create kankaku sends the full row, including
+`client`/`project`/`legacy_client_label`; on every subsequent update it
+sends measurement fields only (`wall_ms`, `cost`, `status`, ...) and never
+touches assignment fields again. If you need kankaku itself to change a
+task's assignment, do it in the web app, not by re-syncing.
+
+**Historical ("Sin determinar") records.** A record with no `clientId`, or
+whose `clientId` no longer resolves in the catalog, is routed to the hub's
+"Sin determinar" (unassigned) client, carrying its old free-text `client`
+label (or `clientName`) forward as `legacy_client_label` — the exact
+mechanism that lets you bulk-reassign "everything that said `cjamar`" once,
+in the web app, from the unassigned queue.
+
+**Privacy.** `KANKAKU_SYNC_PROMPT` controls whether a task's prompt text
+leaves the machine at all: `none` (default — omitted entirely), `truncated`
+(first 120 chars plus `…`), or `full`.
+
+**Commands:**
+
+- `/kankaku sync` — push everything pending (new tasks, plus anything
+  inside the revisit window that changed).
+- `/kankaku sync all` — a full re-evaluation: every task, not just the
+  window. Safe and cheap to run — the content hash still skips anything
+  unchanged.
+- `/kankaku sync status` — the current watermark, a locally-computed
+  pending count (no network), and the last sync error, if any.
+- `/kankaku backfill` — a full sync, reported grouped by
+  `legacy_client_label`: how many tasks went to "Sin determinar" and under
+  which old label, so you know what to reassign in the web app's
+  unassigned queue. This never rewrites `worklog.jsonl` locally — the
+  reassignment happens once, in PocketBase, and survives every future sync
+  (see "Assignment is create-only" above).
+
+**Automatic sync.** Unless `KANKAKU_SYNC_AUTO=0`, kankaku also syncs
+fire-and-forget (never awaited, errors never surface as a failure of the
+run that triggered them) on `session_start` (orchestrator only, after
+crash recovery) and again after `agent_settled`. Both triggers share one
+single-flight guard, so they never race each other within a process, and a
+simple pid+timestamp lock file (`<KANKAKU_DIR>/sync.lock`, stale after 5
+minutes) keeps two pi processes from syncing the same directory
+concurrently. Subagents never sync. The automatic path never notifies on
+success; on failure it notifies at most once per session
+(`kankaku: sync failed: ...`) — check `/kankaku sync status` for the
+details, including on a later run.
+
+**Network/validation failures.** A network or server (5xx) error stops a
+sync run where it is and does not advance its watermark past the failing
+task — nothing is lost, and the next sync (manual or automatic) picks up
+exactly there. A task that fails **validation** (e.g. a genuinely malformed
+payload) is recorded with its reason and skipped — not retried on every
+single run — but is retried automatically the moment its content changes.
+
+**Limitations:** sync state (`sync-state.json`) is per repository/machine,
+not centralized; there is no standalone CLI entry point yet (`npx kankaku
+sync` outside of pi) — see "Roadmap".
 
 ## Tagged segments
 
@@ -377,6 +467,18 @@ Columns (in this order for CSV; the same fields for JSON):
 - `KANKAKU_MACHINE`: this machine's display name for the hub, attached to
   every record as `machine` once the hub is configured. Defaults to the OS
   hostname.
+- `KANKAKU_SYNC_PROMPT`: prompt privacy for sync — `none` (default, omitted
+  entirely), `truncated` (first 120 chars + `…`), or `full`. See "Hub
+  (PocketBase)" > "Sync" > "Privacy".
+- `KANKAKU_SYNC_WINDOW_HOURS`: how far behind the sync watermark to revisit
+  on every run, so a subagent that settles after its orchestrator still
+  reaches its task. Defaults to 24; a non-positive or non-numeric value
+  falls back to the default.
+- `KANKAKU_SYNC_RECORDS`: `0` disables uploading `work_records` (raw
+  per-`WorkRecord` detail); `task_entries` are always uploaded regardless.
+  Defaults to enabled.
+- `KANKAKU_SYNC_AUTO`: `0` disables the automatic `session_start`/
+  `agent_settled` sync; `/kankaku sync` still works. Defaults to enabled.
 
 ## Limitations
 
@@ -394,6 +496,14 @@ Columns (in this order for CSV; the same fields for JSON):
 - Hub sync (phase 2): push consolidated task rows to PocketBase (outbox
   pattern, idempotent upsert by task id) so a task/project manager can
   report AI time and cost per project. The catalog/selection layer in "Hub
-  (PocketBase)" above is phase 1, already shipped.
-- Remote sync service: the `id` and `schema` fields are already in place for
-  a future `synced` cursor that uploads records to a remote store.
+  (PocketBase)" above is phase 1; sync itself ("Hub (PocketBase)" > "Sync")
+  is phase 2 — both already shipped.
+- A standalone CLI entry point (`npx kankaku sync`, for a cron/launchd job
+  outside of any pi session) is deliberately not included yet: Node refuses
+  type stripping for a `.ts` file under `node_modules`, so a bin script
+  needs a build step this package does not have yet. `sync-runner.ts` and
+  its adapters are already decoupled from pi so that build step is the only
+  missing piece.
+- Linking a `task_entries` row to an existing `tasks` record (phase 3 in the
+  hub's own data model) — kankaku never invents tasks; it would only ever
+  link to one created in the manager.

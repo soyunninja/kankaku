@@ -10,16 +10,20 @@ Read `README.md` for behaviour and the record schema before changing code.
 - `src/domain/` is pure: no I/O, no `Date.now()`, no pi imports. Time comes
   from the injected `Clock` port. `WorkTracker` is the only stateful domain
   object and it must stay deterministic under test.
-- `src/ports/` holds interfaces only (`Clock`, `WorkLog`, `Catalog`).
+- `src/ports/` holds interfaces only (`Clock`, `WorkLog`, `Catalog`,
+  `WorkSink`).
 - `src/adapters/` talks to the outside world: pi events and UI
   (`pi-tracker.ts`, wiring `status-bar.ts` for the footer clock/client
   status, `session-client.ts` for the session billing-client override,
   `session-target.ts` and `target-picker.ts` for the hub client/project
   picker, and `kankaku-command.ts` for the `/kankaku` command), the
   filesystem (`jsonl-work-log.ts`, `lazy-jsonl-work-log.ts`,
-  `project-config.ts`, `cached-catalog.ts`, `hub-credentials.ts`), the hub
-  HTTP layer (`pocketbase-client.ts`, generic; `pocketbase-catalog.ts`,
-  maps records to domain types), and report formatting (`report.ts`).
+  `project-config.ts`, `cached-catalog.ts`, `hub-credentials.ts`,
+  `sync-state-store.ts`), the hub HTTP layer (`pocketbase-client.ts`,
+  generic; `pocketbase-catalog.ts`, maps records to domain types;
+  `pocketbase-sink.ts`, the `WorkSink` that uploads task rows), sync
+  orchestration (`sync-runner.ts`, using the pure `domain/hub-entry.ts` and
+  `domain/sync-plan.ts`), and report formatting (`report.ts`).
 - `src/extension.ts` only wires config, tracker, log and adapter together.
   Do not put logic there.
 - Dependencies point inwards: adapters import domain and ports; domain
@@ -64,6 +68,20 @@ Read `README.md` for behaviour and the record schema before changing code.
   valid against `CLIENT_PATTERN`, or omitted rather than breaking the
   record) so every existing report/export keeps grouping correctly. See
   README "Hub (PocketBase)".
+- Hub sync (phase 2, `domain/hub-entry.ts`, `domain/sync-plan.ts`,
+  `adapters/sync-runner.ts`) uploads `buildTasks` output — the aggregation
+  rule (D6 in `kankaku-pocketbase-proposal.md`) is never re-implemented
+  against raw records on the server or in any sync adapter. Nothing in a pi
+  event handler awaits the network: sync is a separate, later step
+  (`/kankaku sync`, or fire-and-forget on `session_start`/`agent_settled`),
+  and `worklog.jsonl` is still never rewritten by it — sync only reads.
+- Task assignment (`client`/`project`/`task`/`legacy_client_label` on a
+  `task_entries` row) is **create-only**: `domain/hub-entry.ts`'s
+  `buildTaskEntryUpdatePayload` must never include those fields, so a
+  re-sync can never undo a reassignment made directly in the hub's web app.
+  Only `buildTaskEntryCreatePayload` sends them, exactly once, when the row
+  does not exist yet. See README "Hub (PocketBase)" > "Sync" > "Assignment
+  is create-only".
 
 ## Code conventions
 
