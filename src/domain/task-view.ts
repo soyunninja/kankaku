@@ -100,17 +100,36 @@ export function sumUsage(totals: Array<UsageTotals | undefined>): UsageTotals {
 }
 
 /**
- * Match every subagent record to the orchestrator record it belongs to: same
- * project, `parentPid === orchestrator.pid`, and the child's `startedAt`
- * falls inside the orchestrator's `[startedAt, settledAt]` window. When
- * several orchestrator records match (a reused pid), the latest-starting one
- * wins. Each child is assigned at most once; unmatched children are orphans.
+ * A record is only eligible to anchor a new task when it is a *confirmed*
+ * orchestrator: `role === "orchestrator"` and not flagged `uncertain`
+ * (ADR 0022). An uncertain record is never dropped — see
+ * {@link uncertainRecords} — but it never anchors a task locally and is
+ * therefore never synced as one either (SUBAGENT-REQ-014), since sync
+ * (`adapters/sync-runner.ts`) uploads exactly what {@link buildTasks}
+ * produces.
+ */
+function isConfirmedOrchestrator(record: WorkRecord): boolean {
+  return record.role === "orchestrator" && record.roleConfidence !== "uncertain";
+}
+
+/**
+ * Match every subagent record to the orchestrator record it belongs to:
+ * `parentPid === orchestrator.pid` and the child's `startedAt` falls inside
+ * the orchestrator's `[startedAt, settledAt]` window. `project` is a
+ * *hint*, never a hard filter (ADR 0021, SUBAGENT-REQ-008): among several
+ * candidates matching on pid/time (a reused pid, or a genuine cross-project
+ * match), a same-project one is always preferred; a cross-project candidate
+ * is only ever eligible here because it already reached this array via
+ * registry-corroborated ancestry (see
+ * `adapters/registry-aware-work-log.ts`) — this function itself does no
+ * registry lookups and stays pure. Each child is assigned at most once;
+ * unmatched children are orphans.
  */
 function matchChildren(records: WorkRecord[]): {
   childrenByOrchestratorId: Map<string, WorkRecord[]>;
   orphans: WorkRecord[];
 } {
-  const orchestrators = records.filter((record) => record.role === "orchestrator");
+  const orchestrators = records.filter(isConfirmedOrchestrator);
   const subagents = records.filter((record) => record.role === "subagent");
 
   const childrenByOrchestratorId = new Map<string, WorkRecord[]>();
@@ -124,18 +143,21 @@ function matchChildren(records: WorkRecord[]): {
     const childStart = toMs(child.startedAt);
     let best: WorkRecord | undefined;
     let bestStart = Number.NEGATIVE_INFINITY;
+    let bestSameProject = false;
 
     for (const orchestrator of orchestrators) {
-      if (orchestrator.project !== child.project) continue;
       if (orchestrator.pid !== child.parentPid) continue;
 
       const parentStart = toMs(orchestrator.startedAt);
       const parentEnd = toMs(orchestrator.settledAt);
       if (childStart < parentStart || childStart > parentEnd) continue;
 
-      if (parentStart > bestStart) {
-        bestStart = parentStart;
+      const sameProject = orchestrator.project === child.project;
+      const better = best === undefined || (sameProject && !bestSameProject) || (sameProject === bestSameProject && parentStart > bestStart);
+      if (better) {
         best = orchestrator;
+        bestStart = parentStart;
+        bestSameProject = sameProject;
       }
     }
 
@@ -189,11 +211,14 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
   };
 }
 
-/** Build one {@link TaskView} per orchestrator record, sorted by `startedAt`. */
+/**
+ * Build one {@link TaskView} per *confirmed* orchestrator record, sorted by
+ * `startedAt`. An orchestrator-role record flagged `roleConfidence:
+ * "uncertain"` (ADR 0022) never anchors a task here — see
+ * {@link isConfirmedOrchestrator} and {@link uncertainRecords}.
+ */
 export function buildTasks(records: WorkRecord[]): TaskView[] {
-  const orchestrators = records
-    .filter((record) => record.role === "orchestrator")
-    .sort((a, b) => toMs(a.startedAt) - toMs(b.startedAt));
+  const orchestrators = records.filter(isConfirmedOrchestrator).sort((a, b) => toMs(a.startedAt) - toMs(b.startedAt));
 
   const { childrenByOrchestratorId } = matchChildren(records);
 
@@ -203,6 +228,18 @@ export function buildTasks(records: WorkRecord[]): TaskView[] {
 /** Subagent records that could not be matched to any orchestrator record. */
 export function orphanSubagents(records: WorkRecord[]): WorkRecord[] {
   return matchChildren(records).orphans;
+}
+
+/**
+ * Orchestrator-role records that could not be positively proven top-level
+ * (ADR 0022's "uncertain" state): no recognised child-env-marker matched,
+ * but a live tracked ancestor process was found. Never counted as a new
+ * task ({@link buildTasks} excludes them) and never synced as one, but
+ * never dropped either — surfaced here so `/kankaku doctor` and the report
+ * hint (SUBAGENT-REQ-017) can make the gap visible instead of silent.
+ */
+export function uncertainRecords(records: WorkRecord[]): WorkRecord[] {
+  return records.filter((record) => record.role === "orchestrator" && record.roleConfidence === "uncertain");
 }
 
 /**

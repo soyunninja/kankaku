@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildSessions, buildTasks, orphanSubagents, sumUsage } from "../src/domain/task-view.ts";
+import { buildSessions, buildTasks, orphanSubagents, sumUsage, uncertainRecords } from "../src/domain/task-view.ts";
 import type { UsageTotals, WorkRecord } from "../src/domain/work-record.ts";
 
 function iso(secondsFromEpoch: number): string {
@@ -345,4 +345,98 @@ test("buildTasks leaves hub fields undefined when the orchestrator has none, and
 
   assert.equal(tasks[0]!.clientId, undefined);
   assert.equal("clientId" in tasks[0]!, false);
+});
+
+// --- SUBAGENT-REQ-013/014: uncertain records never anchor a task ---
+
+test("buildTasks excludes an orchestrator-role record flagged roleConfidence 'uncertain' (SUBAGENT-REQ-013, SUBAGENT-REQ-014)", () => {
+  const confirmed = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+  const uncertain = makeRecord({ id: "p2", pid: 101, parentPid: 1, roleConfidence: "uncertain" });
+
+  const tasks = buildTasks([confirmed, uncertain]);
+
+  assert.deepEqual(
+    tasks.map((t) => t.id),
+    ["p1"],
+  );
+});
+
+test("uncertainRecords surfaces uncertain orchestrator records without dropping them (SUBAGENT-REQ-017)", () => {
+  const confirmed = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+  const uncertain = makeRecord({ id: "p2", pid: 101, parentPid: 1, roleConfidence: "uncertain" });
+
+  assert.deepEqual(
+    uncertainRecords([confirmed, uncertain]).map((r) => r.id),
+    ["p2"],
+  );
+});
+
+test("an uncertain record's subagent-role child (if any) is not attached to it and stays an orphan, since it never anchors a task", () => {
+  const uncertain = makeRecord({ id: "p2", pid: 101, parentPid: 1, roleConfidence: "uncertain" });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 202, parentPid: 101, startedAt: iso(1), settledAt: iso(5) });
+
+  const tasks = buildTasks([uncertain, child]);
+  assert.equal(tasks.length, 0);
+
+  const orphans = orphanSubagents([uncertain, child]);
+  assert.deepEqual(
+    orphans.map((r) => r.id),
+    ["c1"],
+  );
+});
+
+// --- SUBAGENT-REQ-007/008: project is a hint, never a hard filter ---
+
+test("a gentle-pi cross-worktree child (different project, matching pid/parentPid/time) is reunited with its orchestrator once both records are in the same array (SUBAGENT-REQ-007, SUBAGENT-REQ-008)", () => {
+  // In practice the cross-worktree child's record only reaches this array
+  // via the registry-corroborated merge (adapters/registry-aware-work-log.ts);
+  // matchChildren itself stays pure and just needs project to stop being a
+  // hard filter.
+  const orchestrator = makeRecord({ id: "orch", pid: 100, parentPid: 1, project: "/worktree-a", startedAt: iso(0), settledAt: iso(30) });
+  const child = makeRecord({
+    id: "child",
+    role: "subagent",
+    pid: 200,
+    parentPid: 100,
+    project: "/worktree-b",
+    startedAt: iso(5),
+    settledAt: iso(40),
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.05 },
+  });
+
+  const tasks = buildTasks([orchestrator, child]);
+
+  assert.equal(tasks.length, 1);
+  const task = tasks[0]!;
+  assert.equal(task.subagents.length, 1);
+  assert.equal(task.subagents[0]?.id, "child");
+  // Hand-computed union of [0,30] and [5,40] = [0,40] -> 40s.
+  assert.equal(task.wallMs, 40000);
+  assert.equal(task.usage.cost, 0.05); // summed once, not double-counted
+});
+
+test("a same-project candidate is preferred over a cross-project one when both match pid/time (project as a hint, SUBAGENT-REQ-008)", () => {
+  const child = makeRecord({ id: "child", role: "subagent", pid: 700, parentPid: 600, project: "/same", startedAt: iso(5), settledAt: iso(6) });
+  const sameProjectParent = makeRecord({ id: "same", pid: 600, parentPid: 1, project: "/same", startedAt: iso(0), settledAt: iso(10) });
+  const crossProjectParent = makeRecord({ id: "cross", pid: 600, parentPid: 1, project: "/other", startedAt: iso(0), settledAt: iso(10) });
+
+  const tasks = buildTasks([sameProjectParent, crossProjectParent, child]);
+
+  const sameTask = tasks.find((t) => t.id === "same")!;
+  const crossTask = tasks.find((t) => t.id === "cross")!;
+  assert.equal(sameTask.subagents.length, 1);
+  assert.equal(crossTask.subagents.length, 0);
+});
+
+test("two unrelated top-level orchestrator sessions in the same repo, overlapping in time, are never joined (SUBAGENT-REQ-007, SUBAGENT-REQ-008)", () => {
+  const terminalA = makeRecord({ id: "a", pid: 100, parentPid: 1, project: "/repo", startedAt: iso(0), settledAt: iso(100) });
+  const terminalB = makeRecord({ id: "b", pid: 200, parentPid: 1, project: "/repo", startedAt: iso(10), settledAt: iso(90) });
+
+  const tasks = buildTasks([terminalA, terminalB]);
+
+  assert.equal(tasks.length, 2);
+  assert.deepEqual(
+    tasks.map((t) => t.subagents.length),
+    [0, 0],
+  );
 });
