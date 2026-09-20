@@ -192,6 +192,8 @@ export interface TaskEntryPayload {
   schema: number;
   agent: string;
   agent_version?: string;
+  /** Non-default session directory, see `TaskView.sessionDir`. A measurement field, not assignment: sent on both create and update. */
+  session_dir?: string;
   plugin: string;
   plugin_version?: string;
   waiting_quality: WaitingQuality;
@@ -235,6 +237,7 @@ export function buildTaskEntryCreatePayload(task: TaskView, ctx: HubEntryContext
     schema: task.orchestrator.schema,
     agent: ctx.agent,
     ...(ctx.agentVersion !== undefined ? { agent_version: ctx.agentVersion } : {}),
+    ...(task.sessionDir !== undefined ? { session_dir: task.sessionDir } : {}),
     plugin: ctx.plugin,
     ...(ctx.pluginVersion !== undefined ? { plugin_version: ctx.pluginVersion } : {}),
     waiting_quality: computeWaitingQuality(),

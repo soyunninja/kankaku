@@ -154,6 +154,12 @@ test("computeTaskContentHash is stable for identical content and changes when a 
   assert.notEqual(computeTaskContentHash(task), computeTaskContentHash(changedCost));
 });
 
+test("computeTaskContentHash changes when a session dir change alone triggers a resync", () => {
+  const base = makeTask("a", 0, 10);
+  const withSessionDir = makeTask("a", 0, 10, { sessionDir: "/custom/dir" });
+  assert.notEqual(computeTaskContentHash(base), computeTaskContentHash(withSessionDir));
+});
+
 test("computeTaskContentHash changes when a background subagent joins later, flipping subagent_linkage/cost_quality (SUBAGENT-REQ: late join must resync)", () => {
   const orchestratorWithSpan = makeRecord({
     id: "a",

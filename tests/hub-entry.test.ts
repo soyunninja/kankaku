@@ -188,6 +188,16 @@ test("buildTaskEntryCreatePayload omits agent_version/plugin_version when not kn
   assert.equal("plugin_version" in payload, false);
 });
 
+test("buildTaskEntryCreatePayload includes session_dir when set, omits it when not set", () => {
+  const taskWithSessionDir = makeTask({ sessionDir: "/some/dir" });
+  const payloadWithSessionDir = buildTaskEntryCreatePayload(taskWithSessionDir, ctx);
+  assert.equal(payloadWithSessionDir.session_dir, "/some/dir");
+
+  const taskWithoutSessionDir = makeTask({});
+  const payloadWithoutSessionDir = buildTaskEntryCreatePayload(taskWithoutSessionDir, ctx);
+  assert.equal("session_dir" in payloadWithoutSessionDir, false);
+});
+
 test("computeCostQuality: measured when the orchestrator record observed a real cost figure", () => {
   const task = makeTask({}, { costObserved: true });
   assert.equal(buildTaskEntryCreatePayload(task, ctx).cost_quality, "measured");
@@ -256,6 +266,12 @@ test("buildTaskEntryUpdatePayload keeps every measurement field", () => {
   assert.equal(update.cost, create.cost);
   assert.equal(update.status, create.status);
   assert.equal(update.ended_at, create.ended_at);
+});
+
+test("buildTaskEntryUpdatePayload keeps session_dir (a measurement field, not assignment)", () => {
+  const task = makeTask({ clientId: "client-1", sessionDir: "/some/dir" });
+  const update = buildTaskEntryUpdatePayload(task, ctx);
+  assert.equal(update.session_dir, "/some/dir");
 });
 
 test("a create followed by an update never lets the update re-send an assignment field, even with a changed catalog", () => {

@@ -98,7 +98,11 @@ function fingerprint(input: string): string {
  * still flips `subagent_linkage`) — that must still trigger a resync.
  * `waiting_quality` is a true constant (`domain/hub-entry.ts`'s
  * `computeWaitingQuality`) and is deliberately left out: it can never
- * change between two evaluations of the same task.
+ * change between two evaluations of the same task. `sessionDir` is also a
+ * measurement-style field (`domain/hub-entry.ts`'s `session_dir`, sent on
+ * both create and update) — its own change, e.g. a resume that switches to
+ * a non-default session directory, must trigger a resync on its own even
+ * when nothing else changed.
  */
 export function computeTaskContentHash(task: TaskView): string {
   return fingerprint(
@@ -113,6 +117,7 @@ export function computeTaskContentHash(task: TaskView): string {
       segments: task.segments,
       costQuality: computeCostQuality(task),
       subagentLinkage: computeSubagentLinkage(task),
+      sessionDir: task.sessionDir,
     }),
   );
 }

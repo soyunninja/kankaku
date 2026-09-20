@@ -102,12 +102,12 @@ unaffected.
 *non-default* session directory (`--session-dir`, or a resumed session
 started that way) — exactly the condition under which pi's own printed "To
 resume this session: ..." line includes `--session-dir`. Most records never
-carry it. It is **local only today**: the hub has no field for it yet (see
-"Hub (PocketBase)" below for the recommended migration), so it never leaves
-the machine as part of a sync. `/kankaku doctor` shows it for the current
-session when set, and it is available on a task's orchestrator record
-(`TaskView.sessionDir`) for anything that wants to reconstruct the exact
-`pi --session-dir <dir> --session <id>` resume command locally.
+carry it. `/kankaku doctor` shows it for the current session when set, and
+it is available on a task's orchestrator record (`TaskView.sessionDir`) for
+anything that wants to reconstruct the exact `pi --session-dir <dir>
+--session <id>` resume command locally. When a hub is configured it is also
+sent as `session_dir` on every sync (see "Hub (PocketBase)" > "Sync" >
+"Agent and measurement quality").
 
 ## Task and session views
 
@@ -562,6 +562,18 @@ still triggers a resync. An older hub predating these fields simply
 ignores them (PocketBase silently drops unrecognized fields on write); no
 capability probing is needed.
 
+**Session directory.** `session_dir` carries a task's non-default session
+directory (`TaskView.sessionDir`, see "Record schema") to the hub, so a
+resumable session can be resumed from the web, not just locally via
+`/kankaku doctor`. It is optional — only present when pi reports a
+non-default session directory — and, like the fields above, a measurement
+field: sent on both create and update, and included in the sync content
+hash so a session dir change alone triggers a resync. Like `repo_project`,
+it is an absolute local filesystem path (username, disk layout) — the same
+category of exposure the hub already accepts for `repo_project`, not a new
+one. An older hub predating this field simply ignores it (PocketBase
+silently drops unrecognized fields on write).
+
 **Privacy.** `KANKAKU_SYNC_PROMPT` controls whether a task's prompt text
 leaves the machine at all: `none` (default — omitted entirely), `truncated`
 (first 120 chars plus `…`), or `full`.
@@ -764,14 +776,6 @@ Columns (in this order for CSV; the same fields for JSON):
 - Linking a `task_entries` row to an existing `tasks` record (phase 3 in the
   hub's own data model) — kankaku never invents tasks; it would only ever
   link to one created in the manager.
-- A hub field for `sessionDir` (recommended: `session_dir`, text, optional
-  on `task_entries`) so a resumable non-default session can be resumed from
-  the web, not just locally via `/kankaku doctor` — not sent today, see
-  "Record schema". Note the privacy trade-off before adding it: like
-  `repo_project`, it is an absolute local filesystem path (username, disk
-  layout) — the hub already stores `repo_project` for the same reason, so
-  this would be consistent, not a new category of exposure, but worth
-  calling out explicitly when it is added.
 - Generic subagent detection (phase 6): this version (6a) fixes the two
   correctness bugs described in "Subagents" above (a phantom-orchestrator
   double count; a gentle-pi cross-worktree child's work going missing). A
