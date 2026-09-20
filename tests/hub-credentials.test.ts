@@ -18,7 +18,7 @@ function writeCredentialsFile(homeDir: string, content: unknown): void {
 test("resolveHubCredentials returns undefined when nothing is configured", () => {
   const homeDir = makeHomeDir();
   try {
-    const result = resolveHubCredentials({ env: {}, homeDir });
+    const result = resolveHubCredentials({ env: {}, homeDir: () => homeDir });
     assert.equal(result.credentials, undefined);
     assert.equal(result.invalidReason, undefined);
   } finally {
@@ -30,7 +30,7 @@ test("resolveHubCredentials reads the credentials file when env is unset", () =>
   const homeDir = makeHomeDir();
   try {
     writeCredentialsFile(homeDir, { url: "https://pb.example.com", email: "bot@example.com", password: "secret" });
-    const result = resolveHubCredentials({ env: {}, homeDir });
+    const result = resolveHubCredentials({ env: {}, homeDir: () => homeDir });
     assert.deepEqual(result.credentials, { url: "https://pb.example.com", email: "bot@example.com", password: "secret" });
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
@@ -43,7 +43,7 @@ test("resolveHubCredentials prefers env fields over the file, field by field", (
     writeCredentialsFile(homeDir, { url: "https://file.example.com", email: "file@example.com", password: "filepass" });
     const result = resolveHubCredentials({
       env: { KANKAKU_PB_URL: "https://env.example.com" },
-      homeDir,
+      homeDir: () => homeDir,
     });
     assert.deepEqual(result.credentials, { url: "https://env.example.com", email: "file@example.com", password: "filepass" });
   } finally {
@@ -56,7 +56,7 @@ test("resolveHubCredentials tolerates a missing credentials file", () => {
   try {
     const result = resolveHubCredentials({
       env: { KANKAKU_PB_URL: "https://env.example.com", KANKAKU_PB_EMAIL: "a@b.com", KANKAKU_PB_PASSWORD: "x" },
-      homeDir,
+      homeDir: () => homeDir,
     });
     assert.deepEqual(result.credentials, { url: "https://env.example.com", email: "a@b.com", password: "x" });
   } finally {
@@ -68,7 +68,7 @@ test("resolveHubCredentials tolerates malformed JSON in the credentials file", (
   const homeDir = makeHomeDir();
   try {
     writeCredentialsFile(homeDir, "{not json");
-    const result = resolveHubCredentials({ env: {}, homeDir });
+    const result = resolveHubCredentials({ env: {}, homeDir: () => homeDir });
     assert.equal(result.credentials, undefined);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
@@ -78,7 +78,7 @@ test("resolveHubCredentials tolerates malformed JSON in the credentials file", (
 test("resolveHubCredentials returns undefined when only some fields resolve", () => {
   const homeDir = makeHomeDir();
   try {
-    const result = resolveHubCredentials({ env: { KANKAKU_PB_URL: "https://env.example.com" }, homeDir });
+    const result = resolveHubCredentials({ env: { KANKAKU_PB_URL: "https://env.example.com" }, homeDir: () => homeDir });
     assert.equal(result.credentials, undefined);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
@@ -90,11 +90,35 @@ test("resolveHubCredentials reports invalidReason and no credentials for a refus
   try {
     const result = resolveHubCredentials({
       env: { KANKAKU_PB_URL: "http://pb.example.com", KANKAKU_PB_EMAIL: "a@b.com", KANKAKU_PB_PASSWORD: "x" },
-      homeDir,
+      homeDir: () => homeDir,
     });
     assert.equal(result.credentials, undefined);
     assert.match(result.invalidReason ?? "", /refusing non-HTTPS/);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
   }
+});
+
+test("resolveHubCredentials treats a throwing homeDir provider as 'no home directory' rather than crashing, and still resolves env-only credentials", () => {
+  const homeDir = (): string => {
+    throw new Error("ENOENT: no such file or directory, uv_os_homedir");
+  };
+
+  const result = resolveHubCredentials({
+    env: { KANKAKU_PB_URL: "https://env.example.com", KANKAKU_PB_EMAIL: "a@b.com", KANKAKU_PB_PASSWORD: "x" },
+    homeDir,
+  });
+
+  assert.deepEqual(result.credentials, { url: "https://env.example.com", email: "a@b.com", password: "x" });
+});
+
+test("resolveHubCredentials treats a throwing homeDir provider as unconfigured when credentials rely on the file", () => {
+  const homeDir = (): string => {
+    throw new Error("no home directory available");
+  };
+
+  const result = resolveHubCredentials({ env: {}, homeDir });
+
+  assert.equal(result.credentials, undefined);
+  assert.equal(result.invalidReason, undefined);
 });

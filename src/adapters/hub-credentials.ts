@@ -41,8 +41,17 @@ function readCredentialsFile(filePath: string): HubCredentialsFile {
 
 export interface ResolveHubCredentialsDeps {
   env: NodeJS.ProcessEnv;
-  /** Injectable for tests; defaults to `os.homedir()` at the call site (extension.ts). */
-  homeDir: string;
+  /**
+   * Resolves the home directory; called lazily, inside this function, and
+   * defensively. A throwing provider (no `HOME`, a sandboxed environment
+   * without a resolvable home directory) is treated the same as "no home
+   * directory" rather than propagating — env-only credentials must still
+   * resolve, and the hub-unconfigured case must stay a no-op regardless of
+   * the host environment. Injectable for tests; defaults to `os.homedir` at
+   * the call site (extension.ts) — passed as a reference, never invoked
+   * there, so a throw never escapes before this function's own try/catch.
+   */
+  homeDir: () => string;
 }
 
 export interface ResolveHubCredentialsResult {
@@ -59,9 +68,19 @@ export interface ResolveHubCredentialsResult {
  * closed). Never reads the project's own `.kankaku/config.json` — that
  * file is project-local and frequently committed.
  */
+/** Resolve `homeDir()` defensively: any failure (no `HOME`, a sandboxed environment) yields `undefined` instead of throwing. Exported so callers with their own homedir-dependent path (e.g. `extension.ts`'s catalog cache) can share the same guard. */
+export function safeHomeDir(homeDir: () => string): string | undefined {
+  try {
+    return homeDir();
+  } catch {
+    return undefined;
+  }
+}
+
 export function resolveHubCredentials(deps: ResolveHubCredentialsDeps): ResolveHubCredentialsResult {
   const fromEnv = loadHubEnvCredentials(deps.env);
-  const fromFile = readCredentialsFile(join(deps.homeDir, CREDENTIALS_FILE));
+  const homeDir = safeHomeDir(deps.homeDir);
+  const fromFile = homeDir !== undefined ? readCredentialsFile(join(homeDir, CREDENTIALS_FILE)) : {};
 
   const url = fromEnv.url ?? fromFile.url;
   const email = fromEnv.email ?? fromFile.email;
