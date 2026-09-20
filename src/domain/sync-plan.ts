@@ -22,6 +22,22 @@ export interface SyncState {
   target: string;
   /** Set after a network/5xx failure stopped a run short; cleared by the next fully-successful run. */
   lastError?: { message: string; at: string };
+  /**
+   * The `WorkLog`'s cheap change signal (`version()`) as of the last real
+   * (non-short-circuited) automatic-or-manual sync attempt. The automatic
+   * path (`session_start`/`agent_settled`) compares this against the
+   * current value to skip entirely — no `readAll()`, no network — when
+   * nothing has changed and the last attempt did not error. See
+   * `adapters/sync-runner.ts#runSync`.
+   */
+  logVersion?: string | number;
+  /**
+   * `Clock`-based timestamp (ms) of the last real (non-short-circuited)
+   * automatic sync attempt, persisted so the automatic path's throttle
+   * (`KANKAKU_SYNC_MIN_INTERVAL_MINUTES`) holds across processes, not just
+   * within one. Never touched by a manual sync.
+   */
+  lastRunAt?: number;
 }
 
 export interface SyncPlanOptions {
@@ -126,18 +142,24 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
  * behind `newSyncedThrough` (or that no longer exist in `tasks`, which
  * should not normally happen since `worklog.jsonl` is append-only) — keeps
  * `sync-state.json` from growing forever.
+ *
+ * Accumulated in a `Map` and emitted via `Object.fromEntries` (never
+ * `pruned[id] = ...` on a plain object), since a task id ultimately traces
+ * back to free-text worklog content: a value like `__proto__` written to a
+ * plain object would silently no-op (the inherited accessor ignores a
+ * non-object assignment) instead of being kept as an own property.
  */
 export function pruneHashes(hashes: Record<string, string>, tasks: TaskView[], newSyncedThrough: string | undefined, windowHours = DEFAULT_WINDOW_HOURS): Record<string, string> {
   if (!newSyncedThrough) return {};
   const cutoff = Date.parse(newSyncedThrough) - windowMs(windowHours);
   const byId = new Map(tasks.map((task) => [task.id, task]));
 
-  const pruned: Record<string, string> = {};
+  const pruned = new Map<string, string>();
   for (const [id, hash] of Object.entries(hashes)) {
     const task = byId.get(id);
     if (task && Date.parse(task.endedAt) > cutoff) {
-      pruned[id] = hash;
+      pruned.set(id, hash);
     }
   }
-  return pruned;
+  return Object.fromEntries(pruned);
 }

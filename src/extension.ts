@@ -1,4 +1,4 @@
-import { homedir, hostname } from "node:os";
+import { homedir, hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { detectRole, loadConfig, loadMachine, loadSyncConfig } from "./config.ts";
@@ -8,7 +8,7 @@ import { LazyFileInflightStore } from "./adapters/lazy-file-inflight-store.ts";
 import { createPiTracker } from "./adapters/pi-tracker.ts";
 import { LazyProjectClientSource, LazyProjectTargetSource } from "./adapters/project-config.ts";
 import { LazyExportWriter } from "./adapters/export-writer.ts";
-import { resolveHubCredentials } from "./adapters/hub-credentials.ts";
+import { resolveHubCredentials, safeHomeDir } from "./adapters/hub-credentials.ts";
 import { PocketBaseClient } from "./adapters/pocketbase-client.ts";
 import { createPocketBaseCatalogFetcher } from "./adapters/pocketbase-catalog.ts";
 import { CachedCatalog } from "./adapters/cached-catalog.ts";
@@ -17,6 +17,7 @@ import { resolveKankakuDir } from "./adapters/kankaku-dir.ts";
 import { SyncStateStore } from "./adapters/sync-state-store.ts";
 import { PocketBaseSink } from "./adapters/pocketbase-sink.ts";
 import { computeSyncStatus, runSync, singleFlight } from "./adapters/sync-runner.ts";
+import type { SyncTrigger } from "./adapters/sync-runner.ts";
 import type { Catalog } from "./ports/catalog.ts";
 import type { SessionTarget } from "./adapters/session-target.ts";
 import type { SyncCommandDeps } from "./adapters/kankaku-command.ts";
@@ -48,16 +49,24 @@ export default function kankaku(pi: ExtensionAPI): void {
   let sync: SyncCommandDeps | undefined;
   let autoSyncEnabled: boolean | undefined;
 
-  const hub = resolveHubCredentials({ env: process.env, homeDir: homedir() });
+  // `homeDir` is passed as a reference, never invoked here: any failure
+  // resolving it (no HOME, a sandbox) must not fail extension load for
+  // every process, hub-configured or not. resolveHubCredentials guards the
+  // call itself and treats it the same as "no home directory".
+  const hub = resolveHubCredentials({ env: process.env, homeDir: homedir });
   hubConfigError = hub.invalidReason;
 
   if (hub.credentials) {
     const credentials = hub.credentials;
     const client = new PocketBaseClient({ url: credentials.url, email: credentials.email, password: credentials.password });
+    // Same defensive resolution as above; falls back to the OS temp dir
+    // when no home directory is available so an env-only hub configuration
+    // still works without one (the cache just does not survive a reboot).
+    const homeDirForCache = safeHomeDir(homedir) ?? tmpdir();
     catalog = new CachedCatalog({
       // Machine-wide cache: several projects on the same machine share one
       // catalog fetch, and it survives across projects.
-      filePath: join(homedir(), ".kankaku", "catalog.json"),
+      filePath: join(homeDirForCache, ".kankaku", "catalog.json"),
       url: credentials.url,
       clock: { now: () => Date.now() },
       fetchCatalog: createPocketBaseCatalogFetcher(client),
@@ -81,7 +90,7 @@ export default function kankaku(pi: ExtensionAPI): void {
     const catalogRef = catalog;
     const machineName = machine;
 
-    const runOnce = (options?: { full?: boolean }) => {
+    const runOnce = (options?: { full?: boolean; trigger?: SyncTrigger }) => {
       const snapshot = catalogRef.read();
       const sink = new PocketBaseSink({
         client,
@@ -92,7 +101,15 @@ export default function kankaku(pi: ExtensionAPI): void {
         syncRecords: syncConfig.syncRecords,
       });
       return runSync(
-        { log, sink, stateStore: syncStateStore, clock: { now: () => Date.now() }, target: credentials.url, windowHours: syncConfig.windowHours },
+        {
+          log,
+          sink,
+          stateStore: syncStateStore,
+          clock: { now: () => Date.now() },
+          target: credentials.url,
+          windowHours: syncConfig.windowHours,
+          minAutoIntervalMs: syncConfig.minIntervalMinutes * 60 * 1000,
+        },
         options,
       );
     };

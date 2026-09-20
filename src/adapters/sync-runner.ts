@@ -8,6 +8,7 @@
 
 import { buildTasks } from "../domain/task-view.ts";
 import { computeTaskContentHash, planSync, pruneHashes } from "../domain/sync-plan.ts";
+import type { SyncState } from "../domain/sync-plan.ts";
 import type { TaskView } from "../domain/task-view.ts";
 import type { Clock } from "../ports/clock.ts";
 import type { WorkLog } from "../ports/work-log.ts";
@@ -29,6 +30,13 @@ export interface SyncSummary {
   locked?: boolean;
 }
 
+/**
+ * Which automatic trigger asked for this run, or `undefined` for a manual
+ * one (`/kankaku sync`, `sync all`, `backfill`) — see `runSync`'s
+ * short-circuit and throttle, which apply only to the automatic path.
+ */
+export type SyncTrigger = "session_start" | "agent_settled";
+
 export interface SyncRunnerDeps {
   log: WorkLog;
   sink: WorkSink;
@@ -37,9 +45,16 @@ export interface SyncRunnerDeps {
   /** The configured hub URL — a state file synced against a different one triggers a full sync. */
   target: string;
   windowHours?: number;
+  /**
+   * `KANKAKU_SYNC_MIN_INTERVAL_MINUTES`, already converted to ms. Only
+   * applies to the automatic path (`options.trigger` set). Defaults to 5
+   * minutes; `0` disables throttling.
+   */
+  minAutoIntervalMs?: number;
 }
 
 const NO_LABEL = "(no label)";
+const DEFAULT_MIN_AUTO_INTERVAL_MS = 5 * 60 * 1000;
 
 /** The later of two ISO timestamps, treating `undefined` as earlier than anything. */
 function laterIso(a: string | undefined, b: string): string {
@@ -52,12 +67,52 @@ function emptySummary(durationMs: number, syncedThrough: string | undefined): Sy
 }
 
 /**
+ * Whether the automatic path's throttle should block this run right now.
+ * `undefined`/non-finite `lastRunAt` (never run, or a malformed on-disk
+ * value) never throttles — there is nothing to measure the interval
+ * against. `session_start` gets one bypass the other trigger does not: a
+ * previous run that errored is worth retrying immediately even inside the
+ * window, so a stuck hub does not silently stay unsynced across restarts.
+ */
+function isThrottled(state: SyncState | undefined, trigger: SyncTrigger, now: number, minIntervalMs: number): boolean {
+  if (minIntervalMs <= 0) return false;
+  const lastRunAt = state?.lastRunAt;
+  if (!Number.isFinite(lastRunAt)) return false;
+  if (now - (lastRunAt as number) >= minIntervalMs) return false;
+  if (trigger === "session_start" && state?.lastError !== undefined) return false;
+  return true;
+}
+
+/**
  * Run one sync pass. Acquires the cross-process lock for the whole run
  * (never held across `await` boundaries outside this function) so two pi
  * processes never race on the same `sync-state.json`.
+ *
+ * When `options.trigger` is set (the automatic `session_start`/
+ * `agent_settled` path, as opposed to a manual `/kankaku sync`), two cheap
+ * gates run before any `WorkLog.readAll()` or network call: (a) if the
+ * log's `version()` is unchanged since the last successful sync and that
+ * sync did not error, skip entirely; otherwise (b) throttle to at most one
+ * real attempt per `minAutoIntervalMs`, since `version()` almost always
+ * differs right after `agent_settled` appended a record. Neither gate ever
+ * applies to a manual sync.
  */
-export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean } = {}): Promise<SyncSummary> {
+export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; trigger?: SyncTrigger } = {}): Promise<SyncSummary> {
   const startedAt = deps.clock.now();
+
+  if (options.trigger !== undefined) {
+    const peek = deps.stateStore.read();
+    const currentVersion = deps.log.version?.();
+    const versionUnchanged = currentVersion !== undefined && peek?.logVersion === currentVersion;
+    if (versionUnchanged && peek?.lastError === undefined) {
+      return emptySummary(deps.clock.now() - startedAt, peek?.syncedThrough);
+    }
+
+    const minIntervalMs = deps.minAutoIntervalMs ?? DEFAULT_MIN_AUTO_INTERVAL_MS;
+    if (isThrottled(peek, options.trigger, deps.clock.now(), minIntervalMs)) {
+      return emptySummary(deps.clock.now() - startedAt, peek?.syncedThrough);
+    }
+  }
 
   let lockAcquired = false;
   try {
@@ -68,6 +123,10 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean } 
     }
 
     const state = deps.stateStore.read();
+    // Captured once, here, and persisted as-is below: this is the version
+    // the tasks below were actually built from, not whatever the log might
+    // become by the time an awaited push finishes.
+    const logVersionAtRead = deps.log.version?.();
     const tasks = buildTasks(deps.log.readAll());
     const plan = planSync(tasks, state, { target: deps.target, ...(deps.windowHours !== undefined ? { windowHours: deps.windowHours } : {}), ...(options.full !== undefined ? { full: options.full } : {}) });
 
@@ -81,14 +140,20 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean } 
       const summary = emptySummary(deps.clock.now() - startedAt, state?.syncedThrough);
       summary.skipped = plan.unchangedCount;
       summary.error = message;
-      persistError(deps, state, message);
+      persistError(deps, state, message, logVersionAtRead);
       return summary;
     }
 
     const byId = new Map(plan.toSync.map((task) => [task.id, task]));
-    const newHashes: Record<string, string> = {};
+    // Both are keyed by content that ultimately traces back to free-text
+    // worklog/legacy-client data (task ids, legacy client labels): built in
+    // a `Map` and emitted via `Object.fromEntries` below (never
+    // `newHashes[task.id] = ...` on a plain object), so a value like
+    // `__proto__` or `constructor` becomes a normal own entry instead of
+    // silently colliding with an inherited `Object.prototype` property.
+    const newHashes = new Map<string, string>();
     const failed: Array<{ id: string; reason: string }> = [];
-    const unassigned: Record<string, number> = {};
+    const unassigned = new Map<string, number>();
     let uploaded = 0;
     let updated = 0;
     let syncedThrough = state?.syncedThrough;
@@ -108,18 +173,18 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean } 
       if (result.outcome.kind === "created" || result.outcome.kind === "updated") {
         if (result.outcome.kind === "created") uploaded += 1;
         else updated += 1;
-        newHashes[task.id] = computeTaskContentHash(task);
+        newHashes.set(task.id, computeTaskContentHash(task));
         syncedThrough = laterIso(syncedThrough, task.endedAt);
         progressed = true;
         if (result.outcome.unassigned) {
           const label = result.outcome.legacyLabel || NO_LABEL;
-          unassigned[label] = (unassigned[label] ?? 0) + 1;
+          unassigned.set(label, (unassigned.get(label) ?? 0) + 1);
         }
       } else if (result.outcome.kind === "failed") {
         // Recorded and skipped, not retried forever: stamp its hash too so
         // an unchanged, permanently-invalid task is not resent every run.
         failed.push({ id: task.id, reason: result.outcome.reason });
-        newHashes[task.id] = computeTaskContentHash(task);
+        newHashes.set(task.id, computeTaskContentHash(task));
         syncedThrough = laterIso(syncedThrough, task.endedAt);
         progressed = true;
       } else {
@@ -131,7 +196,7 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean } 
       }
     }
 
-    const mergedHashes = { ...(state?.hashes ?? {}), ...newHashes };
+    const mergedHashes = { ...(state?.hashes ?? {}), ...Object.fromEntries(newHashes) };
     const prunedHashes = pruneHashes(mergedHashes, tasks, syncedThrough, deps.windowHours);
     // Only adopt deps.target as the persisted target once this run has
     // actually resolved something against it; otherwise keep whatever
@@ -143,6 +208,8 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean } 
       ...(syncedThrough !== undefined ? { syncedThrough } : {}),
       hashes: prunedHashes,
       ...(stopError !== undefined ? { lastError: { message: stopError, at: new Date(deps.clock.now()).toISOString() } } : {}),
+      ...(logVersionAtRead !== undefined ? { logVersion: logVersionAtRead } : {}),
+      lastRunAt: deps.clock.now(),
     });
 
     return {
@@ -150,7 +217,7 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean } 
       updated,
       skipped: plan.unchangedCount,
       failed,
-      unassigned,
+      unassigned: Object.fromEntries(unassigned),
       syncedThrough,
       durationMs: deps.clock.now() - startedAt,
       ...(stopError !== undefined ? { error: stopError } : {}),
@@ -160,12 +227,14 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean } 
   }
 }
 
-function persistError(deps: SyncRunnerDeps, state: ReturnType<SyncStateStore["read"]>, message: string): void {
+function persistError(deps: SyncRunnerDeps, state: ReturnType<SyncStateStore["read"]>, message: string, logVersionAtRead: string | number | undefined): void {
   deps.stateStore.write({
     target: deps.target,
     ...(state?.syncedThrough !== undefined ? { syncedThrough: state.syncedThrough } : {}),
     hashes: state?.hashes ?? {},
     lastError: { message, at: new Date(deps.clock.now()).toISOString() },
+    ...(logVersionAtRead !== undefined ? { logVersion: logVersionAtRead } : {}),
+    lastRunAt: deps.clock.now(),
   });
 }
 

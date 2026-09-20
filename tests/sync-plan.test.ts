@@ -183,3 +183,20 @@ test("pruneHashes returns {} when there is no new syncedThrough yet", () => {
   const pruned = pruneHashes({ a: "x" }, [], undefined);
   assert.deepEqual(pruned, {});
 });
+
+test("pruneHashes keeps a task id literally named '__proto__' as an own property, not as a silently-dropped prototype write", () => {
+  const task = makeTask("__proto__", 100000, 100010);
+  const hash = computeTaskContentHash(task);
+  // `{ "__proto__": hash }` as an object literal is special-cased by the
+  // language itself (it would try to set the prototype, and since `hash`
+  // is a string it is silently ignored, never becoming an own property) —
+  // build the input the way `JSON.parse` of a stored `sync-state.json`
+  // actually would, so this exercises the real shape.
+  const hashes: Record<string, string> = JSON.parse(JSON.stringify({ marker: hash }).replace('"marker"', '"__proto__"'));
+
+  const pruned = pruneHashes(hashes, [task], iso(100020), 24);
+
+  assert.deepEqual(Object.keys(pruned), ["__proto__"]);
+  assert.equal(pruned["__proto__"], hash);
+  assert.equal(Object.getPrototypeOf(pruned), Object.prototype);
+});

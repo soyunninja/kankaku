@@ -346,12 +346,23 @@ fire-and-forget (never awaited, errors never surface as a failure of the
 run that triggered them) on `session_start` (orchestrator only, after
 crash recovery) and again after `agent_settled`. Both triggers share one
 single-flight guard, so they never race each other within a process, and a
-simple pid+timestamp lock file (`<KANKAKU_DIR>/sync.lock`, stale after 5
-minutes) keeps two pi processes from syncing the same directory
-concurrently. Subagents never sync. The automatic path never notifies on
-success; on failure it notifies at most once per session
-(`kankaku: sync failed: ...`) — check `/kankaku sync status` for the
-details, including on a later run.
+lock file (`<KANKAKU_DIR>/sync.lock`, an atomic exclusive-create so two
+racing processes can never both acquire it, stale after 5 minutes) keeps
+two pi processes from syncing the same directory concurrently. Subagents
+never sync. The automatic path never notifies on success; on failure it
+notifies at most once per session (`kankaku: sync failed: ...`) — check
+`/kankaku sync status` for the details, including on a later run.
+
+The automatic path is cheap on every prompt, not just fire-and-forget: it
+skips entirely (no read of `worklog.jsonl`, no network) when the log has
+not changed since the last successful sync, and otherwise runs at most
+once per `KANKAKU_SYNC_MIN_INTERVAL_MINUTES` (default 5; `0` disables the
+throttle) — since right after `agent_settled` the log *has* just changed
+(a record was just appended), the throttle is what actually keeps that
+trigger cheap. `session_start` gets one exception: it bypasses the
+throttle when the previous automatic attempt errored or never happened, so
+a stuck hub does not stay silently unsynced across restarts. None of this
+ever applies to a manual `/kankaku sync`, `sync all`, or `backfill`.
 
 **Network/validation failures.** A network or server (5xx) error stops a
 sync run where it is and does not advance its watermark past the failing
@@ -479,6 +490,11 @@ Columns (in this order for CSV; the same fields for JSON):
   Defaults to enabled.
 - `KANKAKU_SYNC_AUTO`: `0` disables the automatic `session_start`/
   `agent_settled` sync; `/kankaku sync` still works. Defaults to enabled.
+- `KANKAKU_SYNC_MIN_INTERVAL_MINUTES`: how often the automatic
+  `session_start`/`agent_settled` sync is allowed to actually run, at
+  most — see "Automatic sync" above. Defaults to 5; `0` disables the
+  throttle. Never applies to a manual `/kankaku sync`, `sync all`, or
+  `backfill`.
 
 ## Limitations
 

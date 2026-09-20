@@ -146,12 +146,13 @@ test("validateHubUrl rejects a URL that does not parse", () => {
   assert.equal(result.ok, false);
 });
 
-test("loadSyncConfig defaults to the conservative prompt mode, a 24h window, records and auto-sync enabled", () => {
+test("loadSyncConfig defaults to the conservative prompt mode, a 24h window, records and auto-sync enabled, and a 5-minute auto-sync throttle", () => {
   const config = loadSyncConfig(env({}));
   assert.equal(config.promptMode, "none");
   assert.equal(config.windowHours, 24);
   assert.equal(config.syncRecords, true);
   assert.equal(config.auto, true);
+  assert.equal(config.minIntervalMinutes, 5);
 });
 
 test("loadSyncConfig reads KANKAKU_SYNC_PROMPT, falling back to none for an unrecognised value", () => {
@@ -175,4 +176,11 @@ test("loadSyncConfig: KANKAKU_SYNC_RECORDS=0 disables work_records upload", () =
 test("loadSyncConfig: KANKAKU_SYNC_AUTO=0 disables automatic sync", () => {
   assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_AUTO: "0" })).auto, false);
   assert.equal(loadSyncConfig(env({})).auto, true);
+});
+
+test("loadSyncConfig reads KANKAKU_SYNC_MIN_INTERVAL_MINUTES, treating 0 as a valid explicit 'disabled' value distinct from an unset/invalid one", () => {
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_MIN_INTERVAL_MINUTES: "10" })).minIntervalMinutes, 10);
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_MIN_INTERVAL_MINUTES: "0" })).minIntervalMinutes, 0);
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_MIN_INTERVAL_MINUTES: "-3" })).minIntervalMinutes, 5);
+  assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_MIN_INTERVAL_MINUTES: "not-a-number" })).minIntervalMinutes, 5);
 });

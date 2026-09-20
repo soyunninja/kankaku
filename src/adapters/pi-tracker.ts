@@ -11,6 +11,7 @@ import type { SessionTarget } from "./session-target.ts";
 import { createStatusBar } from "./status-bar.ts";
 import { notifyError, registerKankakuCommand } from "./kankaku-command.ts";
 import type { SyncCommandDeps } from "./kankaku-command.ts";
+import type { SyncTrigger } from "./sync-runner.ts";
 
 export type { KankakuReportData } from "./kankaku-command.ts";
 
@@ -147,11 +148,11 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   /** At most one quiet auto-sync failure notification per session; never notified on success. */
   let autoSyncErrorNotified = false;
 
-  /** Fire-and-forget a sync (orchestrator role, `sync` configured, auto-sync enabled). Never awaited, never throws. */
-  function triggerAutoSync(ctx: ExtensionContext): void {
+  /** Fire-and-forget a sync (orchestrator role, `sync` configured, auto-sync enabled). Never awaited, never throws. `trigger` lets the automatic path's version short-circuit and throttle (see `adapters/sync-runner.ts#runSync`) tell apart `session_start` from `agent_settled`. */
+  function triggerAutoSync(ctx: ExtensionContext, trigger: SyncTrigger): void {
     if (!deps.sync || role !== "orchestrator" || deps.autoSyncEnabled === false) return;
     void deps.sync
-      .run()
+      .run({ trigger })
       .then((summary) => {
         if (!summary.error || autoSyncErrorNotified) return;
         autoSyncErrorNotified = true;
@@ -300,7 +301,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
         statusBar.stop(ctx);
         sessionClient.endRun();
         deps.sessionTarget?.endRun();
-        triggerAutoSync(ctx);
+        triggerAutoSync(ctx, "agent_settled");
       }
     }),
   );
@@ -354,7 +355,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
       // Fire-and-forget, after recovery so a just-recovered interrupted
       // record is included. See README "Hub (PocketBase)" sync section.
-      triggerAutoSync(ctx);
+      triggerAutoSync(ctx, "session_start");
     }),
   );
 }

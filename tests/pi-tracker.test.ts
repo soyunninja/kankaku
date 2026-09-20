@@ -1441,10 +1441,12 @@ test("session_start shows the picker when the hub is configured and nothing reso
 
 class FakeSync implements SyncCommandDeps {
   runCalls = 0;
+  runOptions: Array<{ full?: boolean; trigger?: string }> = [];
   runResult: SyncSummary = { uploaded: 0, updated: 0, skipped: 0, failed: [], unassigned: {}, syncedThrough: undefined, durationMs: 1 };
 
-  run(): Promise<SyncSummary> {
+  run(options?: { full?: boolean; trigger?: string }): Promise<SyncSummary> {
     this.runCalls += 1;
+    this.runOptions.push(options ?? {});
     return Promise.resolve(this.runResult);
   }
   status() {
@@ -1479,6 +1481,7 @@ test("auto-sync: agent_settled fires sync.run() for the orchestrator role when c
   await flushMicrotasks();
 
   assert.equal(sync.runCalls, 1);
+  assert.equal(sync.runOptions[0]?.trigger, "agent_settled");
 });
 
 test("auto-sync: session_start fires sync.run() after crash recovery", async () => {
@@ -1501,6 +1504,7 @@ test("auto-sync: session_start fires sync.run() after crash recovery", async () 
   await flushMicrotasks();
 
   assert.equal(sync.runCalls, 1);
+  assert.equal(sync.runOptions[0]?.trigger, "session_start");
 });
 
 test("auto-sync: a subagent process never triggers a sync", async () => {

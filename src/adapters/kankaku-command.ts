@@ -8,7 +8,7 @@ import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import type { SyncState } from "../domain/sync-plan.ts";
 import type { Catalog } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
-import type { SyncSummary } from "./sync-runner.ts";
+import type { SyncSummary, SyncTrigger } from "./sync-runner.ts";
 import {
   formatClients,
   formatProjects,
@@ -47,8 +47,14 @@ const SYNC_TOKENS = ["all", "status"];
 
 /** Drives `/kankaku sync [all|status]` and `/kankaku backfill`. Present only when the hub is configured. */
 export interface SyncCommandDeps {
-  /** Run one sync pass; `full: true` re-evaluates every task (`/kankaku sync all`, `/kankaku backfill`). Never throws. */
-  run: (options?: { full?: boolean }) => Promise<SyncSummary>;
+  /**
+   * Run one sync pass; `full: true` re-evaluates every task (`/kankaku
+   * sync all`, `/kankaku backfill`). `trigger`, left unset here (a manual
+   * command), marks the automatic `session_start`/`agent_settled` path
+   * (`pi-tracker.ts`) so its version short-circuit and throttle never
+   * apply to a manual sync. Never throws.
+   */
+  run: (options?: { full?: boolean; trigger?: SyncTrigger }) => Promise<SyncSummary>;
   /** `/kankaku sync status`: the persisted state plus a locally-computed pending count. No network. */
   status: () => { state: SyncState | undefined; pending: number };
 }

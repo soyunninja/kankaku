@@ -134,10 +134,19 @@ export interface SyncConfig {
   syncRecords: boolean;
   /** `KANKAKU_SYNC_AUTO`. Defaults to enabled; `"0"` disables the fire-and-forget session_start/agent_settled sync. */
   auto: boolean;
+  /**
+   * `KANKAKU_SYNC_MIN_INTERVAL_MINUTES`. How often the *automatic*
+   * (`session_start`/`agent_settled`) sync path is allowed to actually run
+   * a sync, at most. Defaults to 5; `0` disables throttling entirely. Never
+   * applies to a manual `/kankaku sync`, `sync all`, or `backfill`. See
+   * `adapters/sync-runner.ts#runSync`.
+   */
+  minIntervalMinutes: number;
 }
 
 const VALID_PROMPT_MODES = new Set<PromptPrivacyMode>(["none", "truncated", "full"]);
 const DEFAULT_SYNC_WINDOW_HOURS = 24;
+const DEFAULT_SYNC_MIN_INTERVAL_MINUTES = 5;
 
 export function loadSyncConfig(env: NodeJS.ProcessEnv = process.env): SyncConfig {
   const promptRaw = env["KANKAKU_SYNC_PROMPT"]?.trim();
@@ -150,7 +159,14 @@ export function loadSyncConfig(env: NodeJS.ProcessEnv = process.env): SyncConfig
   const syncRecords = env["KANKAKU_SYNC_RECORDS"]?.trim() !== "0";
   const auto = env["KANKAKU_SYNC_AUTO"]?.trim() !== "0";
 
-  return { promptMode, windowHours, syncRecords, auto };
+  // 0 is a valid, explicit "disable throttling" value, distinct from an
+  // unset or garbage one (which falls back to the default) — unlike
+  // windowHours above, which treats 0 as invalid.
+  const minIntervalRaw = env["KANKAKU_SYNC_MIN_INTERVAL_MINUTES"]?.trim();
+  const parsedMinInterval = minIntervalRaw ? Number(minIntervalRaw) : NaN;
+  const minIntervalMinutes = Number.isFinite(parsedMinInterval) && parsedMinInterval >= 0 ? parsedMinInterval : DEFAULT_SYNC_MIN_INTERVAL_MINUTES;
+
+  return { promptMode, windowHours, syncRecords, auto, minIntervalMinutes };
 }
 
 export type HubUrlValidation = { ok: true } | { ok: false; reason: string };

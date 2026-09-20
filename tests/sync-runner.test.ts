@@ -39,8 +39,23 @@ function makeRecord(overrides: Partial<WorkRecord> = {}): WorkRecord {
   };
 }
 
-function fakeLog(records: WorkRecord[]): WorkLog {
-  return { append: () => {}, readAll: () => records };
+/** `version`, when given, is exposed as `WorkLog#version()`; `readAllCalls` counts `readAll()` invocations so a test can prove the automatic short-circuit truly skipped reading the log. */
+function fakeLog(records: WorkRecord[], version?: string | number): WorkLog & { readAllCalls: number } {
+  let readAllCalls = 0;
+  const log: WorkLog & { readAllCalls: number } = {
+    append: () => {},
+    readAll: () => {
+      readAllCalls += 1;
+      return records;
+    },
+    get readAllCalls() {
+      return readAllCalls;
+    },
+  };
+  if (version !== undefined) {
+    log.version = () => version;
+  }
+  return log;
 }
 
 /** A fake sink driven by a per-task outcome map; records every call for assertions. */
@@ -213,6 +228,35 @@ test("tasks routed to the unassigned client are grouped by legacy label in the s
   assert.deepEqual(summary.unassigned, { cajamar: 2, "otra-empresa": 1 });
 });
 
+test("a legacy label literally named '__proto__' is tracked as an own property, not silently dropped by an inherited-property collision", async () => {
+  const a = makeRecord({ id: "a", startedAt: iso(0), settledAt: iso(10) });
+  const b = makeRecord({ id: "b", startedAt: iso(20), settledAt: iso(30) });
+  const { sink } = fakeSink({
+    a: { kind: "created", unassigned: true, legacyLabel: "__proto__" },
+    b: { kind: "created", unassigned: true, legacyLabel: "constructor" },
+  });
+  const stateStore = fakeStateStore();
+  const clock = makeClock();
+
+  const summary = await runSync({ log: fakeLog([a, b]), sink, stateStore: stateStore as never, clock, target: TARGET });
+
+  assert.deepEqual(summary.unassigned, JSON.parse('{"__proto__":1,"constructor":1}'));
+  assert.equal(Object.getPrototypeOf(summary.unassigned), Object.prototype);
+});
+
+test("a task id literally named '__proto__' produces a hash entry that survives as an own property in the persisted state", async () => {
+  const orchestrator = makeRecord({ id: "__proto__", startedAt: iso(0), settledAt: iso(10) });
+  const { sink } = fakeSink({ "__proto__": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore();
+  const clock = makeClock();
+
+  await runSync({ log: fakeLog([orchestrator]), sink, stateStore: stateStore as never, clock, target: TARGET });
+
+  const hashes = stateStore._state()?.hashes ?? {};
+  assert.ok(Object.prototype.hasOwnProperty.call(hashes, "__proto__"));
+  assert.equal(typeof hashes["__proto__"], "string");
+});
+
 test("a late subagent extending a previously-synced task's union causes it to be pushed again as an update", async () => {
   const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
   const stateStore = fakeStateStore();
@@ -294,6 +338,180 @@ test("never throws even when the sink itself throws", async () => {
   const summary = await runSync({ log: fakeLog([orchestrator]), sink: throwingSink, stateStore: stateStore as never, clock, target: TARGET });
 
   assert.equal(summary.error, "boom");
+});
+
+// --- Automatic path: version short-circuit and throttle (finding 2) ---
+
+test("the automatic path skips entirely (no readAll, no push) when the log version is unchanged since the last successful sync", async () => {
+  const log = fakeLog([], "v1");
+  const { sink, calls } = fakeSink({});
+  const stateStore = fakeStateStore({ target: TARGET, hashes: {}, logVersion: "v1", lastRunAt: 1_000_000 });
+  const clock = makeClock(2_000_000); // well past any throttle window, irrelevant here
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "agent_settled" });
+
+  assert.equal(log.readAllCalls, 0);
+  assert.equal(calls.length, 0);
+  assert.equal(summary.error, undefined);
+});
+
+test("the automatic path does not short-circuit when the last recorded attempt errored, even if the version is unchanged", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v1");
+  const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore({
+    target: TARGET,
+    hashes: {},
+    logVersion: "v1",
+    lastRunAt: 1_000_000,
+    lastError: { message: "boom", at: iso(0) },
+  });
+  const clock = makeClock(2_000_000);
+
+  const summary = await runSync(
+    { log, sink, stateStore: stateStore as never, clock, target: TARGET, minAutoIntervalMs: 0 },
+    { trigger: "session_start" },
+  );
+
+  assert.equal(log.readAllCalls, 1);
+  assert.equal(summary.uploaded, 1);
+});
+
+test("the automatic path is throttled: right after a record was appended (version changed), a second trigger within the interval does not run again", async () => {
+  // Mirrors what actually happens after agent_settled: the log version
+  // WILL have changed (a record was just appended), so the version
+  // short-circuit alone cannot protect against re-reading on every prompt.
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v2");
+  const { sink, calls } = fakeSink({});
+  const stateStore = fakeStateStore({ target: TARGET, hashes: {}, logVersion: "v1", lastRunAt: 1_000_000 });
+  const clock = makeClock(1_000_100); // 100ms later, well within the default 5-minute throttle
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "agent_settled" });
+
+  assert.equal(log.readAllCalls, 0);
+  assert.equal(calls.length, 0);
+  assert.equal(summary.error, undefined);
+});
+
+test("session_start bypasses the throttle when the last automatic run errored", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v2");
+  const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore({
+    target: TARGET,
+    hashes: {},
+    logVersion: "v1",
+    lastRunAt: 1_000_000,
+    lastError: { message: "network down", at: iso(0) },
+  });
+  const clock = makeClock(1_000_100); // within the throttle window
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "session_start" });
+
+  assert.equal(log.readAllCalls, 1);
+  assert.equal(summary.uploaded, 1);
+});
+
+test("agent_settled (unlike session_start) does not get an error bypass: it stays throttled within the interval even after a previous error", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v2");
+  const { sink, calls } = fakeSink({});
+  const stateStore = fakeStateStore({
+    target: TARGET,
+    hashes: {},
+    logVersion: "v1",
+    lastRunAt: 1_000_000,
+    lastError: { message: "network down", at: iso(0) },
+  });
+  const clock = makeClock(1_000_100);
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "agent_settled" });
+
+  assert.equal(log.readAllCalls, 0);
+  assert.equal(calls.length, 0);
+  assert.equal(summary.error, undefined);
+});
+
+test("an automatic trigger is never throttled when there is no previous run at all", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v1");
+  const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore(); // no prior state at all
+  const clock = makeClock();
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "session_start" });
+
+  assert.equal(log.readAllCalls, 1);
+  assert.equal(summary.uploaded, 1);
+});
+
+test("a manual sync.run() call (no trigger) ignores both the version short-circuit and the throttle", async () => {
+  const log = fakeLog([], "v1"); // unchanged version
+  const { sink, calls } = fakeSink({});
+  const stateStore = fakeStateStore({ target: TARGET, hashes: {}, logVersion: "v1", lastRunAt: 1_000_000 });
+  const clock = makeClock(1_000_050); // well within the throttle window
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }); // no options.trigger: manual
+
+  assert.equal(log.readAllCalls, 1);
+  assert.deepEqual(calls, [[]]); // push was still called, just with nothing pending
+  void summary;
+});
+
+test("minAutoIntervalMs: 0 disables the automatic throttle entirely", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v2");
+  const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore({ target: TARGET, hashes: {}, logVersion: "v1", lastRunAt: 1_000_000 });
+  const clock = makeClock(1_000_001); // 1ms later
+
+  const summary = await runSync(
+    { log, sink, stateStore: stateStore as never, clock, target: TARGET, minAutoIntervalMs: 0 },
+    { trigger: "agent_settled" },
+  );
+
+  assert.equal(summary.uploaded, 1);
+});
+
+test("a completed automatic run persists logVersion (as read for this run) and lastRunAt", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v-after-read");
+  const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore();
+  const clock = makeClock(5_000_000);
+
+  await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "session_start" });
+
+  assert.equal(stateStore._state()?.logVersion, "v-after-read");
+  assert.equal(stateStore._state()?.lastRunAt, 5_000_000);
+});
+
+test("an automatic run that errors still persists lastRunAt and logVersion, so the throttle window starts from this attempt", async () => {
+  const first = makeRecord({ id: "t1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([first], "v-err");
+  const { sink } = fakeSink({ t1: { kind: "error", reason: "network down" } });
+  const stateStore = fakeStateStore();
+  const clock = makeClock(7_000_000);
+
+  await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "agent_settled" });
+
+  assert.equal(stateStore._state()?.lastRunAt, 7_000_000);
+  assert.equal(stateStore._state()?.logVersion, "v-err");
+  assert.equal(stateStore._state()?.lastError?.message, "network down");
+});
+
+test("a manual sync run also persists lastRunAt and logVersion (so a later automatic trigger can still short-circuit/throttle against it)", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v-manual");
+  const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore();
+  const clock = makeClock(9_000_000);
+
+  await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }); // manual: no trigger
+
+  assert.equal(stateStore._state()?.lastRunAt, 9_000_000);
+  assert.equal(stateStore._state()?.logVersion, "v-manual");
 });
 
 let statusDir: string;

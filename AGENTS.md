@@ -75,6 +75,15 @@ Read `README.md` for behaviour and the record schema before changing code.
   event handler awaits the network: sync is a separate, later step
   (`/kankaku sync`, or fire-and-forget on `session_start`/`agent_settled`),
   and `worklog.jsonl` is still never rewritten by it — sync only reads.
+  The automatic (`session_start`/`agent_settled`) path only, never a
+  manual sync, is gated by two cheap checks before any `readAll()` or
+  network call, in `runSync` (`adapters/sync-runner.ts`): it skips entirely
+  when `WorkLog#version()` is unchanged since the last successful sync
+  (persisted as `SyncState.logVersion`), and otherwise throttles to at most
+  once per `KANKAKU_SYNC_MIN_INTERVAL_MINUTES` (default 5, `0` disables;
+  persisted as `SyncState.lastRunAt` so it holds across processes) —
+  `session_start` bypasses the throttle only when the last attempt errored
+  or never happened.
 - Task assignment (`client`/`project`/`task`/`legacy_client_label` on a
   `task_entries` row) is **create-only**: `domain/hub-entry.ts`'s
   `buildTaskEntryUpdatePayload` must never include those fields, so a
