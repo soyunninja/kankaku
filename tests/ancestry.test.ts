@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { parseEtimeSeconds, parseProcStat, parseProcStatus, parseProcUptimeSeconds, parsePsEtimes, parsePsOutput, snapshotAncestry, walkAncestry } from "../src/adapters/ancestry.ts";
+import {
+  ownStartIdFromUptime,
+  parseEtimeSeconds,
+  parseProcStat,
+  parseProcStatus,
+  parseProcUptimeSeconds,
+  parsePsEtimes,
+  parsePsOutput,
+  snapshotAncestry,
+  walkAncestry,
+} from "../src/adapters/ancestry.ts";
 
 test("parsePsOutput parses pid/ppid rows, skipping the header and blank lines", () => {
   const output = "  PID  PPID\n  100    1\n  200  100\n\n";
@@ -156,4 +166,13 @@ test("walkAncestry never loops forever on a cyclic map, and respects maxHops", (
   ]);
   assert.deepEqual(walkAncestry(10, ppidByPid), [10, 20]);
   assert.equal(walkAncestry(10, ppidByPid, 1).length, 1);
+});
+
+test("ownStartIdFromUptime derives an approximate start epoch from now minus uptime, with no subprocess spawn (SUBAGENT-REQ startup-cost)", () => {
+  assert.equal(ownStartIdFromUptime(1_757_000_010_000, 10), 1_757_000_000_000);
+  assert.equal(ownStartIdFromUptime(1_757_000_000_000, 0), 1_757_000_000_000);
+});
+
+test("ownStartIdFromUptime rounds fractional uptime seconds down to whole milliseconds", () => {
+  assert.equal(ownStartIdFromUptime(1_757_000_000_000, 1.5), 1_757_000_000_000 - 1500);
 });

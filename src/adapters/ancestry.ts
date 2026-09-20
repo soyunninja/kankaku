@@ -215,6 +215,25 @@ export function snapshotAncestry(deps: SnapshotAncestryDeps = {}): AncestrySnaps
   }
 }
 
+/**
+ * This process's own approximate OS start-time identity, derived with no
+ * subprocess spawn and no `/proc` read at all: `nowMs - uptimeSeconds *
+ * 1000`, both sampled once at factory time (`process.uptime()` is measured
+ * from this process's own actual start, so it is unaffected by system
+ * sleep/wake — unlike a wall-clock-only estimate, it keeps counting only
+ * while this process itself has been running). Kept separate from
+ * `startIdByPid` (which comes from an ancestry snapshot that costs a `ps`
+ * spawn or `/proc` scan) so the common case — no other kankaku process on
+ * the machine, nothing to compare against — never pays for one just to
+ * record this process's own identity (see `adapters/subagent-startup.ts`).
+ * Expected to agree with the `ps`/`/proc`-derived value for the same
+ * process, within `domain/ancestry-match.ts#START_ID_TOLERANCE_MS`, since
+ * both are estimates of the same real start time from different sources.
+ */
+export function ownStartIdFromUptime(nowMs: number, uptimeSeconds: number): number {
+  return nowMs - uptimeSeconds * 1000;
+}
+
 const DEFAULT_MAX_HOPS = 20;
 
 /**
