@@ -124,6 +124,18 @@ test("a run with no pending tasks uploads nothing and reports an empty summary",
   assert.equal(summary.syncedThrough, undefined);
 });
 
+test("an uncertain-flagged orchestrator record is never synced as its own task (SUBAGENT-REQ-014)", async () => {
+  const uncertain = makeRecord({ id: "p1", roleConfidence: "uncertain" });
+  const { sink, calls } = fakeSink({});
+  const stateStore = fakeStateStore();
+  const clock = makeClock();
+
+  const summary = await runSync({ log: fakeLog([uncertain]), sink, stateStore: stateStore as never, clock, target: TARGET });
+
+  assert.equal(summary.uploaded, 0);
+  assert.deepEqual(calls, [[]]); // buildTasks produced zero tasks; the sink was called with an empty array
+});
+
 test("a successful sync uploads every candidate task and advances syncedThrough to the latest endedAt", async () => {
   const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
   const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
