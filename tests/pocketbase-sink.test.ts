@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { PocketBaseSink } from "../src/adapters/pocketbase-sink.ts";
+import { PocketBaseSink, escapeFilterValue } from "../src/adapters/pocketbase-sink.ts";
 import { PocketBaseError } from "../src/adapters/pocketbase-client.ts";
 import type { PocketBaseClient } from "../src/adapters/pocketbase-client.ts";
 import type { TaskView } from "../src/domain/task-view.ts";
@@ -324,4 +324,44 @@ test("push returns [] for an empty task list without any request", async () => {
   const results = await sink.push([]);
   assert.deepEqual(results, []);
   assert.equal(fake.listCalls.length, 0);
+});
+
+test("escapeFilterValue escapes a double quote", () => {
+  assert.equal(escapeFilterValue('a"b'), 'a\\"b');
+});
+
+test("escapeFilterValue escapes a backslash", () => {
+  assert.equal(escapeFilterValue("a\\b"), "a\\\\b");
+});
+
+test("escapeFilterValue escapes a value with both a quote and a backslash, backslashes first so the quote's own escape is not re-escaped", () => {
+  assert.equal(escapeFilterValue('a\\"b'), 'a\\\\\\"b');
+});
+
+test("escapeFilterValue escapes a trailing backslash so it cannot swallow the filter's closing quote", () => {
+  assert.equal(escapeFilterValue("a\\"), "a\\\\");
+});
+
+test("escapeFilterValue on an already-escaped-looking value still doubles every backslash (no double-unescaping)", () => {
+  assert.equal(escapeFilterValue('\\"'), '\\\\\\"');
+});
+
+test("push escapes a task id containing a quote so it cannot break out of the filter's string literal and corrupt an unrelated lookup", async () => {
+  const { sink, fake } = makeSink();
+
+  // A pre-existing, unrelated row this attack would try to match if the
+  // filter were built by naive concatenation instead of proper escaping.
+  const victim = makeTask({}, { id: "y" });
+  await sink.push([victim]);
+
+  const maliciousId = 'x" || task_id="y';
+  const malicious = makeTask({}, { id: maliciousId });
+  const results = await sink.push([malicious]);
+
+  assert.deepEqual(results, [{ taskId: maliciousId, outcome: { kind: "created", unassigned: true } }]);
+
+  const rows = Array.from(fake.collections.get("task_entries")!.values());
+  assert.equal(rows.length, 2); // the victim's row is untouched, and a genuinely new row was created
+  assert.ok(rows.some((row) => row["task_id"] === "y"));
+  assert.ok(rows.some((row) => row["task_id"] === maliciousId));
 });

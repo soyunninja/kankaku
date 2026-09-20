@@ -34,8 +34,8 @@ export interface PocketBaseSinkDeps {
 
 const DEFAULT_CHUNK_SIZE = 30;
 
-/** Escape a value for PocketBase's filter string-literal syntax (`field="value"`). */
-function escapeFilterValue(value: string): string {
+/** Escape a value for PocketBase's filter string-literal syntax (`field="value"`). Exported for direct unit testing. */
+export function escapeFilterValue(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
