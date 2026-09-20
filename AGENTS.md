@@ -28,12 +28,20 @@ Read `README.md` for behaviour and the record schema before changing code.
   orchestration (`sync-runner.ts`, using the pure `domain/hub-entry.ts` and
   `domain/sync-plan.ts`), report formatting (`report.ts`), and subagent
   detection (`ancestry.ts`, OS ancestor-chain snapshot, including each
-  pid's approximate OS start-time identity (`startIdByPid`);
-  `machine-process-registry.ts`, the `ProcessRegistry`;
-  `registry-aware-work-log.ts`, the `WorkLog` decorator that reunites a
-  cross-worktree child before `buildTasks` runs; `domain/ancestry-match.ts`
-  and `domain/registry-health.ts`, the pure identity-matching/sweep-
-  classification logic — see README "Subagents").
+  pid's approximate OS start-time identity (`startIdByPid`) and the
+  spawn-free `ownStartIdFromUptime` own-identity shortcut;
+  `machine-process-registry.ts`, the `ProcessRegistry`; `subagent-startup.ts`,
+  the one composition point `extension.ts` calls at factory time to read the
+  registry, take an ancestry snapshot only when it could find something
+  (F5), and resolve this process's tracked ancestor; `kankaku-dir.ts`'s
+  `resolveWritableTarget`, which a verified subagent uses to route its
+  `WorkLog`/`InflightStore` straight into its orchestrator's directory
+  instead of its own (F1, ADR 0023's rewrite — there is no longer a
+  `WorkLog` decorator that reunites a child at read time; write-side
+  routing makes that redundant); `file-modes.ts`, the owner-only
+  dir/file-mode helpers shared by every adapter writing under `~/.kankaku`;
+  `domain/ancestry-match.ts` and `domain/registry-health.ts`, the pure
+  identity-matching/sweep-classification logic — see README "Subagents").
 - `src/extension.ts` only wires config, tracker, log and adapter together.
   Do not put logic there.
 - Dependencies point inwards: adapters import domain and ports; domain
@@ -55,13 +63,24 @@ Read `README.md` for behaviour and the record schema before changing code.
   (`buildTasks`, `uncertainRecords`) on top of the still-binary persisted
   `role`: **orchestrator** (confirmed), **subagent-joined**,
   **subagent-unjoined** (orphan), and **uncertain** (no recognised
-  child-env-marker, but a live tracked ancestor process was found via the
-  machine-wide registry, `ports/process-registry.ts`). An **uncertain**
-  record never defaults to `"orchestrator"`, is never counted as a new task
-  locally, and is never synced to the hub as one (ADR 0022) — see README
-  "Subagents". `WorkRecord.roleConfidence` (optional, only ever
+  child-env-marker, a live tracked ancestor process was found via the
+  machine-wide registry, `ports/process-registry.ts`, **and** this process
+  is not itself an interactive TUI session — an interactive session is
+  never demoted to `uncertain` regardless of its ancestry, since every
+  subagent mechanism kankaku recognises launches its child
+  non-interactively; see README "Subagents" > "Interactive sessions").
+  `KANKAKU_ROLE=orchestrator|subagent` (`config.ts#readRoleOverride`)
+  overrides every other signal outright, including the env marker. An
+  **uncertain** record never defaults to `"orchestrator"`, is never counted
+  as a new task locally, and is never synced to the hub as one (ADR 0022) —
+  see README "Subagents". `WorkRecord.roleConfidence` (optional, only ever
   `"uncertain"`) carries this; adding it did not bump
-  `WORK_RECORD_SCHEMA`.
+  `WORK_RECORD_SCHEMA`. `role` itself is decided once, at factory time
+  (`config.ts#detectRole`, env-only — never depends on ancestry or
+  interactivity); `roleConfidence` is deferred and resolved exactly once,
+  at `session_start` (`pi-tracker.ts`'s `resolveRoleConfidence`), since
+  interactivity is only knowable once pi's own `ExtensionContext` exists —
+  and then stays stable for the rest of the process's life.
 - A registry match is by **identity, not just pid**: pids are reused by the
   OS, so `domain/ancestry-match.ts#findAncestorEntry` only trusts a
   candidate whose registry-recorded `RegistryEntry.processStartId` agrees
@@ -69,18 +88,51 @@ Read `README.md` for behaviour and the record schema before changing code.
   live OS start time, taken from the same ancestry snapshot. A pid-only
   match is never sufficient. `domain/registry-health.ts#classifyRegistryEntries`
   is the single source of truth for what the opportunistic sweep (and
-  `/kankaku doctor`'s reporting) discards and why (`dead` /
-  `stale-reuse` / `unverifiable-identity` / `over-age`).
+  `/kankaku doctor`'s reporting) discards and why (`dead` / `stale-reuse` /
+  `over-age`) — an entry with no verifiable `processStartId` is never used
+  for matching, but is no longer discarded for that reason alone while its
+  pid is alive and within the age ceiling (a live-but-unverifiable entry
+  must never be un-registered by an unrelated process's sweep).
+  **The registry is a startup-time lookup only**: every process reads it
+  (via `adapters/subagent-startup.ts#resolveSubagentStartup`, which also
+  skips the ancestry snapshot entirely when the registry has no other
+  entries at all — F5) once, at factory time, to resolve its own tracked
+  ancestor; nothing reads it again later as a live pointer to chase.
 - `project` is a **hint** for joining a subagent to its orchestrator in
   `matchChildren`, never a hard filter (ADR 0021): a same-project candidate
-  is preferred, but a cross-project one is eligible when it reaches the
-  matched array via `adapters/registry-aware-work-log.ts`'s
-  registry-corroborated cross-worktree merge (ADR 0023). The interval-union
+  is preferred, but a cross-project one is eligible because its record
+  already lives in the same `worklog.jsonl` this call reads — a verified
+  subagent whose orchestrator's directory differs from its own routes its
+  `WorkLog` **and** `InflightStore` writes straight into that directory
+  instead of its own cwd-relative one (`extension.ts`, using
+  `domain/ancestry-match.ts#resolveOrchestratorRef` — which also resolves
+  through a subagent-of-subagent chain to the real top-level orchestrator,
+  never a middle hop — and `adapters/kankaku-dir.ts#resolveWritableTarget`,
+  which falls back to the process's own local directory, surfaced to
+  `/kankaku doctor`, when the orchestrator's directory cannot be written
+  to). **A record is written to exactly one log, always** — never both,
+  never neither. This reunites parent and child before `buildTasks` ever
+  runs (ADR 0023), and — unlike the read-time registry-pointer merge this
+  replaced — does not depend on that pointer still existing by the time
+  `buildTasks` runs: a subagent's own exit cleanup removing its registry
+  entry (`process.on("exit")`, `session_shutdown`) changes nothing, and **a
+  synced task row must never shrink** on a later sync pass because some
+  earlier-discovered pointer is now gone (`buildTaskEntryUpdatePayload`
+  recomputes `wall_ms`/`cost`/`subagent_count`/`subagent_linkage` from the
+  *current* `TaskView` on every pass — that TaskView can only ever grow or
+  stay the same, never lose a record it once had, since the record's
+  location on disk never changes after it is written). The interval-union
   aggregation rule (`unionMs`) still lives exactly once, in `buildTasks` —
   the registry/ancestry machinery only ever expands which records that one
   call can see, never re-implements the union itself.
 - `.kankaku/worklog.jsonl` is user data. Append only, one `JSON.stringify`
   line per record, tolerate malformed lines when reading, never rewrite it.
+- Every file kankaku writes under `~/.kankaku` (the machine-wide registry
+  `run/`, the catalog cache) is owner-only: directories `0700`, files
+  `0600` (`adapters/file-modes.ts`) — an existing looser mode is tightened,
+  best-effort, whenever encountered. Not applied to a project's own
+  `<KANKAKU_DIR>` (`worklog.jsonl`, `inflight/`, …), which is project-local
+  and frequently committed alongside.
 - Bump `WORK_RECORD_SCHEMA` when a persisted field changes meaning or is
   removed. Adding optional fields does not require a bump.
 - Tagged tool segments (`segments`) are the union of milliseconds per tag

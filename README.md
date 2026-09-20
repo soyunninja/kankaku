@@ -77,7 +77,7 @@ Each line in `worklog.jsonl` is one JSON object:
   "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "cost": 0 },
   "status": "completed",
   "roleConfidence": "uncertain",
-  "orchestratorRef": { "pid": 4000, "project": "/abs/other-worktree", "startedAt": "2026-09-10T15:59:00.000Z" }
+  "orchestratorRef": { "pid": 4000, "project": "/abs/other-worktree", "startedAt": "2026-09-10T15:59:00.000Z", "dir": "/abs/other-worktree/.kankaku" }
 }
 ```
 
@@ -90,8 +90,14 @@ absent — see "Subagents" below. `roleConfidence` is only ever set to
 `"uncertain"`, and only on an `orchestrator`-role record kankaku could not
 positively prove top-level; `orchestratorRef` is only ever set on a
 `subagent`-role record that discovered its tracked ancestor via the
-machine-wide process registry. Neither field bumps `WORK_RECORD_SCHEMA` —
-a record without them (from an older kankaku build) remains valid.
+machine-wide process registry. Its optional `dir` field carries that
+orchestrator's resolved kankaku directory — the real top-level one even
+across a subagent-of-subagent chain — and is what this process's own
+work log and inflight checkpoints were actually routed into when it
+differs from this process's own (see "Subagents" > "Cross-worktree write
+routing"). Neither field, nor `orchestratorRef.dir`, bumps
+`WORK_RECORD_SCHEMA` — a record without them (from an older kankaku build)
+remains valid.
 
 `clientId`, `clientName`, `projectId`, `projectName` and `machine` are only
 present once a hub is configured (see "Hub (PocketBase)"); every report and
@@ -162,68 +168,102 @@ of it, kankaku's task/session views and the hub sync apply a four-state
 classification:
 
 - **orchestrator** — confirmed top-level: no recognised child-env-marker
-  (`GENTLE_PI_AGENTS_CHILD=1`) is present, and no live tracked ancestor
-  process was found (see "The registry" below). This is the default for a
-  plain, ordinary `pi` session — unaffected by any of this.
+  (`GENTLE_PI_AGENTS_CHILD=1`, or an explicit `KANKAKU_ROLE=orchestrator` —
+  see "Interactive sessions and `KANKAKU_ROLE`" below) is present, and
+  either no live tracked ancestor process was found, or this session is
+  itself interactive (see "The registry" and "Interactive sessions" below).
+  This is the default for a plain, ordinary `pi` session — unaffected by
+  any of this.
 - **subagent (joined)** — a gentle-pi child matched to its orchestrator, as
   described in "Task and session views" above.
 - **subagent (orphan)** — a gentle-pi child that could not be matched to
   any orchestrator (shown separately, never dropped — `orphanSubagents`).
-- **uncertain** — no recognised child-env-marker, but a live tracked
-  ancestor process *was* found: this process cannot be proven top-level,
-  so it is never counted as a new task locally and never synced to the hub
-  as one, but it is not dropped either — `WorkRecord.roleConfidence` is set
-  to `"uncertain"` on it, and `/kankaku doctor` (and a one-line hint on the
-  plain `/kankaku` summary) surface it so the gap is visible instead of
-  silently wrong. This is the fix for a real bug: a subagent mechanism
-  kankaku does not specifically recognise (for example, pi's own bundled
-  reference `subagent` example, which sets no env marker at all) used to
-  default to `"orchestrator"` outright — a phantom top-level task on top of
-  the time already measured inside its parent's own tool-call span, billed
-  twice. An unrecognised process now degrades to a safe, visible
-  **undercount** instead of a silent, unrecoverable **overcount**.
+- **uncertain** — no recognised child-env-marker, a live tracked ancestor
+  process *was* found, **and** this process is not itself an interactive
+  TUI session: it cannot be proven top-level, so it is never counted as a
+  new task locally and never synced to the hub as one, but it is not
+  dropped either — `WorkRecord.roleConfidence` is set to `"uncertain"` on
+  it, and `/kankaku doctor` (and a one-line hint on the plain `/kankaku`
+  summary) surface it so the gap is visible instead of silently wrong.
+  This is the fix for a real bug: a subagent mechanism kankaku does not
+  specifically recognise (for example, pi's own bundled reference
+  `subagent` example, which sets no env marker at all) used to default to
+  `"orchestrator"` outright — a phantom top-level task on top of the time
+  already measured inside its parent's own tool-call span, billed twice.
+  An unrecognised process now degrades to a safe, visible **undercount**
+  instead of a silent, unrecoverable **overcount**. An *interactive*
+  session is never demoted this way, no matter what its ancestry looks
+  like — see "Interactive sessions and `KANKAKU_ROLE`" below for why, and
+  for the escape hatch when kankaku still gets it wrong.
 
-An `uncertain` classification is recoverable: once the mechanism is
-recognised (for example, by upgrading kankaku, or — in a later version —
-registering it via a configured tool/env marker), a later `/kankaku sync
-all` or `backfill` picks up the record correctly. It never resolves itself
-by guessing.
+An `uncertain` classification is recoverable going forward: once the
+mechanism is recognised (for example, by upgrading kankaku, setting
+`KANKAKU_ROLE` explicitly, or — in a later version — registering it via a
+configured tool/env marker), a later `/kankaku sync all` or `backfill`
+picks up the record correctly. It never resolves itself by guessing. A
+record that was *already written* `uncertain`, however, cannot be rewritten
+after the fact — `worklog.jsonl` is append-only and kankaku never edits a
+past line (see AGENTS.md) — so only a run *after* the fix correctly
+anchors a task; there is no migration that goes back and reclassifies old
+lines.
 
 ### The registry
 
 Every kankaku process writes a small entry to
 `~/.kankaku/run/<pid>.json` at startup — `pid`, `parentPid`, `role`,
-`project`, its resolved `KANKAKU_DIR`, `startedAt`, and `processStartId`
-(below) — independent of any project's own `KANKAKU_DIR`, so it survives a
-project boundary. This is what powers both of the above:
+`project`, its resolved (and, for a routed subagent, actually-used —
+see "Cross-worktree write routing" below) `KANKAKU_DIR`, `startedAt`, and
+`processStartId` (below) — independent of any project's own `KANKAKU_DIR`,
+so it survives a project boundary. Both `~/.kankaku/run` and its entry
+files are created owner-only (`0700`/`0600` — an existing looser mode, left
+by an older kankaku build, is tightened on the next write, best-effort);
+they name absolute project paths and session ids. **The registry is a
+startup-time lookup only** — "who is my tracked ancestor, and where does
+it keep its log" — resolved once, at process factory time, and never
+consulted again later as a live pointer (this used to matter: see
+"Cross-worktree write routing" below for why it no longer does). This is
+what powers both of the following:
 
 - **Uncertain detection**: a process with no child-env-marker walks its own
   OS ancestor chain (one snapshot, see "Ancestor-chain detection" below)
   looking for *any* live registry entry whose identity it can actually
   **prove** — see "Identity, not just pid" below. Finding one means some
-  other tracked kankaku process is an ancestor of this one — this process
-  is not a confirmed top-level session, so it is classified `uncertain`
-  rather than defaulting to `orchestrator`.
-- **Cross-worktree reunification**: a gentle-pi subagent running in a
-  different git worktree than its orchestrator writes its own record to
-  *that worktree's* `worklog.jsonl` — a different file the orchestrator's
-  own report/sync never reads. The child also walks its ancestor chain,
-  finds its orchestrator's registry entry (identity-verified), and records
-  that identity as `orchestratorRef` (`{ pid, project, startedAt }`) on its
-  own record. When the orchestrator's own process later builds its task
-  list (for a report or a sync), it additionally scans the registry for
-  any subagent entry whose `orchestratorRef` names it exactly, and — only
-  then — reads that one other worktree's `worklog.jsonl` to pull in the
-  matching record before the usual union/task-building logic runs. The
-  interval-union rule itself is still computed in exactly one place
-  (`buildTasks`); this only changes what records that call can see. If the
-  registry entry has already expired (or ancestry could not be established
-  at all) by the time sync runs, the child stays a visible orphan instead —
-  undercounted, never lost, and never compensated for by summing two
-  independently synced rows: **the hub never sums two unions to recover a
-  missing one**, since that would double-count the overlap between parent
-  and child. `project` is therefore only ever a *hint* for this join
-  (preferred when it matches), never a hard filter.
+  other tracked kankaku process is an ancestor of this one; combined with
+  this process *not* being an interactive TUI session (see "Interactive
+  sessions and `KANKAKU_ROLE`" below), it is classified `uncertain` rather
+  than defaulting to `orchestrator`.
+- **Cross-worktree write routing** (ADR 0023, rewritten for a real bug —
+  see below): a gentle-pi subagent running in a different git worktree than
+  its orchestrator walks its ancestor chain, finds its orchestrator's
+  registry entry (identity-verified), and resolves it to an
+  `orchestratorRef` (`{ pid, project, startedAt, dir }` — `dir` also
+  resolves through a subagent-of-subagent chain to the real, top-level
+  orchestrator, never a middle hop). When that orchestrator's directory
+  differs from this process's own, the child writes its work log **and**
+  its inflight crash-recovery checkpoints straight into the orchestrator's
+  directory instead of its own cwd-relative one — so parent and child
+  records end up in the *same* `worklog.jsonl` from the moment the child's
+  first record is appended, not merely discovered there later. The
+  orchestrator's later `buildTasks` call joins them with the same
+  `pid`/`parentPid`/project-hint keys it always has; the interval-union
+  rule itself is still computed in exactly one place (`buildTasks`) — this
+  only changes *where the bytes physically live*, never how they are
+  joined. If the orchestrator's directory cannot be created or written to
+  (gone, or no permission), the child falls back to its own local
+  directory instead of losing the record, and `/kankaku doctor` reports the
+  fallback so it can be reunited manually; a record is always written to
+  **exactly one** log, never both. Because reunification no longer depends
+  on any pointer still being alive at read time, it survives the child's
+  own exit cleanup removing its registry entry — which, for gentle-pi's
+  main case (a blocking `subagent_run` in task mode), has already happened
+  by the time the parent regains control. If ancestry could not be
+  established at all (or the write genuinely could not go anywhere), the
+  child stays a visible orphan instead — undercounted, never lost, and
+  never compensated for by summing two independently synced rows: **the
+  hub never sums two unions to recover a missing one**, since that would
+  double-count the overlap between parent and child. `project` is
+  therefore only ever a *hint* for the join (preferred when it matches),
+  never a hard filter.
 - The registry is swept opportunistically (when a process writes its own
   entry) — see "Registry cleanup and health" below — so it does not grow
   unbounded and never keeps serving a stale identity.
@@ -241,21 +281,29 @@ whole guarantee this feature exists for, so identity is proven, not
 assumed:
 
 - Every registry entry also carries `processStartId`: an approximate,
-  self-consistent epoch-ms estimate of that process's actual OS start time,
-  read from the *same* single OS snapshot already taken for ancestor-chain
-  detection (no extra subprocess spawn, no hot-path cost). On macOS/BSD it
-  comes from `ps -eo pid,ppid,etime` (`[[dd-]hh:]mm:ss` elapsed time,
-  forced through the portable `etime` keyword — BSD `ps` has no `etimes`).
-  On Linux it comes from `/proc/<pid>/stat`'s `starttime` (clock ticks
-  since boot) combined with `/proc/uptime`, assuming the near-universal
-  `USER_HZ=100`; a wrong assumption never causes a false match, since the
-  same (possibly wrong) constant is used both when an entry is written and
-  whenever it is re-verified, and a process's `starttime` ticks never
-  change during its life — only the (unused) absolute-epoch interpretation
-  would be off, never the equality check between two readings of the same
-  instance. A small tolerance (2000ms) absorbs the reading's inherent
-  second-granularity rounding. Windows has no supported source at all —
-  see "Ancestor-chain detection".
+  self-consistent epoch-ms estimate of that process's actual OS start time.
+  **This process's own** `processStartId` (the one it records about
+  itself) is derived cheaply and portably — `Date.now() - process.uptime()
+  * 1000`, sampled once at factory time — with **no subprocess spawn and no
+  `/proc` read at all**, so it is available on every platform, Windows
+  included, and never adds startup cost (see "Startup cost" below).
+  Verifying *another* process's (an ancestor's) live identity still needs a
+  fresh reading of that specific pid from an OS ancestor-chain snapshot: on
+  macOS/BSD, `ps -eo pid,ppid,etime` (`[[dd-]hh:]mm:ss` elapsed time,
+  forced through the portable `etime` keyword — BSD `ps` has no `etimes`);
+  on Linux, `/proc/<pid>/stat`'s `starttime` (clock ticks since boot)
+  combined with `/proc/uptime`, assuming the near-universal `USER_HZ=100` —
+  a wrong assumption never causes a false match, since the same (possibly
+  wrong) constant is used both when an entry is written and whenever it is
+  re-verified, and a process's `starttime` ticks never change during its
+  life. `process.uptime()`-derived and `ps`/`/proc`-derived readings of the
+  *same* process instance agree within the same tolerance (2000ms, which
+  also absorbs each source's own second-granularity rounding) — this is
+  cross-checked against a real OS reading by
+  `scripts/e2e-cross-worktree-real-processes.ts`. Windows has no supported
+  source for a *live ancestor's* start time — see "Ancestor-chain
+  detection" — so an ancestor still cannot be identity-verified there, even
+  though this process's own id is now always available.
 - A match is only trusted when **both** sides prove the same identity: the
   registry entry's own `processStartId` **and** a fresh re-derivation of
   that live pid's start time (from the ancestor's own current snapshot)
@@ -277,41 +325,119 @@ assumed:
   `session_shutdown` (best-effort, verifying the on-disk file's `pid` and
   `processStartId` still match its own before unlinking, so it can never
   remove a file it does not verifiably own) — a crash still leaves the
-  entry for the next sweep.
+  entry for the next sweep. Immediately before unlinking a *discarded*
+  entry, the sweep also re-reads that file and compares it byte-for-byte
+  against what it judged stale: if the pid was reused and a fresh entry
+  already written to the same path in the meantime, the file is left alone
+  instead of destroying a live registration the sweep never actually
+  evaluated.
 - The opportunistic sweep (run whenever any process writes its own entry)
   removes: entries for a dead pid; entries whose pid is alive but whose
-  recorded identity no longer matches that live process (pid reuse);
-  entries with no verifiable identity at all (legacy/malformed); and, as a
-  last resort, entries older than 7 days regardless of aliveness/identity.
-  It never removes the entry the writing process itself just wrote.
+  recorded identity no longer matches that live process (pid reuse); and,
+  as a last resort, entries older than 7 days regardless of
+  aliveness/identity. An entry with **no verifiable identity at all**
+  (legacy/malformed, no `processStartId`) is *never itself* grounds for
+  deletion while its pid is alive and within the age ceiling — such an
+  entry is never *used* for ancestor matching either way (matching always
+  requires a verifiable `processStartId` on both sides), but deleting it
+  outright used to risk un-registering a genuinely live orchestrator whose
+  own start-time read happened to fail, at the mercy of an unrelated
+  sibling process's sweep. It still gets cleaned up the ordinary way, once
+  its pid dies or it ages out. The sweep never removes the entry the
+  writing process itself just wrote.
 - `/kankaku doctor` reports registry health: how many entries it currently
   trusts, how many it would discard, and why (dead / stale-reuse /
-  unverifiable-identity / over-age).
+  over-age).
 
 ### Ancestor-chain detection
 
 Reading "a live tracked ancestor process" above requires one OS-level
-ancestor-chain snapshot, taken **once**, at extension startup — never on a
-later hot path. On Linux this is a set of `/proc/<pid>/stat` reads (ppid
-and start-time ticks together, plus one `/proc/uptime` read); on macOS, one
-`ps -eo pid,ppid,etime` snapshot (ppid and elapsed-time-since-start
-together); a shell-wrapper hop with no registry entry of its own is walked
-past, not stopped at. **On Windows, this mechanism is not implemented in
-this version**: it degrades gracefully to "no ancestor found" (never a
-spawn attempt, never a crash) — an unmarked process on Windows can
-therefore only ever be classified `orchestrator` or `uncertain` based on
-what a future config-driven marker tells kankaku, not on ancestry.
-`/kankaku doctor` reports whether ancestor-chain detection is available on
-the current platform.
+ancestor-chain snapshot. On Linux this is a set of `/proc/<pid>/stat` reads
+(ppid and start-time ticks together, plus one `/proc/uptime` read); on
+macOS, one `ps -eo pid,ppid,etime` snapshot (ppid and
+elapsed-time-since-start together); a shell-wrapper hop with no registry
+entry of its own is walked past, not stopped at.
+
+**Startup cost.** This snapshot is taken at most once per process, at
+extension startup, never on a later hot path — and, since it is the only
+part of startup that ever spawns anything, it is skipped entirely unless
+there is something for it to find: the machine-wide registry is read
+*first*, and the snapshot is only taken when at least one other entry
+exists that could possibly be this process's ancestor. The common case (no
+other kankaku process running on the machine at all) therefore never
+spawns `ps` or reads `/proc` — this process's own identity
+(`processStartId`) is unaffected, since it comes from `process.uptime()`
+instead (see "Identity, not just pid" above).
+
+**On a platform or environment where this mechanism cannot run at all** —
+Windows (no supported mechanism in this version), or any platform where a
+fresh attempt still fails (`ps`/`/proc` missing, timing out, or producing
+unreadable output) — ancestor-chain detection degrades gracefully to "no
+ancestor found" (never a spawn attempt beyond the one failed try, never a
+crash). Critically, this does **not** mean every unmarked process there is
+classified `uncertain`: with no way to check, kankaku falls back to the
+same marker-only detection it used before this feature existed
+(`GENTLE_PI_AGENTS_CHILD=1`/`KANKAKU_ROLE=subagent` → subagent, anything
+else → confirmed orchestrator) — the deliberately chosen default, because
+marking *every* genuine top-level session `uncertain` on such a platform
+would drop all of that user's work, which is far worse than the narrow
+overcount risk this guards against elsewhere. The trade-off is visible, not
+silent: `/kankaku doctor` reports ancestor-chain detection as unavailable
+whenever this happens (distinguishing it from "checked, no tracked
+ancestor found" — a separate, always-accurate report never folded into
+`roleConfidence`) and names `KANKAKU_ROLE` as the remedy for a genuine
+subagent system that needs marking explicitly on such a platform — see
+"Interactive sessions and `KANKAKU_ROLE`" below.
 
 ### The `/kankaku doctor` diagnostic
 
-`/kankaku doctor` reports, with no network call: how many records are
-orphaned subagents and why, how many are `uncertain` and why, and whether
-ancestor-chain detection is available on this platform. The plain
-`/kankaku` summary also appends a one-line hint (`N uncertain record(s)
-excluded from tasks — run /kankaku doctor`) whenever any exist, so an
-undercount is never silent.
+`/kankaku doctor` reports, with no network call:
+
+- How many records are orphaned subagents, and why.
+- How many are `uncertain`, and why.
+- Whether ancestor-chain detection is actually usable right now (see
+  above) — and, when it is not, a reminder that an unmarked subagent
+  system on this platform/environment may be counted twice, with
+  `KANKAKU_ROLE` named as the fix.
+- `KANKAKU_ROLE`, when it decided this process's role, as the deciding
+  signal.
+- Whether this process is a subagent that could not write to its
+  orchestrator's directory and fell back to its own local one (see
+  "Cross-worktree write routing" above) — a hint to go reunite that record
+  manually, since `worklog.jsonl` can never be rewritten after the fact.
+- Registry health (see "Registry cleanup and health" above).
+- The current session's non-default session directory, when set.
+
+The plain `/kankaku` summary also appends a one-line hint (`N uncertain
+record(s) excluded from tasks — run /kankaku doctor`) whenever any exist,
+so an undercount is never silent.
+
+### Interactive sessions and `KANKAKU_ROLE`
+
+Every subagent mechanism kankaku recognises today launches its child
+**non-interactively**, over pipes (gentle-pi's `--mode rpc`, pi's own
+bundled `subagent` example's `--mode json -p`, `pi-subagents`) — a human
+never sits in front of one. A process running as an **interactive TUI
+session** (`ctx.mode === "tui"`, pi's own signal for "a real terminal, a
+human is here") is therefore always treated as a genuine top-level session
+and is **never** classified `uncertain`, even when some ancestor in its
+process chain happens to be a tracked pi process (for example, pi launched
+from inside another pi's `bash` tool). Interactivity can only be known once
+pi's own `ExtensionContext` is available, at `session_start` — later than
+this process's binary `role` (orchestrator vs. subagent) is decided, but
+`roleConfidence` is deferred and finalised exactly once, then, and stays
+stable for the rest of the process's life.
+
+**`KANKAKU_ROLE=orchestrator` or `KANKAKU_ROLE=subagent`** is an explicit
+escape hatch that overrides every other signal outright (including the
+env marker) — validated; any other value is ignored, falling back to
+normal detection. Use it to force a session kankaku still gets wrong: mark
+a genuine subagent system it does not recognise as `subagent` (this is
+also the remedy `/kankaku doctor` names when ancestor-chain detection is
+unavailable on the current platform), or force a session `orchestrator`
+regardless of what its ancestry looks like. `/kankaku doctor` reports
+`KANKAKU_ROLE` as the deciding signal whenever it is set. It has no effect
+on a record already written — see "The role/state model" above.
 
 ### Limitations, honestly
 
@@ -323,7 +449,11 @@ undercount is never silent.
   tool call today.** Other ecosystem packages are not yet specifically
   profiled — an unmarked child from one of them is `uncertain`, safely, but
   not automatically joined the way a gentle-pi child is.
-- **Windows has no ancestor-chain detection**, as above.
+- **Windows has no ancestor-chain detection** (an ancestor can never be
+  identity-verified there), though this process's own `processStartId` is
+  always available regardless of platform — see "Identity, not just pid"
+  above. Mark a genuine subagent system explicitly with `KANKAKU_ROLE` on
+  such a platform; see "Interactive sessions and `KANKAKU_ROLE`" above.
 - **gentle-pi's child cannot currently read its own task id** — the
   cross-worktree join above relies on ancestry plus the registry, not on an
   explicit shared id, because upstream gentle-pi does not hand the child
@@ -333,6 +463,13 @@ undercount is never silent.
   process looks.** A detached child reparented to init/launchd before that
   point cannot recover its original ancestry this way — the same limitation
   the existing `pid`/`parentPid` capture already has (see AGENTS.md).
+- **A record already written `uncertain` (or already routed to a fallback
+  local directory) cannot be rewritten.** `worklog.jsonl` is append-only;
+  fixing the underlying cause (upgrading kankaku, setting `KANKAKU_ROLE`,
+  restoring access to an orchestrator's directory) only helps a *later*
+  run's records, never edits a line already on disk. There is no migration
+  planned for this — it follows directly from "never rewrite the log" (see
+  AGENTS.md).
 
 ## The `/kankaku` command
 
@@ -722,6 +859,10 @@ Columns (in this order for CSV; the same fields for JSON):
   `ask_user_question,ask_user_choice`.
 - `KANKAKU_SEGMENTS`: `;`-separated `tag=tool:regex` rules for tagged
   segments (see above). Defaults to the single `review` rule.
+- `KANKAKU_ROLE`: `orchestrator` or `subagent` — an explicit escape hatch
+  that overrides all role detection (env marker, ancestry, interactivity)
+  for this process. Any other value is ignored. See "Subagents" >
+  "Interactive sessions and `KANKAKU_ROLE`".
 - `KANKAKU_CLIENT`: default billing client for this project (see "Billing
   labels" above). Lower precedence than the session-level
   `/kankaku client` override, higher than `<KANKAKU_DIR>/config.json`.
