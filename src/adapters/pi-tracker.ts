@@ -24,19 +24,41 @@ export interface PiTrackerDeps {
   inflight: InflightStore;
   role: WorkRole;
   /**
-   * Set only when `role` is `"orchestrator"` but this process could not be
-   * positively proven top-level (ADR 0022, `config.ts#detectRole`). Never
-   * counted as a new task locally or synced to the hub — see
+   * Static `roleConfidence`, applied from the very first record this
+   * process builds. Back-compat / direct-injection path: prefer
+   * {@link resolveRoleConfidence} for real wiring (`extension.ts`), since
+   * interactivity (F3) is normally only knowable once pi's own
+   * `ExtensionContext` is available at `session_start`, later than this
+   * object is constructed. When both are set, `resolveRoleConfidence`
+   * (once it has run, at `session_start`) wins. Never counted as a new task
+   * locally or synced to the hub when `"uncertain"` — see
    * `domain/task-view.ts#buildTasks`/`uncertainRecords` and
    * `triggerAutoSync` below.
    */
   roleConfidence?: "uncertain";
   /**
+   * Deferred `roleConfidence` resolution (F3, ADR 0022 refined): called
+   * once, at `session_start`, with whether this is an interactive TUI
+   * session (`ctx.mode === "tui"`) — the signal a verified tracked ancestor
+   * alone cannot supply, since every subagent mechanism kankaku recognises
+   * launches its child non-interactively. `role` itself never depends on
+   * this (only `GENTLE_PI_AGENTS_CHILD`/`KANKAKU_ROLE` decide it, both
+   * already final at factory time); only whether an `"orchestrator"` record
+   * is further flagged `uncertain`. Once set here, stays stable for the
+   * rest of this process's life (every `session_start` after the first
+   * simply recomputes the same answer, since interactivity cannot change
+   * mid-process).
+   */
+  resolveRoleConfidence?: (isInteractive: boolean) => "uncertain" | undefined;
+  /**
    * Set only when `role` is `"subagent"` and this process discovered a
-   * tracked ancestor via the machine-wide process registry (ADR 0023).
-   * Attached to every record this process appends so `matchChildren` can
-   * reunite it with its orchestrator even across a different project/
-   * `KANKAKU_DIR` (see `adapters/registry-aware-work-log.ts`).
+   * tracked ancestor via the machine-wide process registry (ADR 0023,
+   * F1/F4's rewrite). Attached to every record this process appends so
+   * `matchChildren` can reunite it with its orchestrator even across a
+   * different project/`KANKAKU_DIR` — its `dir` field is also what
+   * `extension.ts` uses to route this process's own work log/inflight
+   * checkpoints straight into the real orchestrator's directory, so the
+   * two records end up in the same `worklog.jsonl` to begin with.
    */
   orchestratorRef?: OrchestratorRef;
   pid: number;
@@ -78,6 +100,12 @@ export interface PiTrackerDeps {
   sync?: SyncCommandDeps;
   /** Forwarded to `/kankaku doctor`; see `kankaku-command.ts#KankakuCommandDeps.registryHealth`. */
   registryHealth?: () => RegistryClassification;
+  /** Forwarded to `/kankaku doctor` (F2); see `kankaku-command.ts#KankakuCommandDeps.ancestorDetectionAvailable`. */
+  ancestorDetectionAvailable?: () => boolean;
+  /** Forwarded to `/kankaku doctor` (F3); see `kankaku-command.ts#KankakuCommandDeps.roleOverride`. */
+  roleOverride?: "orchestrator" | "subagent";
+  /** Forwarded to `/kankaku doctor` (F1); see `kankaku-command.ts#KankakuCommandDeps.workLogRouting`. */
+  workLogRouting?: { usedFallback: boolean; parentDir: string };
   /**
    * `KANKAKU_SYNC_AUTO` (default enabled): when `true` and `sync` is
    * present, fire-and-forget a sync on `session_start` (orchestrator role
@@ -132,6 +160,15 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   const { tracker, log, inflight, role, pid, parentPid } = deps;
   const isAlive = deps.isAlive ?? defaultIsAlive;
 
+  /**
+   * F3: mutable so `session_start` can finalise it once `ctx.mode` (and
+   * therefore interactivity) is known — see `resolveRoleConfidence` above.
+   * Starts from the static `roleConfidence`, if any, so a caller that never
+   * fires `session_start` at all (e.g. most existing tests) still behaves
+   * exactly as before this change.
+   */
+  let roleConfidence: "uncertain" | undefined = deps.roleConfidence;
+
   const sessionClient = createSessionClient({
     role,
     envClient: deps.envClient,
@@ -164,6 +201,9 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     catalog: deps.catalog,
     sync: deps.sync,
     registryHealth: deps.registryHealth,
+    ancestorDetectionAvailable: deps.ancestorDetectionAvailable,
+    roleOverride: deps.roleOverride,
+    workLogRouting: deps.workLogRouting,
   });
 
   /** At most one quiet auto-sync failure notification per session; never notified on success. */
@@ -175,7 +215,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     // `domain/task-view.ts#buildTasks`), so a sync attempt from it would
     // only ever find nothing new to push — skip it outright, exactly like
     // a subagent, rather than pay for a pointless run.
-    if (!deps.sync || role !== "orchestrator" || deps.roleConfidence === "uncertain" || deps.autoSyncEnabled === false) return;
+    if (!deps.sync || role !== "orchestrator" || roleConfidence === "uncertain" || deps.autoSyncEnabled === false) return;
     void deps.sync
       .run({ trigger })
       .then((summary) => {
@@ -229,7 +269,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
           }
         : {}),
       ...(deps.machine !== undefined ? { machine: deps.machine } : {}),
-      ...(deps.roleConfidence !== undefined ? { roleConfidence: deps.roleConfidence } : {}),
+      ...(roleConfidence !== undefined ? { roleConfidence } : {}),
       ...(deps.orchestratorRef !== undefined ? { orchestratorRef: deps.orchestratorRef } : {}),
     };
   }
@@ -357,6 +397,14 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   pi.on(
     "session_start",
     guardedAsync(async (_event, ctx) => {
+      // F3: finalise roleConfidence now that ctx.mode (and therefore
+      // interactivity) is known — see resolveRoleConfidence's doc comment.
+      // A no-op when extension.ts did not wire it (deps.roleConfidence, if
+      // any, is left exactly as constructed).
+      if (deps.resolveRoleConfidence) {
+        roleConfidence = deps.resolveRoleConfidence(ctx.mode === "tui");
+      }
+
       if (deps.hubConfigError && !hubConfigErrorNotified) {
         hubConfigErrorNotified = true;
         if (ctx.hasUI) ctx.ui.notify(deps.hubConfigError, "error");

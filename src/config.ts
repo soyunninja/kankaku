@@ -101,27 +101,74 @@ export interface RoleDetection {
    * (ADR 0022's four-state classification, applied on top of the still-
    * binary `role`): no recognised child-env-marker matched, but a live
    * tracked ancestor process was found via the machine-wide process
-   * registry. See `domain/task-view.ts`'s `roleConfidence` handling.
+   * registry, AND this process is not itself an interactive session (see
+   * `isInteractive` below — F3). See `domain/task-view.ts`'s
+   * `roleConfidence` handling.
    */
   roleConfidence?: "uncertain";
 }
 
+export type RoleOverride = "orchestrator" | "subagent";
+
 /**
- * Classify this process's role. `GENTLE_PI_AGENTS_CHILD=1` stays the only
- * confirmed-subagent signal (unchanged from before this ADR). Otherwise,
- * `hasTrackedAncestor` — whether this process's own OS ancestor chain
- * contains a live entry in the machine-wide process registry (computed by
- * the caller, e.g. `extension.ts`, via `adapters/ancestry.ts` +
- * `domain/ancestry-match.ts`; see `ports/process-registry.ts`) — decides
- * whether an otherwise-unmarked process is a *confirmed* orchestrator (no
- * tracked ancestor at all — today's exact behaviour, unchanged) or merely
- * `uncertain` (ADR 0022's safe default, inverted): a process that cannot be
- * shown to be top-level must never again default to `"orchestrator"`
- * outright.
+ * `KANKAKU_ROLE`: an explicit escape hatch that overrides every other
+ * signal `detectRole` would otherwise use (env marker, tracked ancestor,
+ * interactivity) — for a genuine session `detectRole` gets wrong (no
+ * reliable automatic signal exists for it), and for a legacy/JSONL record
+ * already written `uncertain`, which can never be rewritten after the fact
+ * (the log is append-only) but whose *next* run can be told the truth
+ * directly. An unrecognised value (anything other than exactly
+ * `"orchestrator"` or `"subagent"`) is ignored, falling back to normal
+ * detection, rather than failing the process or guessing.
  */
-export function detectRole(env: NodeJS.ProcessEnv = process.env, hasTrackedAncestor = false): RoleDetection {
+export function readRoleOverride(env: NodeJS.ProcessEnv = process.env): RoleOverride | undefined {
+  const raw = env["KANKAKU_ROLE"]?.trim();
+  return raw === "orchestrator" || raw === "subagent" ? raw : undefined;
+}
+
+/**
+ * Classify this process's role, strictly in this order:
+ *
+ * 1. `KANKAKU_ROLE` (F3's explicit escape hatch), when set to a recognised
+ *    value — overrides every other signal outright, including the env
+ *    marker below.
+ * 2. `GENTLE_PI_AGENTS_CHILD=1` — the automatic confirmed-subagent marker
+ *    (unchanged from before ADR 0022).
+ * 3. `hasTrackedAncestor` — whether this process's own OS ancestor chain
+ *    contains a live, identity-verified entry in the machine-wide process
+ *    registry (computed by the caller, e.g. `adapters/subagent-startup.ts`,
+ *    via `adapters/ancestry.ts` + `domain/ancestry-match.ts`; see
+ *    `ports/process-registry.ts`) — combined with `isInteractive` (F3):
+ *    only a *non-interactive* process with a tracked ancestor is demoted to
+ *    `uncertain` (ADR 0022's safe default, inverted). An interactive TUI
+ *    session on a real terminal is a human's own session even when some
+ *    ancestor happens to be a tracked pi process (e.g. pi launched from
+ *    inside another pi's shell tool) — every subagent mechanism kankaku
+ *    recognises launches its child non-interactively over pipes, so
+ *    `isInteractive` alone already tells a genuine top-level session apart
+ *    from one that could plausibly be someone's silent child.
+ *    `isInteractive` defaults to `true` (never uncertain) so a caller that
+ *    does not yet know it (interactivity is often only knowable once pi's
+ *    own `ExtensionContext` is available, later than this process's role
+ *    must otherwise be decided) never wrongly demotes a session before it
+ *    can find out.
+ *
+ * A process that cannot be shown to be top-level by any of the above must
+ * never default to `"orchestrator"` outright — but see F2: when ancestor
+ * detection itself is unavailable (platform, or a failed/timed-out probe),
+ * `hasTrackedAncestor` is simply `false` (nothing was found), which already
+ * falls through to a confirmed orchestrator here — the *old*, pre-ADR-0022
+ * behaviour on such a platform, deliberately: marking every unprovable
+ * process `uncertain` there would drop all of a Windows user's genuine
+ * work, a far worse failure than the narrow overcount this guards against
+ * elsewhere. `/kankaku doctor` is responsible for making that unavailable-
+ * detection limitation visible; it is never encoded in `roleConfidence`.
+ */
+export function detectRole(env: NodeJS.ProcessEnv = process.env, hasTrackedAncestor = false, isInteractive = true): RoleDetection {
+  const override = readRoleOverride(env);
+  if (override !== undefined) return { role: override };
   if (env["GENTLE_PI_AGENTS_CHILD"] === "1") return { role: "subagent" };
-  if (hasTrackedAncestor) return { role: "orchestrator", roleConfidence: "uncertain" };
+  if (hasTrackedAncestor && !isInteractive) return { role: "orchestrator", roleConfidence: "uncertain" };
   return { role: "orchestrator" };
 }
 

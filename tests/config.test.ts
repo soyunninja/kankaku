@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectRole, loadConfig, loadHubEnvCredentials, loadMachine, loadSyncConfig, validateHubUrl } from "../src/config.ts";
+import { detectRole, loadConfig, loadHubEnvCredentials, loadMachine, loadSyncConfig, readRoleOverride, validateHubUrl } from "../src/config.ts";
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return { ...overrides } as NodeJS.ProcessEnv;
@@ -100,7 +100,7 @@ test("loadConfig reads KANKAKU_CLIENT", () => {
 
 test("detectRole reports subagent when GENTLE_PI_AGENTS_CHILD=1, regardless of a tracked ancestor", () => {
   assert.deepEqual(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" })), { role: "subagent" });
-  assert.deepEqual(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" }), true), { role: "subagent" });
+  assert.deepEqual(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" }), true, false), { role: "subagent" });
 });
 
 test("detectRole defaults to a confirmed orchestrator when no marker matches and no tracked ancestor was found", () => {
@@ -109,8 +109,40 @@ test("detectRole defaults to a confirmed orchestrator when no marker matches and
   assert.deepEqual(detectRole(env({}), false), { role: "orchestrator" });
 });
 
-test("detectRole classifies an unmarked process with a tracked ancestor as uncertain, never orchestrator outright (ADR 0022, SUBAGENT-REQ-013)", () => {
-  assert.deepEqual(detectRole(env({}), true), { role: "orchestrator", roleConfidence: "uncertain" });
+test("detectRole classifies an unmarked, non-interactive process with a tracked ancestor as uncertain, never orchestrator outright (ADR 0022, SUBAGENT-REQ-013)", () => {
+  assert.deepEqual(detectRole(env({}), true, false), { role: "orchestrator", roleConfidence: "uncertain" });
+});
+
+test("detectRole never classifies an interactive (TUI) process as uncertain, even with a tracked ancestor (F3: a genuine human session is never demoted)", () => {
+  assert.deepEqual(detectRole(env({}), true, true), { role: "orchestrator" });
+  // isInteractive defaults to true when the caller does not know yet.
+  assert.deepEqual(detectRole(env({}), true), { role: "orchestrator" });
+});
+
+test("KANKAKU_ROLE=subagent overrides detection outright, even with no tracked ancestor and no GENTLE_PI_AGENTS_CHILD marker", () => {
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" })), { role: "subagent" });
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" }), true, true), { role: "subagent" });
+});
+
+test("KANKAKU_ROLE=orchestrator overrides detection outright, forcing a confirmed orchestrator even with a tracked, non-interactive ancestor", () => {
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "orchestrator" }), true, false), { role: "orchestrator" });
+});
+
+test("KANKAKU_ROLE takes precedence over GENTLE_PI_AGENTS_CHILD", () => {
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "orchestrator", GENTLE_PI_AGENTS_CHILD: "1" })), { role: "orchestrator" });
+});
+
+test("an invalid KANKAKU_ROLE value is ignored, falling back to normal detection", () => {
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "bogus" })), { role: "orchestrator" });
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "" })), { role: "orchestrator" });
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "  " })), { role: "orchestrator" });
+});
+
+test("readRoleOverride reads and validates KANKAKU_ROLE", () => {
+  assert.equal(readRoleOverride(env({ KANKAKU_ROLE: "subagent" })), "subagent");
+  assert.equal(readRoleOverride(env({ KANKAKU_ROLE: "orchestrator" })), "orchestrator");
+  assert.equal(readRoleOverride(env({ KANKAKU_ROLE: "nope" })), undefined);
+  assert.equal(readRoleOverride(env({})), undefined);
 });
 
 test("loadHubEnvCredentials reads KANKAKU_PB_URL/EMAIL/PASSWORD", () => {

@@ -666,6 +666,79 @@ test("buildRecord attaches roleConfidence 'uncertain' when configured, and omits
   assert.equal(log.records[0]?.roleConfidence, "uncertain");
 });
 
+test("F3: resolveRoleConfidence is consulted at session_start with ctx.mode === 'tui' (interactive), never marking a TUI session uncertain", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx({ mode: "tui" });
+  const isInteractiveCalls: boolean[] = [];
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    resolveRoleConfidence: (isInteractive: boolean) => {
+      isInteractiveCalls.push(isInteractive);
+      return isInteractive ? undefined : "uncertain";
+    },
+    pid: 1,
+    parentPid: 0,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.deepEqual(isInteractiveCalls, [true]);
+  assert.equal(log.records[0]?.roleConfidence, undefined);
+});
+
+test("F3: resolveRoleConfidence receives isInteractive=false for a non-tui mode (rpc/json/print), matching an 'uncertain' verdict onto the record", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx({ mode: "rpc" });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    resolveRoleConfidence: (isInteractive: boolean) => (isInteractive ? undefined : "uncertain"),
+    pid: 1,
+    parentPid: 0,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.roleConfidence, "uncertain");
+});
+
+test("F3: without resolveRoleConfidence configured, a static roleConfidence still applies unchanged (back-compat, no session_start required)", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    roleConfidence: "uncertain",
+    pid: 1,
+    parentPid: 0,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.roleConfidence, "uncertain");
+});
+
 test("buildRecord attaches orchestratorRef when configured (subagent discovered its ancestor via the registry)", async () => {
   const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
   const log = new FakeWorkLog();

@@ -93,6 +93,37 @@ export interface KankakuCommandDeps {
    * doctor then simply omits that section rather than guessing.
    */
   registryHealth?: () => RegistryClassification;
+  /**
+   * Whether the OS ancestor-chain mechanism itself is actually usable right
+   * now (F2): `false` on a platform with no supported mechanism (Windows)
+   * *or* when the mechanism is available but a fresh attempt still fails
+   * (`ps`/`/proc` missing, timing out, or producing unreadable output) —
+   * both collapse to the same "could not check" state, distinct from
+   * "checked, no tracked ancestor found". Never folded into
+   * `WorkRecord.roleConfidence`: an unprovable ancestor never demotes a
+   * process to `uncertain` (see `config.ts#detectRole`'s doc comment) — this
+   * is purely a visibility signal for the doctor's own report. Falls back
+   * to a bare `process.platform !== "win32"` check when not provided
+   * (back-compat with a caller that has not wired the real, ps/proc-aware
+   * check yet).
+   */
+  ancestorDetectionAvailable?: () => boolean;
+  /**
+   * `KANKAKU_ROLE`, when it held a recognised value for this process (F3's
+   * explicit escape hatch) — reported by doctor as the deciding signal for
+   * this process's role, since it overrides every other detection signal.
+   */
+  roleOverride?: "orchestrator" | "subagent";
+  /**
+   * Set only when this process is itself a subagent whose work log/inflight
+   * checkpoints were routed to its orchestrator's kankaku directory (F1, ADR
+   * 0023's rewrite): `usedFallback: true` means the orchestrator's
+   * directory could not be written to (gone, or no permission) and this
+   * process fell back to its own local directory instead — surfaced here so
+   * a human can notice and go reunite the record manually, since the
+   * append-only log can never be rewritten to fix it after the fact.
+   */
+  workLogRouting?: { usedFallback: boolean; parentDir: string };
 }
 
 export interface KankakuCommand {
@@ -352,10 +383,10 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     const records = log.readAll();
     const orphans = orphanSubagents(records);
     const uncertain = uncertainRecords(records);
-    const ancestorDetectionAvailable = process.platform !== "win32";
+    const ancestorDetectionAvailable = deps.ancestorDetectionAvailable ? deps.ancestorDetectionAvailable() : process.platform !== "win32";
 
     const lines = [
-      `ancestor-chain detection: ${ancestorDetectionAvailable ? "available" : "unavailable (windows)"}`,
+      `ancestor-chain detection: ${ancestorDetectionAvailable ? "available" : "unavailable"}`,
       `orphan subagent record(s): ${orphans.length}` +
         (orphans.length > 0 ? " — recognised as someone's child (an env marker matched), but no orchestrator could be matched" : ""),
       `uncertain record(s): ${uncertain.length}` +
@@ -363,6 +394,26 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
           ? " — no recognised child-env-marker, but a live tracked ancestor process was found; not counted as a new task, not synced"
           : ""),
     ];
+
+    if (!ancestorDetectionAvailable) {
+      lines.push(
+        "on this platform/environment, ancestor-chain detection could not run (Windows, or a failed/unavailable ps/proc read): " +
+          "an unmarked subagent system may be counted twice (a genuine child with no recognised marker looks like a fresh top-level " +
+          "session). Mark it explicitly with KANKAKU_ROLE=subagent in the child's environment (or KANKAKU_ROLE=orchestrator to force " +
+          "the other way).",
+      );
+    }
+
+    if (deps.roleOverride) {
+      lines.push(`role override: KANKAKU_ROLE=${deps.roleOverride} (deciding signal for this process's role)`);
+    }
+
+    if (deps.workLogRouting?.usedFallback) {
+      lines.push(
+        `kankaku: this subagent could not write to its orchestrator's directory (${deps.workLogRouting.parentDir}); ` +
+          "fell back to its own local worklog — this record may show as an orphan until reunited manually",
+      );
+    }
 
     if (deps.registryHealth) {
       const { keep, discard } = deps.registryHealth();

@@ -217,6 +217,111 @@ test("'doctor' reports registry health (kept/discarded counts and reasons) when 
   assert.ok(line!.includes("stale-reuse: 1"));
 });
 
+test("'doctor' reports ancestor-chain detection as unavailable (not just 'windows') when ancestorDetectionAvailable reports false, and names KANKAKU_ROLE as the remedy (F2)", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    ancestorDetectionAvailable: () => false,
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line === "ancestor-chain detection: unavailable"));
+  assert.ok(entry.data.lines.some((line) => line.includes("KANKAKU_ROLE")));
+  assert.ok(entry.data.lines.some((line) => line.toLowerCase().includes("counted twice")));
+});
+
+test("'doctor' reports ancestor-chain detection as available when ancestorDetectionAvailable reports true, without the unavailable remedy line", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    ancestorDetectionAvailable: () => true,
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line === "ancestor-chain detection: available"));
+  assert.ok(!entry.data.lines.some((line) => line.includes("KANKAKU_ROLE")));
+});
+
+test("'doctor' falls back to the platform check when ancestorDetectionAvailable is not provided (back-compat)", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line.startsWith("ancestor-chain detection:")));
+});
+
+test("'doctor' reports KANKAKU_ROLE as the deciding signal for this process's role when roleOverride is set (F3)", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    roleOverride: "subagent",
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line.includes("KANKAKU_ROLE=subagent") && line.includes("deciding signal")));
+});
+
+test("'doctor' omits the role-override line when KANKAKU_ROLE was not set", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(!entry.data.lines.some((line) => line.includes("deciding signal")));
+});
+
+test("'doctor' reports when this subagent could not write to its orchestrator's directory and fell back locally (F1)", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    workLogRouting: { usedFallback: true, parentDir: "/worktree-a/.kankaku" },
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line.includes("/worktree-a/.kankaku") && line.toLowerCase().includes("fell back")));
+});
+
+test("'doctor' omits the routing-fallback line when workLogRouting was not provided or did not fall back", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    workLogRouting: { usedFallback: false, parentDir: "/worktree-a/.kankaku" },
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(!entry.data.lines.some((line) => line.toLowerCase().includes("could not write")));
+});
+
 test("'doctor' shows the session dir line only when the session manager reports a non-default one", async () => {
   const pi = new FakePi();
   registerKankakuCommand(pi as unknown as ExtensionAPI, {
