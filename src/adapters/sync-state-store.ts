@@ -6,7 +6,7 @@
  * atomic-write and liveness-probe conventions.
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SyncState } from "../domain/sync-plan.ts";
 
@@ -18,6 +18,27 @@ const STALE_LOCK_MS = 5 * 60 * 1000;
 interface LockFile {
   pid: number;
   at: number;
+}
+
+/** The subset of `node:fs` the lock's acquire/recover path needs, injectable so tests can simulate cross-process interleaving deterministically. */
+export interface SyncStateStoreFsOps {
+  existsSync: typeof existsSync;
+  readFileSync: typeof readFileSync;
+  writeFileSync: typeof writeFileSync;
+  renameSync: typeof renameSync;
+  unlinkSync: typeof unlinkSync;
+  openSync: typeof openSync;
+  closeSync: typeof closeSync;
+}
+
+const defaultFsOps: SyncStateStoreFsOps = { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync, openSync, closeSync };
+
+function isEnoent(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "ENOENT";
+}
+
+function isEexist(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "EEXIST";
 }
 
 function isSyncState(value: unknown): value is SyncState {
@@ -43,9 +64,9 @@ function atomicWrite(filePath: string, content: string): void {
   renameSync(tmp, filePath);
 }
 
-function safeUnlink(filePath: string): void {
+function safeUnlink(fs: Pick<SyncStateStoreFsOps, "unlinkSync">, filePath: string): void {
   try {
-    unlinkSync(filePath);
+    fs.unlinkSync(filePath);
   } catch {
     // Best effort: already removed, or never existed.
   }
@@ -58,6 +79,8 @@ export interface SyncStateStoreDeps {
   isAlive?: (pid: number) => boolean;
   /** Injectable for tests. Defaults to `Date.now`. */
   now?: () => number;
+  /** Injectable `node:fs` primitives for the lock's acquire/recover path. Defaults to the real ones. */
+  fs?: SyncStateStoreFsOps;
 }
 
 /**
@@ -76,6 +99,7 @@ export class SyncStateStore {
       pid: deps.pid,
       isAlive: deps.isAlive ?? defaultIsAlive,
       now: deps.now ?? (() => Date.now()),
+      fs: deps.fs ?? defaultFsOps,
     };
   }
 
@@ -103,23 +127,73 @@ export class SyncStateStore {
   }
 
   /**
-   * Try to acquire the cross-process sync lock. Returns `true` (and takes
-   * ownership) when there is no lock file, the existing one's pid is no
-   * longer alive, or it is older than {@link STALE_LOCK_MS}; `false` when a
-   * live, fresh lock is held by another process.
+   * Try to acquire the cross-process sync lock. Acquisition itself is
+   * atomic: it always goes through an exclusive create ({@link acquireFresh},
+   * `open` with the `wx` flag), never a read-then-write, so two processes
+   * racing to create the lock file can never both succeed. Returns `true`
+   * (and takes ownership) when there is no lock file, this process already
+   * owns it (re-entrant), or the existing one is stale (its pid is no
+   * longer alive, or it is older than {@link STALE_LOCK_MS}) and this
+   * process wins the race to recover it; `false` when a live, fresh lock is
+   * held by another process, or this process loses a stale-lock recovery
+   * race to another one.
    */
   tryLock(): boolean {
     mkdirSync(this.deps.dir, { recursive: true });
 
+    if (this.acquireFresh()) return true;
+
     const existing = this.readLock();
-    if (existing && existing.pid !== this.deps.pid) {
-      const age = this.deps.now() - existing.at;
-      const staleByAge = age > STALE_LOCK_MS;
-      const staleByLiveness = !this.deps.isAlive(existing.pid);
-      if (!staleByAge && !staleByLiveness) return false;
+    if (!existing) {
+      // Raced with a release between our failed create and this read; the
+      // slot may be free again now. One more attempt, then give up rather
+      // than looping forever.
+      return this.acquireFresh();
     }
 
-    atomicWrite(this.lockPath, JSON.stringify({ pid: this.deps.pid, at: this.deps.now() }));
+    if (existing.pid === this.deps.pid) return true; // re-entrant: we already own it.
+
+    const age = this.deps.now() - existing.at;
+    const stale = age > STALE_LOCK_MS || !this.deps.isAlive(existing.pid);
+    if (!stale) return false; // live, fresh lock held by someone else.
+
+    // Stale-lock recovery, made race-safe: rename the stale file to a
+    // unique tombstone name first. `rename` is atomic, so only one racer's
+    // call can succeed; every loser gets ENOENT and backs off instead of
+    // deleting (or overwriting) a lock it never proved was still stale.
+    const tombstone = `${this.lockPath}.stale.${this.deps.pid}.${this.deps.now()}.tmp`;
+    try {
+      this.deps.fs.renameSync(this.lockPath, tombstone);
+    } catch (error) {
+      if (isEnoent(error)) return false; // lost the recovery race; back off.
+      throw error;
+    }
+    safeUnlink(this.deps.fs, tombstone);
+
+    return this.acquireFresh(); // false here means a third racer won it first.
+  }
+
+  /** Create the lock file exclusively (`wx`): fails with EEXIST when another lock already exists, never silently overwrites one. Assumes `this.deps.dir` already exists (`tryLock` ensures it once up front). */
+  private acquireFresh(): boolean {
+    let fd: number;
+    try {
+      fd = this.deps.fs.openSync(this.lockPath, "wx");
+    } catch (error) {
+      if (isEexist(error)) return false;
+      throw error;
+    }
+    try {
+      this.deps.fs.writeFileSync(fd, JSON.stringify({ pid: this.deps.pid, at: this.deps.now() }));
+    } catch (error) {
+      try {
+        this.deps.fs.closeSync(fd);
+      } catch {
+        // Best effort: still try to clean up the partially written file below.
+      }
+      safeUnlink(this.deps.fs, this.lockPath);
+      throw error;
+    }
+    this.deps.fs.closeSync(fd);
     return true;
   }
 
@@ -127,14 +201,14 @@ export class SyncStateStore {
   unlock(): void {
     const existing = this.readLock();
     if (existing && existing.pid === this.deps.pid) {
-      safeUnlink(this.lockPath);
+      safeUnlink(this.deps.fs, this.lockPath);
     }
   }
 
   private readLock(): LockFile | undefined {
     try {
-      if (!existsSync(this.lockPath)) return undefined;
-      const parsed: unknown = JSON.parse(readFileSync(this.lockPath, "utf8"));
+      if (!this.deps.fs.existsSync(this.lockPath)) return undefined;
+      const parsed: unknown = JSON.parse(this.deps.fs.readFileSync(this.lockPath, "utf8"));
       return isLockFile(parsed) ? parsed : undefined;
     } catch {
       return undefined;
