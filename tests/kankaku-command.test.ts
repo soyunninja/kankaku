@@ -164,6 +164,65 @@ test("the plain command shows a durable summary report when a UI is available, a
   assert.equal(notified.length, 1);
 });
 
+test("'doctor' reports orphan/uncertain counts and ancestor-detection availability, with no network call (SUBAGENT-REQ-017)", async () => {
+  const pi = new FakePi();
+  const log = new FakeWorkLog();
+  log.append(makeRecord({ id: "p1", pid: 1 }));
+  log.append(makeRecord({ id: "p2", pid: 2, roleConfidence: "uncertain" }));
+  log.append(makeRecord({ id: "c1", role: "subagent", pid: 3, parentPid: 999 })); // orphan: no matching orchestrator
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log,
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { customType: string; data: { title: string; lines: string[] } };
+  assert.equal(entry.customType, "kankaku-report");
+  assert.equal(entry.data.title, "doctor");
+  assert.ok(entry.data.lines.some((line) => line.includes("orphan subagent record(s): 1")));
+  assert.ok(entry.data.lines.some((line) => line.includes("uncertain record(s): 1")));
+  assert.ok(entry.data.lines.some((line) => line.startsWith("ancestor-chain detection:")));
+});
+
+test("the plain summary report appends a one-line hint when uncertain records are excluded (SUBAGENT-REQ-017)", async () => {
+  const pi = new FakePi();
+  const log = new FakeWorkLog();
+  const today = new Date().toISOString();
+  log.append(makeRecord({ id: "p1", pid: 1, startedAt: today, settledAt: today }));
+  log.append(makeRecord({ id: "p2", pid: 2, startedAt: today, settledAt: today, roleConfidence: "uncertain" }));
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log,
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands.get("kankaku")!.handler("", makeCtx());
+
+  const entry = pi.entries.at(-1) as { customType: string; data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line.includes("1 uncertain record(s) excluded")));
+});
+
+test("the plain summary report has no hint line when there are no uncertain records", async () => {
+  const pi = new FakePi();
+  const log = new FakeWorkLog();
+  log.append(makeRecord({ id: "p1", pid: 1 }));
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log,
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands.get("kankaku")!.handler("", makeCtx());
+
+  const entry = pi.entries.at(-1) as { customType: string; data: { lines: string[] } };
+  assert.ok(!entry.data.lines.some((line) => line.includes("uncertain")));
+});
+
 test("'client <name>' sets the session client, persists it and refreshes the idle status", async () => {
   const pi = new FakePi();
   const sessionClient = new FakeSessionClient();
@@ -232,7 +291,7 @@ test("getArgumentCompletions lists the known subcommands, and invalidateClientNa
   const tokens = (await pi.commands.get("kankaku")!.getArgumentCompletions!("")) as Array<{ value: string }>;
   assert.deepEqual(
     tokens.map((t) => t.value).sort(),
-    ["all", "client", "clients", "export", "sessions", "tasks"],
+    ["all", "client", "clients", "doctor", "export", "sessions", "tasks"],
   );
 
   await pi.commands.get("kankaku")!.getArgumentCompletions!("client ");
@@ -265,7 +324,7 @@ test("getArgumentCompletions includes target/projects/catalog only when the hub 
   const tokens = (await pi.commands.get("kankaku")!.getArgumentCompletions!("")) as Array<{ value: string }>;
   assert.deepEqual(
     tokens.map((t) => t.value).sort(),
-    ["all", "backfill", "catalog", "client", "clients", "export", "projects", "sessions", "sync", "target", "tasks"],
+    ["all", "backfill", "catalog", "client", "clients", "doctor", "export", "projects", "sessions", "sync", "target", "tasks"],
   );
 });
 

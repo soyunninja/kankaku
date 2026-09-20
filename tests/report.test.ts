@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  countUncertain,
   formatClients,
   formatProjects,
   formatReport,
@@ -86,6 +87,19 @@ test("summarize defaults to today when neither day nor all is given", () => {
 
   assert.equal(summary.orchestrator.count, 1);
   assert.equal(summary.orchestrator.workMs, 42);
+});
+
+test("countUncertain counts only uncertain-flagged orchestrator records within the requested day (SUBAGENT-REQ-017)", () => {
+  const confirmed = makeRecord({ id: "p1" });
+  const uncertain = makeRecord({ id: "p2", roleConfidence: "uncertain" });
+  const uncertainOtherDay = makeRecord({ id: "p3", roleConfidence: "uncertain", startedAt: "2026-09-05T00:00:00.000Z", settledAt: "2026-09-05T00:10:00.000Z" });
+
+  assert.equal(countUncertain([confirmed, uncertain, uncertainOtherDay], { day: "2026-09-10" }), 1);
+  assert.equal(countUncertain([confirmed, uncertain, uncertainOtherDay], { all: true }), 2);
+});
+
+test("countUncertain returns 0 when there are no uncertain records", () => {
+  assert.equal(countUncertain([makeRecord()], { day: "2026-09-10" }), 0);
 });
 
 test("summarize returns zeroed totals for roles with no records", () => {

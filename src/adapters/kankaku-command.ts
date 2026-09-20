@@ -3,13 +3,14 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Box, Text } from "@earendil-works/pi-tui";
 import { isValidClient } from "../domain/client-label.ts";
 import { exportRows, toCsv, toJson } from "../domain/export.ts";
-import { buildSessions, buildTasks } from "../domain/task-view.ts";
+import { buildSessions, buildTasks, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import type { SyncState } from "../domain/sync-plan.ts";
 import type { Catalog } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
 import type { SyncSummary, SyncTrigger } from "./sync-runner.ts";
 import {
+  countUncertain,
   formatClients,
   formatProjects,
   formatReport,
@@ -38,7 +39,7 @@ export function notifyError(ctx: ExtensionContext, error: unknown): void {
   ctx.ui.notify(`kankaku: ${message}`, "error");
 }
 
-const COMMAND_TOKENS = ["all", "tasks", "sessions", "client", "clients", "export"];
+const COMMAND_TOKENS = ["all", "tasks", "sessions", "client", "clients", "export", "doctor"];
 /** Only offered when the hub is configured, so completions are unchanged for users without one. */
 const HUB_COMMAND_TOKENS = ["target", "projects", "catalog", "sync", "backfill"];
 const TARGET_TOKENS = ["pick", "clear"];
@@ -329,6 +330,30 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     showReport(ctx, { title: "backfill", lines });
   }
 
+  /**
+   * Handle `/kankaku doctor`: a no-network diagnostic (SUBAGENT-REQ-017)
+   * reporting orphan/uncertain record counts (ADR 0022) with why, and
+   * whether ancestor-chain detection is available on this platform, so
+   * silent undercount stays visible (see README "Subagents").
+   */
+  function handleDoctorCommand(ctx: ExtensionContext): void {
+    const records = log.readAll();
+    const orphans = orphanSubagents(records);
+    const uncertain = uncertainRecords(records);
+    const ancestorDetectionAvailable = process.platform !== "win32";
+
+    const lines = [
+      `ancestor-chain detection: ${ancestorDetectionAvailable ? "available" : "unavailable (windows)"}`,
+      `orphan subagent record(s): ${orphans.length}` +
+        (orphans.length > 0 ? " — recognised as someone's child (an env marker matched), but no orchestrator could be matched" : ""),
+      `uncertain record(s): ${uncertain.length}` +
+        (uncertain.length > 0
+          ? " — no recognised child-env-marker, but a live tracked ancestor process was found; not counted as a new task, not synced"
+          : ""),
+    ];
+    showReport(ctx, { title: "doctor", lines });
+  }
+
   /** Handle `/kankaku export [csv|json] [all]`; `rest` excludes the leading `export` token. Default format is csv. */
   function handleExportCommand(rest: string[], ctx: ExtensionContext): void {
     if (!deps.writeExportFile) {
@@ -355,6 +380,7 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       "'client <name>' to set the session billing client, 'client' to show the effective one and its source, " +
       "'client --clear' to clear it, 'clients' for per-client totals today ('clients all' for every day), " +
       "'export [csv|json] [all]' to write today's (or every) task as a file. " +
+      "'doctor' to report orphan/uncertain subagent counts and ancestor-detection availability (no network). " +
       "When a hub (PocketBase) is configured: 'target' to show the effective client/project and its source, " +
       "'target pick' to run the picker again, 'target clear' to clear the session target, " +
       "'catalog refresh' to force a catalog refresh, 'projects' for per-project totals today ('projects all' for every day), " +
@@ -421,6 +447,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
           return;
         }
 
+        if (tokens[0] === "doctor") {
+          handleDoctorCommand(ctx);
+          return;
+        }
+
         const all = tokens.includes("all");
         const records = log.readAll();
         const today = localDay(new Date().toISOString());
@@ -464,9 +495,14 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
         }
 
         const summary = summarize(records, { all });
+        const lines = formatReport(summary).split(" | ");
+        const uncertainCount = countUncertain(records, { all });
+        if (uncertainCount > 0) {
+          lines.push(`kankaku: ${uncertainCount} uncertain record(s) excluded from tasks — run /kankaku doctor`);
+        }
         showReport(ctx, {
           title: all ? "summary (all days)" : "summary (today)",
-          lines: formatReport(summary).split(" | "),
+          lines,
         });
       } catch (error) {
         notifyError(ctx, error);

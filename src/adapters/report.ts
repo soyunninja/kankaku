@@ -1,4 +1,4 @@
-import { buildTasks } from "../domain/task-view.ts";
+import { buildTasks, uncertainRecords } from "../domain/task-view.ts";
 import type { SessionView, TaskView } from "../domain/task-view.ts";
 import { localDay } from "../domain/day.ts";
 import { finiteOrZero } from "../domain/work-record.ts";
@@ -99,6 +99,17 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
   summary.tasks.segments = Object.fromEntries(taskSegments);
 
   return summary;
+}
+
+/**
+ * Count of `uncertain` records (ADR 0022) within the same day scope
+ * `summarize` uses, so the `/kankaku` report can surface a one-line hint
+ * when some records are silently excluded from the task count
+ * (SUBAGENT-REQ-017): an undercount must never be silent.
+ */
+export function countUncertain(records: WorkRecord[], options: SummarizeOptions): number {
+  const targetDay = options.all ? undefined : (options.day ?? localDay(new Date().toISOString()));
+  return uncertainRecords(records).filter((record) => targetDay === undefined || localDay(record.startedAt) === targetDay).length;
 }
 
 function formatMinutes(ms: number): string {
