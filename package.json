@@ -35,6 +35,7 @@
     "typecheck": "tsc --noEmit",
     "check": "npm run typecheck && npm test",
     "e2e:hub": "node scripts/e2e-hub.ts",
+    "e2e:cross-worktree": "node scripts/e2e-cross-worktree-real-processes.ts",
     "prepublishOnly": "npm run check"
   },
   "devDependencies": {

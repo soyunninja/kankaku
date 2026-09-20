@@ -9,8 +9,10 @@
  * it, and asserts against the real server: union wall_ms, cost sums,
  * unassigned routing with legacy labels, idempotency (a second sync writes
  * nothing), a late subagent triggering a real update, a reassignment made
- * directly against PocketBase surviving a re-sync, and a dead-target sync
- * failing cleanly without throwing or advancing the watermark.
+ * directly against PocketBase surviving a re-sync, a dead-target sync
+ * failing cleanly without throwing or advancing the watermark, and F1's
+ * cross-worktree write-routing surviving the child's own exit cleanup
+ * across two sync passes without ever shrinking the row.
  *
  * Always stops the server and removes the data directory, even on failure.
  */
@@ -27,7 +29,6 @@ import { PocketBaseClient } from "../src/adapters/pocketbase-client.ts";
 import { PocketBaseSink } from "../src/adapters/pocketbase-sink.ts";
 import { runSync } from "../src/adapters/sync-runner.ts";
 import { MachineProcessRegistry } from "../src/adapters/machine-process-registry.ts";
-import { RegistryAwareWorkLog } from "../src/adapters/registry-aware-work-log.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 
 const PB_BIN = "/Users/baldboy/desarrollo/soyun.ninja/kankaku-hub/pocketbase/bin/pocketbase";
@@ -521,11 +522,20 @@ async function main(): Promise<void> {
     void stateBeforeDead;
     log(`  summary: ${JSON.stringify(summary6)} (failed cleanly, did not throw, watermark not corrupted)`);
 
-    // --- Phase 6a scenario: a gentle-pi cross-worktree subagent is
-    // reunited with its orchestrator locally, via the machine-wide process
-    // registry, and syncs as exactly ONE consolidated task_entries row ---
-    // (ADR 0023, SUBAGENT-REQ-007/008/009/018). ---
-    log("phase-6a scenario: gentle-pi cross-worktree subagent reunification");
+    // --- F1 scenario: a gentle-pi cross-worktree subagent's work log is
+    // routed, at WRITE time, straight into its orchestrator's own kankaku
+    // directory (F1's rewrite of ADR 0023 — the old read-time
+    // `RegistryAwareWorkLog` merge is gone). This reproduces the real
+    // ordering the review proved for gentle-pi's main case (a blocking
+    // `subagent_run` in task mode): the child registers, resolves its
+    // orchestrator's dir via the registry, writes its OWN record straight
+    // into THAT directory, then removes its own registry entry on exit
+    // (`process.on("exit")`/`session_shutdown`) — and only THEN does the
+    // parent sync, more than once. Because the record already lives in the
+    // parent's `worklog.jsonl`, the pointer disappearing changes nothing:
+    // the row must be complete on the first sync AND must never shrink on a
+    // later one (ADR 0023, SUBAGENT-REQ-007/008/009/018). ---
+    log("F1 scenario: cross-worktree subagent write-routing survives the child's own exit cleanup");
     const worktreeA = join(runDir, "worktree-a");
     const worktreeB = join(runDir, "worktree-b");
     mkdirSync(worktreeA, { recursive: true });
@@ -550,6 +560,11 @@ async function main(): Promise<void> {
       client: "cajamar",
       usage: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.02 },
     });
+    // `project` still records the child's OWN cwd (worktree-b) — that never
+    // changes — but its record is appended to worktree-A's log, exactly as
+    // `extension.ts`'s F1 write-routing would: `orchestratorRef.dir` names
+    // the orchestrator's directory, and a verified subagent writes there
+    // instead of its own cwd-relative one.
     const crossChild = makeRecord({
       id: "task-cross-worktree-sub1",
       role: "subagent",
@@ -560,11 +575,15 @@ async function main(): Promise<void> {
       settledAt: iso(t3 + 35_000), // outlives it by 15s, extending the union
       wallMs: 30_000,
       usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.005 },
-      orchestratorRef: { pid: orchPid, project: "/repo/worktree-a", startedAt: orchStartedAt },
+      orchestratorRef: { pid: orchPid, project: "/repo/worktree-a", startedAt: orchStartedAt, dir: worktreeA },
     });
 
-    new JsonlWorkLog(worktreeA).append(crossOrchestrator);
-    new JsonlWorkLog(worktreeB).append(crossChild);
+    const worktreeALog = new JsonlWorkLog(worktreeA);
+    worktreeALog.append(crossOrchestrator);
+    // F1: the child writes into the ORCHESTRATOR's directory, not its own
+    // (worktree-B's log is never even created here — nothing should ever
+    // need to read it).
+    worktreeALog.append(crossChild);
 
     // Both processes' registry entries, as `extension.ts` would write them
     // at session start. `isAlive: () => true` keeps this e2e's own
@@ -583,19 +602,26 @@ async function main(): Promise<void> {
         project: "/repo/worktree-b",
         dir: worktreeB,
         startedAt: iso(t3 + 5_000),
-        orchestratorRef: { pid: orchPid, project: "/repo/worktree-a", startedAt: orchStartedAt },
+        orchestratorRef: { pid: orchPid, project: "/repo/worktree-a", startedAt: orchStartedAt, dir: worktreeA },
       },
       () => true,
     );
 
-    const crossWorktreeLog = new RegistryAwareWorkLog({
-      inner: new JsonlWorkLog(worktreeA),
-      registry,
-      readForeignRecords: (dir) => new JsonlWorkLog(dir).readAll(),
-    });
+    // The child exits: its own registry entry is removed (mirrors
+    // `extension.ts`'s `process.on("exit")`/`session_shutdown` cleanup) —
+    // BEFORE the parent ever syncs. No later reader needs this pointer at
+    // all any more; this only proves that its absence changes nothing.
+    registry.removeOwn(childPid, undefined);
+    assert.equal(
+      registry.readAll().some((entry) => entry.pid === childPid),
+      false,
+      "the child's registry entry must actually be gone before the parent syncs",
+    );
 
+    // The parent syncs from a PLAIN JsonlWorkLog on its own directory — no
+    // registry-aware wrapper of any kind is involved any more.
     const summary7 = await runSync(
-      { log: crossWorktreeLog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
+      { log: worktreeALog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
       {},
     );
     assert.equal(summary7.error, undefined, `cross-worktree sync should not error: ${summary7.error}`);
@@ -608,7 +634,29 @@ async function main(): Promise<void> {
     assert.equal(crossRow["subagent_count"], 1);
     const crossWorkRecordCount = await countWorkRecords(superuserToken, crossRow["id"] as string);
     assert.equal(crossWorkRecordCount, 2, "orchestrator + the reunited cross-worktree child, as work_records");
-    log(`  task-cross-worktree: reunited locally, wall_ms=35000, cost summed once, subagent_count=1 — verified`);
+    log(`  task-cross-worktree: reunited by write routing, wall_ms=35000, cost summed once, subagent_count=1 — verified`);
+
+    // --- F1 regression: a SECOND sync pass, run after the child's registry
+    // entry is already gone, must produce IDENTICAL numbers — never a
+    // shrink. `buildTaskEntryUpdatePayload` recomputes wall_ms/cost/
+    // subagent_count/subagent_linkage straight from the current TaskView on
+    // every pass; if the child were ever rediscovered only through a live
+    // registry pointer (the old design), this second pass — with that
+    // pointer gone — would silently recompute a SMALLER union and erase
+    // already-uploaded work. It must not, because the record was never
+    // anywhere else to begin with. ---
+    log("F1 regression: a second sync pass after the child's registry entry is gone must not shrink the row");
+    const summary7b = await runSync(
+      { log: worktreeALog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
+      { full: true },
+    );
+    assert.equal(summary7b.error, undefined, `second cross-worktree sync pass should not error: ${summary7b.error}`);
+    const crossRowAfterSecondSync = await findTaskEntry(superuserToken, "task-cross-worktree");
+    assert.equal(crossRowAfterSecondSync["wall_ms"], 35_000, "wall_ms must NEVER shrink on a later sync pass");
+    assert.ok(Math.abs((crossRowAfterSecondSync["cost"] as number) - 0.025) < 1e-9, "cost must NEVER shrink on a later sync pass");
+    assert.equal(crossRowAfterSecondSync["subagent_count"], 1, "subagent_count must NEVER shrink on a later sync pass");
+    assert.equal(await countTaskEntries(superuserToken, "task-cross-worktree"), 1, "still exactly one row, never split into two by the second pass");
+    log("  second sync pass: wall_ms/cost/subagent_count all unchanged — the hub row never shrank");
 
     // --- Phase 6a scenario: a phantom/uncertain-role record (ADR 0022,
     // e.g. an unrecognised subagent mechanism with a tracked ancestor) is
@@ -624,10 +672,10 @@ async function main(): Promise<void> {
       settledAt: iso(t3 + 210_000),
       usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
     });
-    new JsonlWorkLog(worktreeA).append(phantom);
+    worktreeALog.append(phantom);
 
     const summary8 = await runSync(
-      { log: crossWorktreeLog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
+      { log: worktreeALog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
       {},
     );
     assert.equal(summary8.error, undefined, `phantom-orchestrator sync should not error: ${summary8.error}`);
