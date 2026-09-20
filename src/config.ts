@@ -94,8 +94,35 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): KankakuConfig 
   };
 }
 
-export function detectRole(env: NodeJS.ProcessEnv = process.env): "orchestrator" | "subagent" {
-  return env["GENTLE_PI_AGENTS_CHILD"] === "1" ? "subagent" : "orchestrator";
+export interface RoleDetection {
+  role: "orchestrator" | "subagent";
+  /**
+   * Set only when this process could not be positively proven top-level
+   * (ADR 0022's four-state classification, applied on top of the still-
+   * binary `role`): no recognised child-env-marker matched, but a live
+   * tracked ancestor process was found via the machine-wide process
+   * registry. See `domain/task-view.ts`'s `roleConfidence` handling.
+   */
+  roleConfidence?: "uncertain";
+}
+
+/**
+ * Classify this process's role. `GENTLE_PI_AGENTS_CHILD=1` stays the only
+ * confirmed-subagent signal (unchanged from before this ADR). Otherwise,
+ * `hasTrackedAncestor` — whether this process's own OS ancestor chain
+ * contains a live entry in the machine-wide process registry (computed by
+ * the caller, e.g. `extension.ts`, via `adapters/ancestry.ts` +
+ * `domain/ancestry-match.ts`; see `ports/process-registry.ts`) — decides
+ * whether an otherwise-unmarked process is a *confirmed* orchestrator (no
+ * tracked ancestor at all — today's exact behaviour, unchanged) or merely
+ * `uncertain` (ADR 0022's safe default, inverted): a process that cannot be
+ * shown to be top-level must never again default to `"orchestrator"`
+ * outright.
+ */
+export function detectRole(env: NodeJS.ProcessEnv = process.env, hasTrackedAncestor = false): RoleDetection {
+  if (env["GENTLE_PI_AGENTS_CHILD"] === "1") return { role: "subagent" };
+  if (hasTrackedAncestor) return { role: "orchestrator", roleConfidence: "uncertain" };
+  return { role: "orchestrator" };
 }
 
 /** Hub (PocketBase) credentials read from the environment; any field can be absent. */

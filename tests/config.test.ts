@@ -98,13 +98,19 @@ test("loadConfig reads KANKAKU_CLIENT", () => {
   assert.equal(config.client, "acme");
 });
 
-test("detectRole reports subagent when GENTLE_PI_AGENTS_CHILD=1", () => {
-  assert.equal(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" })), "subagent");
+test("detectRole reports subagent when GENTLE_PI_AGENTS_CHILD=1, regardless of a tracked ancestor", () => {
+  assert.deepEqual(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" })), { role: "subagent" });
+  assert.deepEqual(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" }), true), { role: "subagent" });
 });
 
-test("detectRole defaults to orchestrator", () => {
-  assert.equal(detectRole(env({})), "orchestrator");
-  assert.equal(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "0" })), "orchestrator");
+test("detectRole defaults to a confirmed orchestrator when no marker matches and no tracked ancestor was found", () => {
+  assert.deepEqual(detectRole(env({})), { role: "orchestrator" });
+  assert.deepEqual(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "0" })), { role: "orchestrator" });
+  assert.deepEqual(detectRole(env({}), false), { role: "orchestrator" });
+});
+
+test("detectRole classifies an unmarked process with a tracked ancestor as uncertain, never orchestrator outright (ADR 0022, SUBAGENT-REQ-013)", () => {
+  assert.deepEqual(detectRole(env({}), true), { role: "orchestrator", roleConfidence: "uncertain" });
 });
 
 test("loadHubEnvCredentials reads KANKAKU_PB_URL/EMAIL/PASSWORD", () => {
