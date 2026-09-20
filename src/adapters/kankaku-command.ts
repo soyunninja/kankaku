@@ -6,6 +6,7 @@ import { exportRows, toCsv, toJson } from "../domain/export.ts";
 import { buildSessions, buildTasks, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import type { SyncState } from "../domain/sync-plan.ts";
+import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { Catalog } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
 import type { SyncSummary, SyncTrigger } from "./sync-runner.ts";
@@ -81,6 +82,16 @@ export interface KankakuCommandDeps {
   catalog?: Catalog;
   /** Present only when the hub is configured. Drives `/kankaku sync [all|status]` and `/kankaku backfill`. */
   sync?: SyncCommandDeps;
+  /**
+   * Read-only machine-wide process-registry health snapshot (see
+   * `adapters/machine-process-registry.ts#health`), for `/kankaku doctor`
+   * (SUBAGENT-REQ-017): how many entries would be kept vs discarded, and
+   * why. Absent entirely when the registry is unavailable for some reason
+   * kankaku itself could not construct (never expected in practice, since
+   * `MachineProcessRegistry` always degrades gracefully on its own) —
+   * doctor then simply omits that section rather than guessing.
+   */
+  registryHealth?: () => RegistryClassification;
 }
 
 export interface KankakuCommand {
@@ -351,6 +362,17 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
           ? " — no recognised child-env-marker, but a live tracked ancestor process was found; not counted as a new task, not synced"
           : ""),
     ];
+
+    if (deps.registryHealth) {
+      const { keep, discard } = deps.registryHealth();
+      const counts = new Map<string, number>();
+      for (const { reason } of discard) counts.set(reason, (counts.get(reason) ?? 0) + 1);
+      const byReason = Array.from(counts.entries())
+        .map(([reason, count]) => `${reason}: ${count}`)
+        .join(", ");
+      lines.push(`registry (~/.kankaku/run): ${keep.length} entrie(s) trusted${discard.length > 0 ? `, ${discard.length} discarded (${byReason})` : ""}`);
+    }
+
     showReport(ctx, { title: "doctor", lines });
   }
 

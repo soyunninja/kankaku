@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { ProcessRegistry, RegistryEntry } from "../ports/process-registry.ts";
+import { classifyRegistryEntries, DEFAULT_MAX_ENTRY_AGE_MS } from "../domain/registry-health.ts";
+import type { RegistryClassification } from "../domain/registry-health.ts";
+import type { ProcessRegistry, RegistryEntry, RegistrySweepDeps } from "../ports/process-registry.ts";
 
 const RUN_DIR_NAME = "run";
 const JSON_EXT = ".json";
@@ -22,7 +24,8 @@ function isRegistryEntry(value: unknown): value is RegistryEntry {
     typeof record["project"] === "string" &&
     typeof record["dir"] === "string" &&
     typeof record["startedAt"] === "string" &&
-    isOrchestratorRef(record["orchestratorRef"])
+    isOrchestratorRef(record["orchestratorRef"]) &&
+    (record["processStartId"] === undefined || typeof record["processStartId"] === "number")
   );
 }
 
@@ -69,7 +72,7 @@ export class MachineProcessRegistry implements ProcessRegistry {
     }
   }
 
-  record(entry: RegistryEntry, isAlive: (pid: number) => boolean = defaultIsAlive): void {
+  record(entry: RegistryEntry, isAlive: (pid: number) => boolean = defaultIsAlive, sweepDeps: RegistrySweepDeps = {}): void {
     const dir = this.runDir();
     if (dir === undefined) return;
 
@@ -85,7 +88,28 @@ export class MachineProcessRegistry implements ProcessRegistry {
       return;
     }
 
-    this.sweep(dir, isAlive, entry.pid);
+    this.sweep(dir, entry.pid, isAlive, sweepDeps);
+  }
+
+  removeOwn(pid: number, processStartId: number | undefined): void {
+    const dir = this.runDir();
+    if (dir === undefined) return;
+
+    const target = join(dir, `${pid}${JSON_EXT}`);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(target, "utf8"));
+    } catch {
+      return; // nothing to remove, or unreadable — best effort.
+    }
+
+    if (!isRegistryEntry(parsed) || parsed.pid !== pid || parsed.processStartId !== processStartId) {
+      // Not verifiably this process's own entry (already overwritten by a
+      // pid-reuse successor, or a mismatched identity) — never touch it.
+      return;
+    }
+
+    safeUnlink(target);
   }
 
   readAll(): RegistryEntry[] {
@@ -114,13 +138,40 @@ export class MachineProcessRegistry implements ProcessRegistry {
   }
 
   /**
-   * Opportunistic sweep of dead-process entries, run whenever this process
-   * writes its own entry (mirrors `file-inflight-store.ts`'s stray-tmp-file
-   * sweep pattern), so `run/` does not grow unbounded (SUBAGENT-REQ-010).
-   * Never removes the entry this call just wrote, regardless of what
-   * `isAlive` reports for it.
+   * Read-only registry health snapshot for `/kankaku doctor`
+   * (SUBAGENT-REQ-017): every currently-persisted entry, classified as kept
+   * or discarded-and-why via the same pure classifier a real sweep uses —
+   * but without deleting anything, and (by default) without re-verifying
+   * any pid's live start identity, so this stays a cheap, no-extra-spawn
+   * diagnostic: a `stale-reuse` verdict therefore only ever shows up here
+   * when the caller explicitly injects a fresh `liveStartId` (e.g. from an
+   * ancestry snapshot it already has); otherwise such entries simply read
+   * as "kept" here even though a real `record()` sweep, run by a process
+   * that *does* have that live data, would already have discarded them.
    */
-  private sweep(dir: string, isAlive: (pid: number) => boolean, ownPid: number): void {
+  health(deps: { isAlive?: (pid: number) => boolean; liveStartId?: (pid: number) => number | undefined; now?: number } = {}): RegistryClassification {
+    const entries = this.readAll();
+    return classifyRegistryEntries(entries, -1, {
+      isAlive: deps.isAlive ?? defaultIsAlive,
+      liveStartId: deps.liveStartId ?? (() => undefined),
+      now: deps.now ?? Date.now(),
+      maxAgeMs: DEFAULT_MAX_ENTRY_AGE_MS,
+    });
+  }
+
+  /**
+   * Opportunistic sweep, run whenever this process writes its own entry
+   * (mirrors `file-inflight-store.ts`'s stray-tmp-file sweep pattern), so
+   * `run/` does not grow unbounded and never keeps serving a stale
+   * identity (SUBAGENT-REQ-010, and the PID-reuse fix). Delegates the
+   * actual keep/discard decision to the pure
+   * `domain/registry-health.ts#classifyRegistryEntries`, fed with every
+   * *structurally valid* on-disk entry (a corrupt/torn file is simply
+   * skipped here, same as `readAll`) plus whatever this call's own
+   * `isAlive`/`liveStartId` can tell it. Never removes the entry this call
+   * itself just wrote, regardless of what those report for it.
+   */
+  private sweep(dir: string, ownPid: number, isAlive: (pid: number) => boolean, sweepDeps: RegistrySweepDeps): void {
     let names: string[];
     try {
       names = readdirSync(dir);
@@ -128,12 +179,36 @@ export class MachineProcessRegistry implements ProcessRegistry {
       return;
     }
 
+    const entries: RegistryEntry[] = [];
+    const pathByPid = new Map<number, string>();
     for (const name of names) {
       if (!name.endsWith(JSON_EXT)) continue;
       const pid = Number(name.slice(0, -JSON_EXT.length));
-      if (!Number.isFinite(pid) || pid === ownPid) continue;
-      if (isAlive(pid)) continue;
-      safeUnlink(join(dir, name));
+      if (!Number.isFinite(pid)) continue;
+      try {
+        const parsed: unknown = JSON.parse(readFileSync(join(dir, name), "utf8"));
+        if (isRegistryEntry(parsed)) {
+          entries.push(parsed);
+          pathByPid.set(pid, join(dir, name));
+        }
+        // A structurally invalid/corrupt file is left alone here — readAll
+        // already tolerates it by skipping, and this sweep only acts on
+        // entries it can positively classify.
+      } catch {
+        // Tolerate malformed/corrupt files; skip them.
+      }
+    }
+
+    const { discard } = classifyRegistryEntries(entries, ownPid, {
+      isAlive,
+      liveStartId: sweepDeps.liveStartId ?? (() => undefined),
+      now: sweepDeps.now ?? Date.now(),
+      maxAgeMs: DEFAULT_MAX_ENTRY_AGE_MS,
+    });
+
+    for (const { entry } of discard) {
+      const path = pathByPid.get(entry.pid);
+      if (path) safeUnlink(path);
     }
   }
 }

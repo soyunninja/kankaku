@@ -25,10 +25,13 @@ Read `README.md` for behaviour and the record schema before changing code.
   `pocketbase-sink.ts`, the `WorkSink` that uploads task rows), sync
   orchestration (`sync-runner.ts`, using the pure `domain/hub-entry.ts` and
   `domain/sync-plan.ts`), report formatting (`report.ts`), and subagent
-  detection (`ancestry.ts`, OS ancestor-chain snapshot;
+  detection (`ancestry.ts`, OS ancestor-chain snapshot, including each
+  pid's approximate OS start-time identity (`startIdByPid`);
   `machine-process-registry.ts`, the `ProcessRegistry`;
   `registry-aware-work-log.ts`, the `WorkLog` decorator that reunites a
-  cross-worktree child before `buildTasks` runs — see README "Subagents").
+  cross-worktree child before `buildTasks` runs; `domain/ancestry-match.ts`
+  and `domain/registry-health.ts`, the pure identity-matching/sweep-
+  classification logic — see README "Subagents").
 - `src/extension.ts` only wires config, tracker, log and adapter together.
   Do not put logic there.
 - Dependencies point inwards: adapters import domain and ports; domain
@@ -57,6 +60,15 @@ Read `README.md` for behaviour and the record schema before changing code.
   "Subagents". `WorkRecord.roleConfidence` (optional, only ever
   `"uncertain"`) carries this; adding it did not bump
   `WORK_RECORD_SCHEMA`.
+- A registry match is by **identity, not just pid**: pids are reused by the
+  OS, so `domain/ancestry-match.ts#findAncestorEntry` only trusts a
+  candidate whose registry-recorded `RegistryEntry.processStartId` agrees
+  (within `START_ID_TOLERANCE_MS`) with a fresh re-derivation of that pid's
+  live OS start time, taken from the same ancestry snapshot. A pid-only
+  match is never sufficient. `domain/registry-health.ts#classifyRegistryEntries`
+  is the single source of truth for what the opportunistic sweep (and
+  `/kankaku doctor`'s reporting) discards and why (`dead` /
+  `stale-reuse` / `unverifiable-identity` / `over-age`).
 - `project` is a **hint** for joining a subagent to its orchestrator in
   `matchChildren`, never a hard filter (ADR 0021): a same-project candidate
   is preferred, but a cross-project one is eligible when it reaches the

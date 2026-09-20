@@ -181,52 +181,116 @@ by guessing.
 
 Every kankaku process writes a small entry to
 `~/.kankaku/run/<pid>.json` at startup — `pid`, `parentPid`, `role`,
-`project`, its resolved `KANKAKU_DIR`, and `startedAt` — independent of any
-project's own `KANKAKU_DIR`, so it survives a project boundary. This is
-what powers both of the above:
+`project`, its resolved `KANKAKU_DIR`, `startedAt`, and `processStartId`
+(below) — independent of any project's own `KANKAKU_DIR`, so it survives a
+project boundary. This is what powers both of the above:
 
 - **Uncertain detection**: a process with no child-env-marker walks its own
   OS ancestor chain (one snapshot, see "Ancestor-chain detection" below)
-  looking for *any* live registry entry. Finding one means some other
-  tracked kankaku process is an ancestor of this one — this process is not
-  a confirmed top-level session, so it is classified `uncertain` rather
-  than defaulting to `orchestrator`.
+  looking for *any* live registry entry whose identity it can actually
+  **prove** — see "Identity, not just pid" below. Finding one means some
+  other tracked kankaku process is an ancestor of this one — this process
+  is not a confirmed top-level session, so it is classified `uncertain`
+  rather than defaulting to `orchestrator`.
 - **Cross-worktree reunification**: a gentle-pi subagent running in a
   different git worktree than its orchestrator writes its own record to
   *that worktree's* `worklog.jsonl` — a different file the orchestrator's
   own report/sync never reads. The child also walks its ancestor chain,
-  finds its orchestrator's registry entry, and records that identity as
-  `orchestratorRef` (`{ pid, project, startedAt }`) on its own record. When
-  the orchestrator's own process later builds its task list (for a report
-  or a sync), it additionally scans the registry for any subagent entry
-  whose `orchestratorRef` names it exactly, and — only then — reads that
-  one other worktree's `worklog.jsonl` to pull in the matching record
-  before the usual union/task-building logic runs. The interval-union rule
-  itself is still computed in exactly one place (`buildTasks`); this only
-  changes what records that call can see. If the registry entry has
-  already expired (or ancestry could not be established at all) by the
-  time sync runs, the child stays a visible orphan instead — undercounted,
-  never lost, and never compensated for by summing two independently
-  synced rows: **the hub never sums two unions to recover a missing one**,
-  since that would double-count the overlap between parent and child.
-  `project` is therefore only ever a *hint* for this join (preferred when
-  it matches), never a hard filter.
-- The registry is swept for dead-process entries opportunistically (when a
-  process writes its own entry), so it does not grow unbounded.
+  finds its orchestrator's registry entry (identity-verified), and records
+  that identity as `orchestratorRef` (`{ pid, project, startedAt }`) on its
+  own record. When the orchestrator's own process later builds its task
+  list (for a report or a sync), it additionally scans the registry for
+  any subagent entry whose `orchestratorRef` names it exactly, and — only
+  then — reads that one other worktree's `worklog.jsonl` to pull in the
+  matching record before the usual union/task-building logic runs. The
+  interval-union rule itself is still computed in exactly one place
+  (`buildTasks`); this only changes what records that call can see. If the
+  registry entry has already expired (or ancestry could not be established
+  at all) by the time sync runs, the child stays a visible orphan instead —
+  undercounted, never lost, and never compensated for by summing two
+  independently synced rows: **the hub never sums two unions to recover a
+  missing one**, since that would double-count the overlap between parent
+  and child. `project` is therefore only ever a *hint* for this join
+  (preferred when it matches), never a hard filter.
+- The registry is swept opportunistically (when a process writes its own
+  entry) — see "Registry cleanup and health" below — so it does not grow
+  unbounded and never keeps serving a stale identity.
+
+#### Identity, not just pid — the PID-reuse fix
+
+Matching an ancestor pid to a registry entry by **pid number alone** is not
+safe: operating systems reuse pids. A kankaku process that dies without
+cleanup (a crash, `kill -9`) can leave its `~/.kankaku/run/<pid>.json`
+entry behind; the OS can later hand that same pid to the user's own
+interactive shell, and every *genuine* top-level pi session launched from
+that shell would then falsely resolve a "tracked ancestor" — silently
+misclassified `uncertain` forever, its task never synced. This inverts the
+whole guarantee this feature exists for, so identity is proven, not
+assumed:
+
+- Every registry entry also carries `processStartId`: an approximate,
+  self-consistent epoch-ms estimate of that process's actual OS start time,
+  read from the *same* single OS snapshot already taken for ancestor-chain
+  detection (no extra subprocess spawn, no hot-path cost). On macOS/BSD it
+  comes from `ps -eo pid,ppid,etime` (`[[dd-]hh:]mm:ss` elapsed time,
+  forced through the portable `etime` keyword — BSD `ps` has no `etimes`).
+  On Linux it comes from `/proc/<pid>/stat`'s `starttime` (clock ticks
+  since boot) combined with `/proc/uptime`, assuming the near-universal
+  `USER_HZ=100`; a wrong assumption never causes a false match, since the
+  same (possibly wrong) constant is used both when an entry is written and
+  whenever it is re-verified, and a process's `starttime` ticks never
+  change during its life — only the (unused) absolute-epoch interpretation
+  would be off, never the equality check between two readings of the same
+  instance. A small tolerance (2000ms) absorbs the reading's inherent
+  second-granularity rounding. Windows has no supported source at all —
+  see "Ancestor-chain detection".
+- A match is only trusted when **both** sides prove the same identity: the
+  registry entry's own `processStartId` **and** a fresh re-derivation of
+  that live pid's start time (from the ancestor's own current snapshot)
+  agree within tolerance. A pid with a registry entry but a mismatched — or
+  unprovable, on either side — identity is walked past exactly like an
+  untracked hop, not treated as a match; if nothing further up the chain is
+  provable either, ancestry detection reports "no tracked ancestor," which
+  is the same safe fallback as if the registry were empty (this process
+  classifies as a confirmed `orchestrator`, never `uncertain`, from an
+  unprovable candidate alone).
+- A legacy entry with no `processStartId` at all (written by a kankaku
+  build predating this field) is never trusted for identity matching or
+  kept around: it reads as stale and is removed by the normal sweep the
+  next time any process writes its own entry.
+
+#### Registry cleanup and health
+
+- Every kankaku process removes its own entry file on a normal exit and on
+  `session_shutdown` (best-effort, verifying the on-disk file's `pid` and
+  `processStartId` still match its own before unlinking, so it can never
+  remove a file it does not verifiably own) — a crash still leaves the
+  entry for the next sweep.
+- The opportunistic sweep (run whenever any process writes its own entry)
+  removes: entries for a dead pid; entries whose pid is alive but whose
+  recorded identity no longer matches that live process (pid reuse);
+  entries with no verifiable identity at all (legacy/malformed); and, as a
+  last resort, entries older than 7 days regardless of aliveness/identity.
+  It never removes the entry the writing process itself just wrote.
+- `/kankaku doctor` reports registry health: how many entries it currently
+  trusts, how many it would discard, and why (dead / stale-reuse /
+  unverifiable-identity / over-age).
 
 ### Ancestor-chain detection
 
 Reading "a live tracked ancestor process" above requires one OS-level
 ancestor-chain snapshot, taken **once**, at extension startup — never on a
-later hot path. On Linux this is a set of `/proc/<pid>/status` reads; on
-macOS, one `ps -eo pid,ppid` snapshot; a shell-wrapper hop with no registry
-entry of its own is walked past, not stopped at. **On Windows, this
-mechanism is not implemented in this version**: it degrades gracefully to
-"no ancestor found" (never a spawn attempt, never a crash) — an unmarked
-process on Windows can therefore only ever be classified `orchestrator` or
-`uncertain` based on what a future config-driven marker tells kankaku, not
-on ancestry. `/kankaku doctor` reports whether ancestor-chain detection is
-available on the current platform.
+later hot path. On Linux this is a set of `/proc/<pid>/stat` reads (ppid
+and start-time ticks together, plus one `/proc/uptime` read); on macOS, one
+`ps -eo pid,ppid,etime` snapshot (ppid and elapsed-time-since-start
+together); a shell-wrapper hop with no registry entry of its own is walked
+past, not stopped at. **On Windows, this mechanism is not implemented in
+this version**: it degrades gracefully to "no ancestor found" (never a
+spawn attempt, never a crash) — an unmarked process on Windows can
+therefore only ever be classified `orchestrator` or `uncertain` based on
+what a future config-driven marker tells kankaku, not on ancestry.
+`/kankaku doctor` reports whether ancestor-chain detection is available on
+the current platform.
 
 ### The `/kankaku doctor` diagnostic
 

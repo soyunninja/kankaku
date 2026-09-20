@@ -1,14 +1,44 @@
 import type { RegistryEntry } from "../ports/process-registry.ts";
 
 /**
- * The nearest tracked ancestor: the first `ancestryPids` entry (ordered
- * nearest-parent first, see `adapters/ancestry.ts#walkAncestry`) that has a
- * matching {@link RegistryEntry}, or `undefined` when none of them do. A
- * shell-wrapper hop with no registry entry of its own is walked past, not
- * stopped at (SUBAGENT-REQ-011), since `ancestryPids` already spans every
- * hop up to the walk's limit.
+ * Max allowed drift (ms) between a live process's freshly re-derived start
+ * identity and the one recorded in its registry entry. Absorbs
+ * second-granularity rounding/reading noise from the underlying OS
+ * start-time source (`adapters/ancestry.ts`) — not a measure of real clock
+ * error, since both readings of the *same* process instance stay tightly
+ * consistent regardless of that source's own precision (see that module's
+ * docs). A genuine pid-reuse produces a gap far larger than this.
  */
-export function findAncestorEntry(ancestryPids: number[], entries: RegistryEntry[]): RegistryEntry | undefined {
+export const START_ID_TOLERANCE_MS = 2000;
+
+/** Whether two start identities are close enough to be the same process instance. `undefined` on either side is always "no", never a coincidental match. */
+function sameProcessInstance(recorded: number | undefined, live: number | undefined): boolean {
+  if (recorded === undefined || live === undefined) return false;
+  return Math.abs(recorded - live) <= START_ID_TOLERANCE_MS;
+}
+
+/**
+ * The nearest tracked ancestor whose identity can actually be *proven*: the
+ * first `ancestryPids` entry (ordered nearest-parent first, see
+ * `adapters/ancestry.ts#walkAncestry`) that has a matching
+ * {@link RegistryEntry} AND whose registry-recorded `processStartId`
+ * agrees, within {@link START_ID_TOLERANCE_MS}, with `liveStartId(pid)` —
+ * a fresh re-derivation of that same pid's actual OS start time, taken
+ * from the same ancestry snapshot the caller already has. Matching by pid
+ * number alone is not safe: the OS reuses pids, so a stale entry left
+ * behind by a dead, never-cleaned-up process can otherwise be
+ * misattributed to whatever unrelated live process the kernel later hands
+ * that same pid to (a genuine top-level session silently misclassified as
+ * someone's subagent forever). A candidate whose identity cannot be
+ * verified — no `processStartId` on the entry (legacy/malformed), or no
+ * live start id available for that pid (platform without ancestor-chain
+ * support, or a snapshot gap) — is never matched; the walk continues past
+ * it exactly like an untracked hop, so a further genuine ancestor can still
+ * be found. Returns `undefined` when no ancestor pid is trackable at all —
+ * callers must treat that exactly like "no registry available" (safe
+ * fallback to the pre-registry behaviour), never invent a match.
+ */
+export function findAncestorEntry(ancestryPids: number[], entries: RegistryEntry[], liveStartId: (pid: number) => number | undefined): RegistryEntry | undefined {
   if (ancestryPids.length === 0 || entries.length === 0) return undefined;
 
   const byPid = new Map<number, RegistryEntry>();
@@ -21,7 +51,11 @@ export function findAncestorEntry(ancestryPids: number[], entries: RegistryEntry
 
   for (const pid of ancestryPids) {
     const entry = byPid.get(pid);
-    if (entry) return entry;
+    if (!entry) continue;
+    if (sameProcessInstance(entry.processStartId, liveStartId(pid))) return entry;
+    // Either unprovable, or this pid has genuinely been reused by a
+    // different process instance since the entry was written: not our
+    // ancestor. Keep walking — a further, verifiable ancestor may still exist.
   }
   return undefined;
 }

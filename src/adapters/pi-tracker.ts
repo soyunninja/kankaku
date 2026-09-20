@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isValidClient } from "../domain/client-label.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
+import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { OrchestratorRef, WorkRecord, WorkRecordCore, WorkRole } from "../domain/work-record.ts";
 import type { WorkTracker } from "../domain/work-tracker.ts";
 import type { Catalog } from "../ports/catalog.ts";
@@ -74,6 +75,8 @@ export interface PiTrackerDeps {
   hubConfigError?: string;
   /** Present only when the hub is configured; forwarded to `/kankaku sync [all|status]` and `/kankaku backfill`. */
   sync?: SyncCommandDeps;
+  /** Forwarded to `/kankaku doctor`; see `kankaku-command.ts#KankakuCommandDeps.registryHealth`. */
+  registryHealth?: () => RegistryClassification;
   /**
    * `KANKAKU_SYNC_AUTO` (default enabled): when `true` and `sync` is
    * present, fire-and-forget a sync on `session_start` (orchestrator role
@@ -159,6 +162,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     sessionTarget: deps.sessionTarget,
     catalog: deps.catalog,
     sync: deps.sync,
+    registryHealth: deps.registryHealth,
   });
 
   /** At most one quiet auto-sync failure notification per session; never notified on success. */

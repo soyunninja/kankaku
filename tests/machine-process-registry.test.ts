@@ -23,7 +23,14 @@ function entry(overrides: Partial<RegistryEntry> = {}): RegistryEntry {
     role: "orchestrator",
     project: "/proj",
     dir: "/proj/.kankaku",
-    startedAt: "2026-09-10T16:00:00.000Z",
+    // "Now" by default (not a fixed past date): most tests here exercise
+    // aliveness/identity sweeping, not the separate over-age sweep, and a
+    // fixed old timestamp would otherwise make every entry over-age against
+    // the real sweep clock (`Date.now()`) once that check exists.
+    startedAt: new Date().toISOString(),
+    // A default, well-formed identity so tests that don't care about
+    // pid-reuse detection aren't inadvertently swept as "unverifiable".
+    processStartId: 123456,
     ...overrides,
   };
 }
@@ -102,4 +109,78 @@ test("a throwing homeDir provider degrades to 'registry unavailable': record is 
 
   assert.doesNotThrow(() => registry.record(entry()));
   assert.deepEqual(registry.readAll(), []);
+});
+
+test("record persists processStartId, and sweeps a live-but-reused pid as stale (PID-reuse blocker)", () => {
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 400, processStartId: 1000 }), () => true);
+
+  // pid 400 is still alive, but is now a *different* process instance
+  // (different start id) — the registry must not keep trusting it.
+  registry.record(entry({ pid: 401, processStartId: 5000 }), () => true, { liveStartId: (pid) => (pid === 400 ? 999_999 : undefined) });
+
+  const pids = registry.readAll().map((e) => e.pid);
+  assert.deepEqual(pids.sort(), [401]);
+});
+
+test("record keeps a live entry whose start id still matches", () => {
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 500, processStartId: 1000 }), () => true);
+  registry.record(entry({ pid: 501, processStartId: 2000 }), () => true, { liveStartId: (pid) => (pid === 500 ? 1000 : undefined) });
+
+  const pids = registry.readAll().map((e) => e.pid);
+  assert.deepEqual(pids.sort(), [500, 501]);
+});
+
+test("record sweeps a legacy entry with no processStartId, even though the pid is alive (never trusted, matches malformed-entry cleanup)", () => {
+  const runDir = join(home, ".kankaku", "run");
+  mkdirSync(runDir, { recursive: true });
+  const { processStartId: _omit, ...legacy } = entry({ pid: 600 });
+  writeFileSync(join(runDir, "600.json"), JSON.stringify(legacy));
+
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 601 }), () => true);
+
+  const pids = registry.readAll().map((e) => e.pid);
+  assert.deepEqual(pids.sort(), [601]);
+});
+
+test("record sweeps an over-age entry even when alive and identity-verified", () => {
+  const registry = new MachineProcessRegistry(() => home);
+  const oldIso = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+  registry.record(entry({ pid: 700, processStartId: 1000, startedAt: oldIso }), () => true);
+  registry.record(entry({ pid: 701, processStartId: 2000 }), () => true, { liveStartId: (pid) => (pid === 700 ? 1000 : undefined) });
+
+  const pids = registry.readAll().map((e) => e.pid);
+  assert.deepEqual(pids.sort(), [701]);
+});
+
+test("removeOwn deletes this process's own entry file when pid and processStartId both match what is on disk", () => {
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 800, processStartId: 1234 }));
+  assert.equal(registry.readAll().length, 1);
+
+  registry.removeOwn(800, 1234);
+  assert.deepEqual(registry.readAll(), []);
+});
+
+test("removeOwn never touches a file whose on-disk identity differs (not verifiably this process's own)", () => {
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 801, processStartId: 1234 }));
+
+  registry.removeOwn(801, 9999); // wrong processStartId
+  assert.equal(registry.readAll().length, 1);
+
+  registry.removeOwn(802, 1234); // wrong pid, no such file
+  assert.equal(registry.readAll().length, 1);
+});
+
+test("removeOwn is a no-op (never throws) when the registry/home is unavailable or the file is already gone", () => {
+  const registry = new MachineProcessRegistry(() => home);
+  assert.doesNotThrow(() => registry.removeOwn(999, undefined));
+
+  const unavailable = new MachineProcessRegistry(() => {
+    throw new Error("no HOME");
+  });
+  assert.doesNotThrow(() => unavailable.removeOwn(1, 1));
 });

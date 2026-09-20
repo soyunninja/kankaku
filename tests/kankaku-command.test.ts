@@ -185,6 +185,36 @@ test("'doctor' reports orphan/uncertain counts and ancestor-detection availabili
   assert.ok(entry.data.lines.some((line) => line.includes("orphan subagent record(s): 1")));
   assert.ok(entry.data.lines.some((line) => line.includes("uncertain record(s): 1")));
   assert.ok(entry.data.lines.some((line) => line.startsWith("ancestor-chain detection:")));
+  // No registryHealth dep was provided: doctor must not fabricate a registry section.
+  assert.ok(!entry.data.lines.some((line) => line.startsWith("registry (")));
+});
+
+test("'doctor' reports registry health (kept/discarded counts and reasons) when registryHealth is provided", async () => {
+  const pi = new FakePi();
+  const log = new FakeWorkLog();
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log,
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    registryHealth: () => ({
+      keep: [{ pid: 1, parentPid: 0, role: "orchestrator", project: "/proj", dir: "/proj/.kankaku", startedAt: "t" }],
+      discard: [
+        { entry: { pid: 2, parentPid: 0, role: "orchestrator", project: "/proj", dir: "/proj/.kankaku", startedAt: "t" }, reason: "dead" },
+        { entry: { pid: 3, parentPid: 0, role: "orchestrator", project: "/proj", dir: "/proj/.kankaku", startedAt: "t" }, reason: "stale-reuse" },
+      ],
+    }),
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  const line = entry.data.lines.find((l) => l.startsWith("registry ("));
+  assert.ok(line);
+  assert.ok(line!.includes("1 entrie(s) trusted"));
+  assert.ok(line!.includes("2 discarded"));
+  assert.ok(line!.includes("dead: 1"));
+  assert.ok(line!.includes("stale-reuse: 1"));
 });
 
 test("the plain summary report appends a one-line hint when uncertain records are excluded (SUBAGENT-REQ-017)", async () => {

@@ -40,8 +40,13 @@ export default function kankaku(pi: ExtensionAPI): void {
   // adapters/machine-process-registry.ts.
   const registry = new MachineProcessRegistry(homedir);
   const registryEntries = registry.readAll();
-  const ancestorPids = walkAncestry(process.ppid, snapshotAncestry().ppidByPid);
-  const ancestorEntry = findAncestorEntry(ancestorPids, registryEntries);
+  // One ancestry snapshot, reused for every purpose below (ppid map, this
+  // process's own start identity, and the sweep's stale-by-reuse check) —
+  // still a single `ps`/`proc` read, never a second spawn.
+  const ancestrySnapshot = snapshotAncestry();
+  const ancestorPids = walkAncestry(process.ppid, ancestrySnapshot.ppidByPid);
+  const liveStartId = (pid: number): number | undefined => ancestrySnapshot.startIdByPid.get(pid);
+  const ancestorEntry = findAncestorEntry(ancestorPids, registryEntries, liveStartId);
 
   const { role, roleConfidence } = detectRole(process.env, ancestorEntry !== undefined);
   const orchestratorRef =
@@ -49,15 +54,47 @@ export default function kankaku(pi: ExtensionAPI): void {
       ? { pid: ancestorEntry.pid, project: ancestorEntry.project, startedAt: ancestorEntry.startedAt }
       : undefined;
 
+  // This process's own OS-reported start-time identity, from the same
+  // snapshot (it lists every process on the machine, this one included) —
+  // see `ports/process-registry.ts#RegistryEntry.processStartId`.
+  // `undefined` when unavailable (Windows, or the snapshot missed it),
+  // which the registry/matching machinery already treats as "unprovable"
+  // rather than a guess.
+  const ownProcessStartId = ancestrySnapshot.startIdByPid.get(process.pid);
+
   const resolvedDir = resolveKankakuDir(config.dir, process.cwd());
-  registry.record({
-    pid: process.pid,
-    parentPid: process.ppid,
-    role,
-    project: process.cwd(),
-    dir: resolvedDir,
-    startedAt: new Date().toISOString(),
-    ...(orchestratorRef !== undefined ? { orchestratorRef } : {}),
+  registry.record(
+    {
+      pid: process.pid,
+      parentPid: process.ppid,
+      role,
+      project: process.cwd(),
+      dir: resolvedDir,
+      startedAt: new Date().toISOString(),
+      ...(orchestratorRef !== undefined ? { orchestratorRef } : {}),
+      ...(ownProcessStartId !== undefined ? { processStartId: ownProcessStartId } : {}),
+    },
+    undefined,
+    { liveStartId },
+  );
+
+  // Best-effort cleanup of this process's own registry file: on a normal
+  // exit (covers session_shutdown too, whichever fires first — `removeOwn`
+  // is idempotent, a second call simply finds nothing to do) and directly
+  // on `session_shutdown` for the common graceful-shutdown path. Never
+  // relies on this alone for correctness — a crash still leaves the entry
+  // for the next process's sweep to discard (dead-pid, or later
+  // stale-by-reuse) — this only keeps `run/` tidy sooner in the common case.
+  const removeOwnRegistryEntry = (): void => {
+    registry.removeOwn?.(process.pid, ownProcessStartId);
+  };
+  process.on("exit", removeOwnRegistryEntry);
+  pi.on("session_shutdown", () => {
+    try {
+      removeOwnRegistryEntry();
+    } catch {
+      // Never let registry cleanup break shutdown.
+    }
   });
 
   const tracker = new WorkTracker({
@@ -186,5 +223,13 @@ export default function kankaku(pi: ExtensionAPI): void {
     ...(hubConfigError !== undefined ? { hubConfigError } : {}),
     ...(sync !== undefined ? { sync } : {}),
     ...(autoSyncEnabled !== undefined ? { autoSyncEnabled } : {}),
+    // Fresh ancestry snapshot on demand, only when `/kankaku doctor` is
+    // actually invoked (never on a hot path): a stale snapshot from
+    // extension startup could no longer tell a genuine pid reuse apart
+    // from a still-live process for a session that has been running a while.
+    registryHealth: () => {
+      const freshSnapshot = snapshotAncestry();
+      return registry.health({ liveStartId: (pid) => freshSnapshot.startIdByPid.get(pid) });
+    },
   });
 }
