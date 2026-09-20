@@ -23,6 +23,7 @@ import {
   summarizeByProject,
 } from "./report.ts";
 import type { SessionClient } from "./session-client.ts";
+import { readNonDefaultSessionDir } from "./session-dir.ts";
 import type { SessionTarget } from "./session-target.ts";
 
 const REPORT_ENTRY_TYPE = "kankaku-report";
@@ -371,6 +372,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
         .map(([reason, count]) => `${reason}: ${count}`)
         .join(", ");
       lines.push(`registry (~/.kankaku/run): ${keep.length} entrie(s) trusted${discard.length > 0 ? `, ${discard.length} discarded (${byReason})` : ""}`);
+    }
+
+    const sessionDir = readNonDefaultSessionDir(ctx.sessionManager);
+    if (sessionDir !== undefined) {
+      lines.push(`session dir (non-default): ${sessionDir}`);
     }
 
     showReport(ctx, { title: "doctor", lines });

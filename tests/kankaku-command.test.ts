@@ -217,6 +217,29 @@ test("'doctor' reports registry health (kept/discarded counts and reasons) when 
   assert.ok(line!.includes("stale-reuse: 1"));
 });
 
+test("'doctor' shows the session dir line only when the session manager reports a non-default one", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands.get("kankaku")!.handler(
+    "doctor",
+    makeCtx({ sessionManager: { getSessionId: () => "session-1", usesDefaultSessionDir: () => false, getSessionDir: () => "/custom/session/dir" } }),
+  );
+  const withDir = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(withDir.data.lines.some((line) => line === "session dir (non-default): /custom/session/dir"));
+
+  await pi.commands.get("kankaku")!.handler(
+    "doctor",
+    makeCtx({ sessionManager: { getSessionId: () => "session-1", usesDefaultSessionDir: () => true, getSessionDir: () => "/default/session/dir" } }),
+  );
+  const withoutDir = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(!withoutDir.data.lines.some((line) => line.startsWith("session dir")));
+});
+
 test("the plain summary report appends a one-line hint when uncertain records are excluded (SUBAGENT-REQ-017)", async () => {
   const pi = new FakePi();
   const log = new FakeWorkLog();

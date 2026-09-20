@@ -8,6 +8,7 @@ import type { Catalog } from "../ports/catalog.ts";
 import type { InflightStore } from "../ports/inflight-store.ts";
 import type { WorkLog } from "../ports/work-log.ts";
 import { createSessionClient } from "./session-client.ts";
+import { readNonDefaultSessionDir } from "./session-dir.ts";
 import type { SessionTarget } from "./session-target.ts";
 import { createStatusBar } from "./status-bar.ts";
 import { notifyError, registerKankakuCommand } from "./kankaku-command.ts";
@@ -205,6 +206,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     // breaking the record. Without a hub target, behaviour is unchanged.
     const client = target ? (isValidClient(target.clientCode) ? target.clientCode : undefined) : sessionClient.runClient();
     const sessionName = pi.getSessionName();
+    const sessionDir = readNonDefaultSessionDir(ctx.sessionManager);
     return {
       ...core,
       role,
@@ -217,6 +219,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       ...(model !== undefined ? { model } : {}),
       ...(client !== undefined ? { client } : {}),
       ...(sessionName !== undefined ? { sessionName } : {}),
+      ...(sessionDir !== undefined ? { sessionDir } : {}),
       ...(target !== undefined
         ? {
             clientId: target.clientId,

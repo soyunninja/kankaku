@@ -299,6 +299,23 @@ test("buildTasks leaves client and sessionName undefined when the orchestrator h
   assert.equal("client" in tasks[0]!, false);
 });
 
+test("buildTasks exposes the orchestrator's sessionDir when it carries a non-default one", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1, sessionDir: "/custom/session/dir" });
+
+  const tasks = buildTasks([parent]);
+
+  assert.equal(tasks[0]!.sessionDir, "/custom/session/dir");
+});
+
+test("buildTasks leaves sessionDir undefined (and omitted) when the orchestrator used the default session dir", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+
+  const tasks = buildTasks([parent]);
+
+  assert.equal(tasks[0]!.sessionDir, undefined);
+  assert.equal("sessionDir" in tasks[0]!, false);
+});
+
 test("buildTasks does not inherit client from a subagent child, only from the orchestrator", () => {
   const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1, client: "acme" });
   const child = makeRecord({ id: "c1", role: "subagent", pid: 200, parentPid: 100, startedAt: iso(2), settledAt: iso(5) });

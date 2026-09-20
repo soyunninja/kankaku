@@ -26,6 +26,8 @@ export interface TaskView {
   client?: string;
   /** pi's session display name, from the orchestrator record. */
   sessionName?: string;
+  /** Non-default session directory, from the orchestrator record. See `WorkRecordMetadata.sessionDir`. Local-only today — no hub field yet. */
+  sessionDir?: string;
   /** Hub client record id, from the orchestrator record only. See `domain/work-target.ts`. */
   clientId?: string;
   /** Hub client display name, from the orchestrator record only. */
@@ -192,6 +194,7 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
     ...(orchestrator.sessionId !== undefined ? { sessionId: orchestrator.sessionId } : {}),
     ...(orchestrator.client !== undefined ? { client: orchestrator.client } : {}),
     ...(orchestrator.sessionName !== undefined ? { sessionName: orchestrator.sessionName } : {}),
+    ...(orchestrator.sessionDir !== undefined ? { sessionDir: orchestrator.sessionDir } : {}),
     ...(orchestrator.clientId !== undefined ? { clientId: orchestrator.clientId } : {}),
     ...(orchestrator.clientName !== undefined ? { clientName: orchestrator.clientName } : {}),
     ...(orchestrator.projectId !== undefined ? { projectId: orchestrator.projectId } : {}),

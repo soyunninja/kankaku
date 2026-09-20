@@ -90,6 +90,13 @@ Read `README.md` for behaviour and the record schema before changing code.
 - Each process checkpoints its in-flight record to `.kankaku/inflight/<pid>.json`
   (via `InflightStore`) so a hard crash still leaves an `interrupted` record,
   recovered on the next `session_start`; see README "Crash recovery".
+- `sessionDir` (optional, `WorkRecordMetadata`/`TaskView`) is set only when
+  pi's session manager reports a *non-default* session directory
+  (`adapters/session-dir.ts#readNonDefaultSessionDir`, a guarded duck-typed
+  call — `usesDefaultSessionDir` is not part of the `ReadonlySessionManager`
+  type `ctx.sessionManager` carries, so an older pi version degrades to "no
+  sessionDir," never a crash). Local-only: never sent to the hub today (no
+  field for it yet — see README "Roadmap" for the recommended migration).
 - `client` (billing target) resolves session > `KANKAKU_CLIENT` env >
   project `config.json`, via the pure `domain/client-label.ts#resolveClient`;
   a subagent record never carries its own `client` — only the task view

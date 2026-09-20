@@ -87,6 +87,16 @@ export interface WorkRecordMetadata {
   client?: string;
   /** pi's session display name at the time this record settled. */
   sessionName?: string;
+  /**
+   * Absolute session directory, set only when pi's session manager reports
+   * it as *non-default* (`SessionManager#usesDefaultSessionDir()` false) —
+   * exactly the condition under which pi's own `formatResumeCommand` adds
+   * `--session-dir` to the printed resume command. Omitted for an ordinary
+   * default-location session, so most records never carry this at all.
+   * Local-only today: the hub has no field for it yet (see README
+   * "Subagents" / AGENTS.md for the recommended `session_dir` migration).
+   */
+  sessionDir?: string;
   /** Hub (PocketBase) client record id, when a hub target is active for this run. See `domain/work-target.ts`. */
   clientId?: string;
   /** Hub client display name, denormalised alongside `clientId` for readability. */
@@ -172,6 +182,7 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     STATUSES.has(record["status"] as WorkStatus) &&
     (record["client"] === undefined || typeof record["client"] === "string") &&
     (record["sessionName"] === undefined || typeof record["sessionName"] === "string") &&
+    (record["sessionDir"] === undefined || typeof record["sessionDir"] === "string") &&
     (record["clientId"] === undefined || typeof record["clientId"] === "string") &&
     (record["clientName"] === undefined || typeof record["clientName"] === "string") &&
     (record["projectId"] === undefined || typeof record["projectId"] === "string") &&

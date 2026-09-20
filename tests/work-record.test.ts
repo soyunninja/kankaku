@@ -81,6 +81,15 @@ test("isWorkRecord rejects a record with a non-string client or sessionName", ()
   assert.equal(isWorkRecord({ ...makeRecord(), sessionName: 42 }), false);
 });
 
+test("isWorkRecord accepts a record with a string sessionDir, and one without one", () => {
+  assert.equal(isWorkRecord(makeRecord({ sessionDir: "/custom/session/dir" })), true);
+  assert.equal(isWorkRecord(makeRecord()), true);
+});
+
+test("isWorkRecord rejects a record with a non-string sessionDir", () => {
+  assert.equal(isWorkRecord({ ...makeRecord(), sessionDir: 42 }), false);
+});
+
 test("isWorkRecord accepts a record with string hub metadata fields", () => {
   const record = makeRecord({
     clientId: "c-acme",

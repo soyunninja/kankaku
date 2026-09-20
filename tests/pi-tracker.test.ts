@@ -717,6 +717,130 @@ test("buildRecord fills client from env config and sessionName from pi.getSessio
   assert.equal(log.records[0]?.sessionName, "billing sprint");
 });
 
+test("buildRecord carries sessionDir when the session manager reports a non-default one", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx({
+    sessionManager: {
+      getSessionId: () => "session-1",
+      getSessionFile: () => "/abs/project/path/.pi/sessions/session-1.json",
+      getEntries: () => [],
+      usesDefaultSessionDir: () => false,
+      getSessionDir: () => "/custom/session/dir",
+    },
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    resolveProjectClient: () => undefined,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.sessionDir, "/custom/session/dir");
+});
+
+test("buildRecord omits sessionDir when the session manager reports the default one", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx({
+    sessionManager: {
+      getSessionId: () => "session-1",
+      getSessionFile: () => "/abs/project/path/.pi/sessions/session-1.json",
+      getEntries: () => [],
+      usesDefaultSessionDir: () => true,
+      getSessionDir: () => "/default/session/dir",
+    },
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    resolveProjectClient: () => undefined,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.sessionDir, undefined);
+  assert.equal("sessionDir" in log.records[0]!, false);
+});
+
+test("buildRecord omits sessionDir when the session manager (an older pi version) exposes no usesDefaultSessionDir at all", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx(); // makeFakeCtx's default sessionManager has no usesDefaultSessionDir/getSessionDir
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    resolveProjectClient: () => undefined,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.sessionDir, undefined);
+});
+
+test("buildRecord omits sessionDir (never throws) when usesDefaultSessionDir itself throws", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx({
+    sessionManager: {
+      getSessionId: () => "session-1",
+      getSessionFile: () => "/abs/project/path/.pi/sessions/session-1.json",
+      getEntries: () => [],
+      usesDefaultSessionDir: () => {
+        throw new Error("boom");
+      },
+      getSessionDir: () => "/custom/session/dir",
+    },
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    resolveProjectClient: () => undefined,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(10);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  assert.equal(log.records[0]?.sessionDir, undefined);
+});
+
 test("buildRecord falls back to the project client when env and session are absent", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
