@@ -154,6 +154,21 @@ test("computeTaskContentHash is stable for identical content and changes when a 
   assert.notEqual(computeTaskContentHash(task), computeTaskContentHash(changedCost));
 });
 
+test("computeTaskContentHash changes when a background subagent joins later, flipping subagent_linkage/cost_quality (SUBAGENT-REQ: late join must resync)", () => {
+  const orchestratorWithSpan = makeRecord({
+    id: "a",
+    startedAt: iso(0),
+    settledAt: iso(10),
+    subagents: [{ toolCallId: "call-1", agent: "reviewer", mode: "task", ms: 1000 }],
+  });
+  const beforeJoin = makeTask("a", 0, 10, { orchestrator: orchestratorWithSpan });
+
+  const joinedChild = makeRecord({ id: "child-1", role: "subagent", pid: 200, parentPid: 1, costObserved: true });
+  const afterJoin = makeTask("a", 0, 10, { orchestrator: orchestratorWithSpan, subagents: [joinedChild] });
+
+  assert.notEqual(computeTaskContentHash(beforeJoin), computeTaskContentHash(afterJoin));
+});
+
 test("computeTaskContentHash does not depend on assignment fields (client/project reassignment never triggers a resync by itself)", () => {
   const unassignedTask = makeTask("a", 0, 10);
   const assignedTask = makeTask("a", 0, 10, { clientId: "client-1", projectId: "project-1", clientName: "Acme" });

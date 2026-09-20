@@ -34,6 +34,8 @@ interface RunState {
   turns: number;
   tools: Record<string, number>;
   usage: UsageTotals;
+  /** `true` once any turn has reported a real (finite) provider cost figure. See `WorkRecordCore.costObserved`. */
+  costObserved: boolean;
   status: WorkStatus;
   waitingSpans: Interval[];
   /** Waiting spans opened by interactive tools, keyed by tool call id. */
@@ -84,6 +86,7 @@ export class WorkTracker {
         turns: 0,
         tools: {},
         usage: emptyUsage(),
+        costObserved: false,
         status: "completed",
         waitingSpans: [],
         openToolWaits: new Map(),
@@ -106,6 +109,11 @@ export class WorkTracker {
     this.state.usage.cacheRead += finiteOrZero(usage.cacheRead);
     this.state.usage.cacheWrite += finiteOrZero(usage.cacheWrite);
     this.state.usage.cost += finiteOrZero(usage.cost);
+    // A real, finite cost figure (even an explicit 0) counts as "measured";
+    // an absent/non-finite one never un-sets a prior turn's observation.
+    if (typeof usage.cost === "number" && Number.isFinite(usage.cost)) {
+      this.state.costObserved = true;
+    }
   }
 
   onToolStart(toolCallId: string, toolName: string, args: Record<string, unknown> | undefined): void {
@@ -266,6 +274,7 @@ export class WorkTracker {
       subagents: state.subagents,
       segments,
       usage: state.usage,
+      ...(state.costObserved ? { costObserved: true as const } : {}),
       status,
     };
   }

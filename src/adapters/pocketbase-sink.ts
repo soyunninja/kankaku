@@ -26,6 +26,12 @@ export interface PocketBaseSinkDeps {
   projects: Project[];
   machine: string;
   promptMode: PromptPrivacyMode;
+  /** Coding agent that produced these rows; see `domain/hub-entry.ts#HubEntryContext.agent`. Defaults to `"pi"`. */
+  agent?: string;
+  agentVersion?: string;
+  /** The integration that wrote these rows; see `domain/hub-entry.ts#HubEntryContext.plugin`. Defaults to `"kankaku"`. */
+  plugin?: string;
+  pluginVersion?: string;
   /** `KANKAKU_SYNC_RECORDS` (default enabled): also upsert each task's raw `work_records`. */
   syncRecords: boolean;
   /** ids per lookup request. Defaults to 30, per contract.md's guidance. */
@@ -99,9 +105,22 @@ export class PocketBaseSink implements WorkSink {
     return found.get(value);
   }
 
+  private get entryContext(): { clients: Client[]; projects: Project[]; machine: string; promptMode: PromptPrivacyMode; agent: string; agentVersion?: string; plugin: string; pluginVersion?: string } {
+    return {
+      clients: this.deps.clients,
+      projects: this.deps.projects,
+      machine: this.deps.machine,
+      promptMode: this.deps.promptMode,
+      agent: this.deps.agent ?? "pi",
+      ...(this.deps.agentVersion !== undefined ? { agentVersion: this.deps.agentVersion } : {}),
+      plugin: this.deps.plugin ?? "kankaku",
+      ...(this.deps.pluginVersion !== undefined ? { pluginVersion: this.deps.pluginVersion } : {}),
+    };
+  }
+
   /** Create-or-patch one task_entries row. Returns its PocketBase record id and whether it was created or updated. */
   private async upsertTaskEntry(task: TaskView, existingId: string | undefined): Promise<{ id: string; created: boolean }> {
-    const ctx = { clients: this.deps.clients, projects: this.deps.projects, machine: this.deps.machine, promptMode: this.deps.promptMode };
+    const ctx = this.entryContext;
 
     if (existingId) {
       await this.deps.client.request("PATCH", `/api/collections/task_entries/records/${existingId}`, buildTaskEntryUpdatePayload(task, ctx));

@@ -20,7 +20,9 @@ Read `README.md` for behaviour and the record schema before changing code.
   picker, and `kankaku-command.ts` for the `/kankaku` command), the
   filesystem (`jsonl-work-log.ts`, `lazy-jsonl-work-log.ts`,
   `project-config.ts`, `cached-catalog.ts`, `hub-credentials.ts`,
-  `sync-state-store.ts`), the hub HTTP layer (`pocketbase-client.ts`,
+  `sync-state-store.ts`), version resolution (`agent-info.ts`, pi's and
+  this package's own version, for the hub's "Agent and measurement
+  quality" fields), the hub HTTP layer (`pocketbase-client.ts`,
   generic; `pocketbase-catalog.ts`, maps records to domain types;
   `pocketbase-sink.ts`, the `WorkSink` that uploads task rows), sync
   orchestration (`sync-runner.ts`, using the pure `domain/hub-entry.ts` and
@@ -127,6 +129,19 @@ Read `README.md` for behaviour and the record schema before changing code.
   Only `buildTaskEntryCreatePayload` sends them, exactly once, when the row
   does not exist yet. See README "Hub (PocketBase)" > "Sync" > "Assignment
   is create-only".
+- `agent`/`agent_version`/`plugin`/`plugin_version`/`waiting_quality`/
+  `cost_quality`/`subagent_linkage` on a `task_entries` row are
+  **measurement** fields, the opposite of assignment: sent on both create
+  and update (`domain/hub-entry.ts`'s `HubEntryContext` and
+  `buildTaskEntryCreatePayload`), and included in
+  `domain/sync-plan.ts#computeTaskContentHash` so a change to either
+  quality field (e.g. a background subagent joining later) still triggers
+  a resync. `agent_version`/`plugin_version` are resolved once, at
+  extension load (`adapters/agent-info.ts`), and omitted — never
+  guessed — when they cannot be determined. `WorkRecord.costObserved`
+  (optional, set by `domain/work-tracker.ts#onTurnEnd` when any turn
+  reports a real finite `cost`) is what `cost_quality` is computed from;
+  adding it did not bump `WORK_RECORD_SCHEMA`.
 
 ## Code conventions
 

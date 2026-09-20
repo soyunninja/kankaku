@@ -1,5 +1,6 @@
 import { homedir, hostname, tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { detectRole, loadConfig, loadMachine, loadSyncConfig } from "./config.ts";
 import { WorkTracker } from "./domain/work-tracker.ts";
@@ -23,6 +24,7 @@ import { snapshotAncestry, walkAncestry } from "./adapters/ancestry.ts";
 import { MachineProcessRegistry } from "./adapters/machine-process-registry.ts";
 import { RegistryAwareWorkLog } from "./adapters/registry-aware-work-log.ts";
 import { JsonlWorkLog } from "./adapters/jsonl-work-log.ts";
+import { resolveAgentVersion, resolvePluginVersion } from "./adapters/agent-info.ts";
 import type { Catalog } from "./ports/catalog.ts";
 import type { SessionTarget } from "./adapters/session-target.ts";
 import type { SyncCommandDeps } from "./adapters/kankaku-command.ts";
@@ -171,6 +173,14 @@ export default function kankaku(pi: ExtensionAPI): void {
     const catalogRef = catalog;
     const machineName = machine;
 
+    // Resolved once, here (never on a hot path): see README "Hub
+    // (PocketBase)" > "Agent and measurement quality". Both degrade to
+    // `undefined` on any failure rather than guessing.
+    const agentVersion = resolveAgentVersion();
+    // extension.ts lives at <package root>/src/extension.ts.
+    const pluginPackageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const pluginVersion = resolvePluginVersion(pluginPackageRoot);
+
     const runOnce = (options?: { full?: boolean; trigger?: SyncTrigger }) => {
       const snapshot = catalogRef.read();
       const sink = new PocketBaseSink({
@@ -180,6 +190,10 @@ export default function kankaku(pi: ExtensionAPI): void {
         machine: machineName,
         promptMode: syncConfig.promptMode,
         syncRecords: syncConfig.syncRecords,
+        agent: "pi",
+        ...(agentVersion !== undefined ? { agentVersion } : {}),
+        plugin: "kankaku",
+        ...(pluginVersion !== undefined ? { pluginVersion } : {}),
       });
       return runSync(
         {

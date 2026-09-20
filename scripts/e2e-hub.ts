@@ -250,6 +250,14 @@ async function main(): Promise<void> {
       projectId: portalId,
       projectName: "Portal",
       usage: { input: 100, output: 200, cacheRead: 0, cacheWrite: 0, cost: 0.05 },
+      // A real provider cost figure was observed, and both of task-a's two
+      // subagent_run tool spans below have a joined child record — this is
+      // the "measured cost, linked subagents" case.
+      costObserved: true,
+      subagents: [
+        { toolCallId: "call-1", agent: "reviewer", mode: "task", ms: 30_000 },
+        { toolCallId: "call-2", agent: "reviewer", mode: "task", ms: 10_000 },
+      ],
       segments: { review: 5000 },
       runs: 1,
       turns: 3,
@@ -288,7 +296,9 @@ async function main(): Promise<void> {
       wallMs: 10_000,
       workMs: 10_000,
       client: "cajamar",
+      // A plain run (no subagents at all) with a real observed cost.
       usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.01 },
+      costObserved: true,
     });
 
     const t2 = Date.parse("2026-09-19T12:00:00.000Z");
@@ -303,7 +313,9 @@ async function main(): Promise<void> {
       wallMs: 10_000,
       workMs: 10_000,
       client: "Caja Mar",
-      usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0.01 },
+      // A cost-less run (subscription/OAuth-style provider): usage is
+      // tracked, but no turn ever reported a real cost figure.
+      usage: { input: 5, output: 5, cacheRead: 0, cacheWrite: 0, cost: 0 },
     });
 
     for (const record of [taskAOrchestrator, taskASub1, taskASub2, taskB, taskC]) {
@@ -324,6 +336,10 @@ async function main(): Promise<void> {
         machine: "e2e-machine",
         promptMode: "full",
         syncRecords: true,
+        agent: "pi",
+        agentVersion: "0.85.1-e2e",
+        plugin: "kankaku",
+        pluginVersion: "0.0.0-e2e",
       });
     }
 
@@ -351,13 +367,28 @@ async function main(): Promise<void> {
     assert.equal(taskAWorkRecordCount, 3, "task-a should have 3 work_records: orchestrator + 2 subagents");
     log("  task-a: union wall_ms/cost/subagent_count/work_records all verified");
 
+    // --- Agent and measurement quality (migration 1758300013): a plain
+    // run, a run with joined subagents, and a cost-less run. ---
+    assert.equal(taskARow["agent"], "pi");
+    assert.equal(taskARow["agent_version"], "0.85.1-e2e");
+    assert.equal(taskARow["plugin"], "kankaku");
+    assert.equal(taskARow["plugin_version"], "0.0.0-e2e");
+    assert.equal(taskARow["waiting_quality"], "measured");
+    assert.equal(taskARow["cost_quality"], "measured", "task-a observed a real cost figure");
+    assert.equal(taskARow["subagent_linkage"], "linked", "task-a's 2 subagent spans both have a joined child record");
+    log("  task-a: agent/plugin identity + measured cost + linked subagents verified");
+
     const taskBRow = await findTaskEntry(superuserToken, "task-b");
     assert.equal(taskBRow["client"], unassignedId);
     assert.equal(taskBRow["legacy_client_label"], "cajamar");
+    assert.equal(taskBRow["cost_quality"], "measured", "task-b (plain run) observed a real cost figure");
+    assert.equal(taskBRow["subagent_linkage"], "not_applicable", "task-b opened no subagent spans");
     const taskCRow = await findTaskEntry(superuserToken, "task-c");
     assert.equal(taskCRow["client"], unassignedId);
     assert.equal(taskCRow["legacy_client_label"], "Caja Mar");
-    log("  task-b/task-c: routed to Sin determinar with distinct legacy labels (no fuzzy merge)");
+    assert.equal(taskCRow["cost_quality"], "unknown", "task-c never observed a real cost figure (cost-less run)");
+    assert.equal(taskCRow["subagent_linkage"], "not_applicable");
+    log("  task-b/task-c: routed to Sin determinar with distinct legacy labels (no fuzzy merge); task-c's cost-less quality verified");
 
     // --- Sync #2: nothing changed -> zero writes. ---
     log("running sync #2 (nothing changed)");
@@ -399,7 +430,11 @@ async function main(): Promise<void> {
     const taskARowAfterLateSub = await findTaskEntry(superuserToken, "task-a");
     assert.equal(taskARowAfterLateSub["wall_ms"], 55_000, "task-a's union should now extend to 55s");
     assert.equal(taskARowAfterLateSub["subagent_count"], 3);
-    log(`  task-a extended to wall_ms=55000 (union now includes the late subagent)`);
+    // Measurement-quality fields are sent on update too, not just create.
+    assert.equal(taskARowAfterLateSub["agent"], "pi");
+    assert.equal(taskARowAfterLateSub["cost_quality"], "measured");
+    assert.equal(taskARowAfterLateSub["subagent_linkage"], "linked");
+    log(`  task-a extended to wall_ms=55000 (union now includes the late subagent); quality fields sent on update too`);
 
     // --- Reassign task-b directly against PocketBase (as the web would),
     // then force a genuine content change (another late subagent) and

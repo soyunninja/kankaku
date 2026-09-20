@@ -24,6 +24,14 @@ export interface HubEntryContext {
   machine: string;
   /** `KANKAKU_SYNC_PROMPT`; see {@link applyPromptPrivacy}. */
   promptMode: PromptPrivacyMode;
+  /** Coding agent that produced this row, lowercase slug. Always `"pi"` for this package. See kankaku-hub `docs/contract.md` "Agent and measurement quality". */
+  agent: string;
+  /** The `pi` package's own version, when it could be determined without a hot-path cost. Never guessed — omitted rather than sent wrong. */
+  agentVersion?: string;
+  /** The integration that wrote this row, lowercase slug. Always `"kankaku"` for this package. */
+  plugin: string;
+  /** This kankaku package's own version, from its `package.json`, read once. */
+  pluginVersion?: string;
 }
 
 export interface TaskAssignment {
@@ -95,6 +103,64 @@ function toPbDate(iso: string): string {
   return iso.replace("T", " ");
 }
 
+export type WaitingQuality = "measured" | "unavailable";
+export type CostQuality = "measured" | "estimated" | "unknown";
+export type SubagentLinkage = "linked" | "unlinked" | "not_applicable";
+
+/**
+ * Whether waiting time (time blocked on the human) was actually observed
+ * for this task, as opposed to `work_ms` being an unmeasured upper bound
+ * equal to `wall_ms`. pi always instruments `ui_prompt_start`/`_end` and
+ * interactive-tool spans (`domain/work-tracker.ts`), so this is always
+ * `"measured"` for kankaku/pi — a constant here, not computed from a
+ * record, kept as its own function (rather than a literal in the payload)
+ * so the reasoning has one documented home.
+ */
+export function computeWaitingQuality(): WaitingQuality {
+  return "measured";
+}
+
+/**
+ * Whether this task's cost figure came from a real provider-reported cost
+ * (`"measured"`) or not (`"unknown"`) — never `"estimated"`: kankaku has no
+ * token-based price-table estimator today, only a real provider figure or
+ * nothing. A task counts as measured when its own orchestrator record OR
+ * any of its joined subagent records observed one (see
+ * `WorkRecord.costObserved`, set by `domain/work-tracker.ts`).
+ */
+export function computeCostQuality(task: TaskView): CostQuality {
+  const observed = task.orchestrator.costObserved === true || task.subagents.some((child) => child.costObserved === true);
+  return observed ? "measured" : "unknown";
+}
+
+/**
+ * Whether this task's subagent tool spans (`orchestrator.subagents`,
+ * `SubagentSpan[]` — the orchestrator's own tool-call bookkeeping) are
+ * accounted for by joined child `WorkRecord`s (`task.subagents`, from
+ * `domain/task-view.ts#matchChildren`). There is no explicit per-span
+ * correlation id today (README "Subagents" > "Limitations": upstream
+ * gentle-pi does not hand a child its own task id), so this is a
+ * task-level approximation, not a per-span one:
+ *
+ * - `not_applicable`: the orchestrator opened no subagent spans at all.
+ * - `linked`: at least as many child records were joined as spans were
+ *   opened — plausibly every span is accounted for (a gentle-pi subagent
+ *   spawns exactly one child process per span, so counts normally match
+ *   1:1).
+ * - `unlinked`: fewer joined children than spans (including zero) — at
+ *   least one span's time is only visible inside the orchestrator's own
+ *   tool-call span, with no corroborating child record. This also covers
+ *   a fully in-process subagent mechanism (no separate OS process at all,
+ *   invisible to the registry/ancestry machinery) and a genuine join miss
+ *   alike — kankaku cannot tell those apart from here, so it reports the
+ *   conservative, visible-gap answer rather than guessing "linked".
+ */
+export function computeSubagentLinkage(task: TaskView): SubagentLinkage {
+  const spanCount = task.orchestrator.subagents.length;
+  if (spanCount === 0) return "not_applicable";
+  return task.subagents.length >= spanCount ? "linked" : "unlinked";
+}
+
 /** The `task_entries` fields present on every write. */
 export interface TaskEntryPayload {
   task_id: string;
@@ -124,6 +190,13 @@ export interface TaskEntryPayload {
   legacy_client_label: string;
   repo_project: string;
   schema: number;
+  agent: string;
+  agent_version?: string;
+  plugin: string;
+  plugin_version?: string;
+  waiting_quality: WaitingQuality;
+  cost_quality: CostQuality;
+  subagent_linkage: SubagentLinkage;
 }
 
 /** `TaskEntryPayload` minus the assignment fields — what an update sends. See the module docs' CRITICAL rule. */
@@ -160,6 +233,13 @@ export function buildTaskEntryCreatePayload(task: TaskView, ctx: HubEntryContext
     legacy_client_label: assignment.legacyClientLabel,
     repo_project: task.project,
     schema: task.orchestrator.schema,
+    agent: ctx.agent,
+    ...(ctx.agentVersion !== undefined ? { agent_version: ctx.agentVersion } : {}),
+    plugin: ctx.plugin,
+    ...(ctx.pluginVersion !== undefined ? { plugin_version: ctx.pluginVersion } : {}),
+    waiting_quality: computeWaitingQuality(),
+    cost_quality: computeCostQuality(task),
+    subagent_linkage: computeSubagentLinkage(task),
   };
 }
 

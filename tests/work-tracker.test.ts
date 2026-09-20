@@ -427,6 +427,43 @@ test("usage accumulation ignores non-finite numbers and treats missing fields as
   const record = tracker.onSettled();
 
   assert.deepEqual(record?.usage, { input: 5, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  // A non-finite cost is not a real observed figure — same as absent.
+  assert.equal(record?.costObserved, undefined);
+});
+
+test("costObserved is set when at least one turn reports a real (finite) cost figure", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  tracker.onTurnEnd({ input: 1, output: 1, cost: 0 }); // a real, explicit zero cost still counts as observed
+  const record = tracker.onSettled();
+
+  assert.equal(record?.costObserved, true);
+});
+
+test("costObserved stays unset when no turn ever reports a cost figure (subscription/OAuth providers)", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  tracker.onTurnEnd({ input: 1, output: 1 }); // no cost key at all
+  tracker.onTurnEnd(undefined);
+  const record = tracker.onSettled();
+
+  assert.equal(record?.costObserved, undefined);
+});
+
+test("costObserved stays true for the rest of the run once any turn observed a real cost", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  tracker.onTurnEnd({ input: 1, output: 1, cost: 0.5 });
+  tracker.onTurnEnd({ input: 1, output: 1 }); // this later turn has no cost, must not erase the earlier observation
+  const record = tracker.onSettled();
+
+  assert.equal(record?.costObserved, true);
 });
 
 test("peek while running returns a record with the same id as the later settled record", () => {

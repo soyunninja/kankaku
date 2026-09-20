@@ -68,7 +68,16 @@ const unassigned: Client = { id: "client-unassigned", name: "Sin determinar", co
 const project: Project = { id: "project-1", name: "Portal", clientId: "client-1", repoPaths: [], active: true };
 const otherClientProject: Project = { id: "project-2", name: "Other", clientId: "client-other", repoPaths: [], active: true };
 
-const ctx: HubEntryContext = { clients: [client, unassigned], projects: [project, otherClientProject], machine: "laptop", promptMode: "none" };
+const ctx: HubEntryContext = {
+  clients: [client, unassigned],
+  projects: [project, otherClientProject],
+  machine: "laptop",
+  promptMode: "none",
+  agent: "pi",
+  agentVersion: "0.85.1",
+  plugin: "kankaku",
+  pluginVersion: "0.4.6",
+};
 
 test("resolveTaskAssignment links a task whose clientId still exists in the catalog", () => {
   const task = makeTask({ clientId: "client-1", clientName: "Acme", projectId: "project-1", projectName: "Portal" });
@@ -161,11 +170,62 @@ test("buildTaskEntryCreatePayload maps every field, in the contract's date forma
   assert.equal(payload.legacy_client_label, "");
   assert.equal(payload.repo_project, task.project);
   assert.equal(payload.schema, task.orchestrator.schema);
+  assert.equal(payload.agent, "pi");
+  assert.equal(payload.agent_version, "0.85.1");
+  assert.equal(payload.plugin, "kankaku");
+  assert.equal(payload.plugin_version, "0.4.6");
+  assert.equal(payload.waiting_quality, "measured");
+  assert.equal(payload.cost_quality, "unknown"); // makeRecord's default usage.cost is set but costObserved is never set by the helper
+  assert.equal(payload.subagent_linkage, "not_applicable");
+});
+
+test("buildTaskEntryCreatePayload omits agent_version/plugin_version when not known, but always sends agent/plugin", () => {
+  const task = makeTask({});
+  const payload = buildTaskEntryCreatePayload(task, { clients: [], projects: [], machine: "laptop", promptMode: "none", agent: "pi", plugin: "kankaku" });
+  assert.equal(payload.agent, "pi");
+  assert.equal(payload.plugin, "kankaku");
+  assert.equal("agent_version" in payload, false);
+  assert.equal("plugin_version" in payload, false);
+});
+
+test("computeCostQuality: measured when the orchestrator record observed a real cost figure", () => {
+  const task = makeTask({}, { costObserved: true });
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).cost_quality, "measured");
+});
+
+test("computeCostQuality: measured when a joined subagent record observed a real cost figure, even if the orchestrator did not", () => {
+  const child = makeRecord({ id: "child-1", role: "subagent", pid: 200, parentPid: 100, costObserved: true });
+  const task = makeTask({ subagents: [child] });
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).cost_quality, "measured");
+});
+
+test("computeCostQuality: unknown when neither the orchestrator nor any subagent observed a cost figure", () => {
+  const task = makeTask({});
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).cost_quality, "unknown");
+});
+
+test("computeSubagentLinkage: not_applicable when the orchestrator opened no subagent spans", () => {
+  const task = makeTask({});
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).subagent_linkage, "not_applicable");
+});
+
+test("computeSubagentLinkage: linked when every subagent span has a joined child record", () => {
+  const child = makeRecord({ id: "child-1", role: "subagent", pid: 200, parentPid: 100 });
+  const task = makeTask({ subagents: [child] }, { subagents: [{ toolCallId: "call-1", agent: "reviewer", mode: "task", ms: 1000 }] });
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).subagent_linkage, "linked");
+});
+
+test("computeSubagentLinkage: unlinked when there are fewer joined children than opened spans", () => {
+  const task = makeTask(
+    { subagents: [] },
+    { subagents: [{ toolCallId: "call-1", agent: "reviewer", mode: "task", ms: 1000 }] },
+  );
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).subagent_linkage, "unlinked");
 });
 
 test("buildTaskEntryCreatePayload sends empty relation strings, not omitted or null, when unresolved", () => {
   const task = makeTask({});
-  const payload = buildTaskEntryCreatePayload(task, { clients: [], projects: [], machine: "laptop", promptMode: "none" });
+  const payload = buildTaskEntryCreatePayload(task, { clients: [], projects: [], machine: "laptop", promptMode: "none", agent: "pi", plugin: "kankaku" });
   assert.equal(payload.client, "");
   assert.equal(payload.project, "");
   assert.equal(payload.task, "");

@@ -181,6 +181,64 @@ test("push creates a new task_entries row and reports 'created'", async () => {
   assert.equal(rows[0]!["project"], "project-1");
 });
 
+test("push sends agent/plugin identity and measurement-quality fields, defaulting agent/plugin when not injected", async () => {
+  const { sink, fake } = makeSink();
+  const task = makeTask({ clientId: "client-1" });
+
+  await sink.push([task]);
+
+  const [row] = Array.from(fake.collections.get("task_entries")!.values());
+  assert.equal(row!["agent"], "pi");
+  assert.equal(row!["plugin"], "kankaku");
+  assert.equal(row!["waiting_quality"], "measured");
+  assert.equal(row!["cost_quality"], "unknown"); // makeRecord's default record never sets costObserved
+  assert.equal(row!["subagent_linkage"], "not_applicable");
+  // agent_version/plugin_version were never injected here — omitted, not guessed.
+  assert.equal("agent_version" in row!, false);
+  assert.equal("plugin_version" in row!, false);
+});
+
+test("push sends agent_version/plugin_version when injected, on both create and update", async () => {
+  const fake = createFakeClient();
+  const sink = new PocketBaseSink({
+    client: fake.client,
+    clients: [client, unassignedClient],
+    projects: [project],
+    machine: "laptop",
+    promptMode: "none",
+    syncRecords: true,
+    agent: "pi",
+    agentVersion: "0.85.1",
+    plugin: "kankaku",
+    pluginVersion: "0.4.6",
+  });
+  const task = makeTask({ clientId: "client-1" });
+
+  await sink.push([task]); // create
+  await sink.push([task]); // update (same task_id, already exists)
+
+  const [row] = Array.from(fake.collections.get("task_entries")!.values());
+  assert.equal(row!["agent_version"], "0.85.1");
+  assert.equal(row!["plugin_version"], "0.4.6");
+});
+
+// ASSUMPTION (verified by the hub team, see kankaku-hub docs/contract.md
+// "Agent and measurement quality"): PocketBase's REST API silently ignores
+// unknown/unrecognized fields on create and update — it never rejects a
+// request just because it carries a field an older schema (predating
+// migration 1758300013) does not have. kankaku can therefore always send
+// these fields without probing hub capability first; an older hub simply
+// drops them with a 200, exactly like `createFakeClient` above, which
+// accepts any body shape with no schema validation at all.
+test("an older hub without the agent/quality fields still accepts the row (fields are additive, never required by this client)", async () => {
+  const { sink } = makeSink();
+  const task = makeTask({ clientId: "client-1" });
+
+  const results = await sink.push([task]);
+
+  assert.equal(results[0]!.outcome.kind, "created");
+});
+
 test("push reports routing to the unassigned client, with its legacy label, in the outcome", async () => {
   const { sink } = makeSink();
   const task = makeTask({ client: "cajamar" });

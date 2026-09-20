@@ -10,6 +10,7 @@
  * tasks (proposal §6.0).
  */
 
+import { computeCostQuality, computeSubagentLinkage } from "./hub-entry.ts";
 import type { TaskView } from "./task-view.ts";
 
 /** Persisted sync state (`<KANKAKU_DIR>/sync-state.json`). */
@@ -88,7 +89,16 @@ function fingerprint(input: string): string {
  * fields (never the assignment — a reassignment made in the web is never
  * visible locally, and must never trigger a resync on its own). A task
  * whose hash matches the last stored one is unchanged and can be skipped
- * without a request.
+ * without a request. Includes the derived measurement-quality fields
+ * (`domain/hub-entry.ts`) too, not just the raw numbers they are computed
+ * from: a background subagent that joins *after* this task was first
+ * synced can turn `cost_quality`/`subagent_linkage` from `"unknown"`/
+ * `"unlinked"` into a better answer without any of the other numeric
+ * fields necessarily changing (e.g. a joined child with no cost of its own
+ * still flips `subagent_linkage`) — that must still trigger a resync.
+ * `waiting_quality` is a true constant (`domain/hub-entry.ts`'s
+ * `computeWaitingQuality`) and is deliberately left out: it can never
+ * change between two evaluations of the same task.
  */
 export function computeTaskContentHash(task: TaskView): string {
   return fingerprint(
@@ -101,6 +111,8 @@ export function computeTaskContentHash(task: TaskView): string {
       subagentCount: task.subagents.length,
       usage: task.usage,
       segments: task.segments,
+      costQuality: computeCostQuality(task),
+      subagentLinkage: computeSubagentLinkage(task),
     }),
   );
 }

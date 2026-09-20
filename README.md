@@ -527,6 +527,29 @@ label (or `clientName`) forward as `legacy_client_label` — the exact
 mechanism that lets you bulk-reassign "everything that said `cjamar`" once,
 in the web app, from the unassigned queue.
 
+**Agent and measurement quality.** Every `task_entries` row also carries
+who produced it and how well each figure was measured, so the hub can
+label what it has instead of silently blending incompatible numbers from
+different agents: `agent` (`"pi"`), `agent_version` (pi's own version,
+when it could be determined — never guessed, omitted otherwise), `plugin`
+(`"kankaku"`), `plugin_version` (this package's own version),
+`waiting_quality` (always `"measured"` for kankaku/pi — it always
+instruments waiting time), `cost_quality` (`"measured"` when the task's
+own record or any joined subagent observed a real provider cost figure on
+at least one turn; `"unknown"` when none did, e.g. a subscription/OAuth
+provider that reports no cost — kankaku has no token-price estimator, so
+it never sends `"estimated"`), and `subagent_linkage` (`"not_applicable"`
+when the task opened no subagent spans; `"linked"` when at least as many
+child records were joined as spans were opened; `"unlinked"` otherwise —
+a task-level approximation, since there is no per-span correlation id
+today, see "Subagents" > "Limitations"). These are measurement fields, not
+assignment: sent on every create *and* update, and included in the sync
+content hash, so a background subagent that joins later — improving
+`cost_quality`/`subagent_linkage` without changing any other number —
+still triggers a resync. An older hub predating these fields simply
+ignores them (PocketBase silently drops unrecognized fields on write); no
+capability probing is needed.
+
 **Privacy.** `KANKAKU_SYNC_PROMPT` controls whether a task's prompt text
 leaves the machine at all: `none` (default — omitted entirely), `truncated`
 (first 120 chars plus `…`), or `full`.

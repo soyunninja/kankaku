@@ -60,6 +60,17 @@ export interface WorkRecordCore {
   segments?: Record<string, number>;
   usage: UsageTotals;
   status: WorkStatus;
+  /**
+   * `true` when at least one turn of this run reported a real (finite)
+   * provider `cost` figure — as opposed to every turn's cost being
+   * absent/non-finite (a subscription/OAuth provider that reports token
+   * usage but no cost). Omitted (never `false`) when no turn ever observed
+   * one, so an old persisted record without this field reads exactly the
+   * same as a run that genuinely never saw a cost figure — both correctly
+   * map to `cost_quality: "unknown"` in `domain/hub-entry.ts`. Optional:
+   * adding it did not bump `WORK_RECORD_SCHEMA`.
+   */
+  costObserved?: true;
 }
 
 /** Process/session metadata the adapter layer attaches before persisting a record. */
@@ -167,6 +178,7 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     (record["projectName"] === undefined || typeof record["projectName"] === "string") &&
     (record["machine"] === undefined || typeof record["machine"] === "string") &&
     (record["roleConfidence"] === undefined || record["roleConfidence"] === "uncertain") &&
-    (record["orchestratorRef"] === undefined || isOrchestratorRef(record["orchestratorRef"]))
+    (record["orchestratorRef"] === undefined || isOrchestratorRef(record["orchestratorRef"])) &&
+    (record["costObserved"] === undefined || record["costObserved"] === true)
   );
 }
