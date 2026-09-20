@@ -2,9 +2,9 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { detectRole, loadConfig, loadMachine, loadSyncConfig } from "./config.ts";
+import { detectRole, loadConfig, loadMachine, loadSyncConfig, readRoleOverride } from "./config.ts";
 import { WorkTracker } from "./domain/work-tracker.ts";
-import { findAncestorEntry } from "./domain/ancestry-match.ts";
+import { resolveOrchestratorRef } from "./domain/ancestry-match.ts";
 import { LazyJsonlWorkLog } from "./adapters/lazy-jsonl-work-log.ts";
 import { LazyFileInflightStore } from "./adapters/lazy-file-inflight-store.ts";
 import { createPiTracker } from "./adapters/pi-tracker.ts";
@@ -15,54 +15,62 @@ import { PocketBaseClient } from "./adapters/pocketbase-client.ts";
 import { createPocketBaseCatalogFetcher } from "./adapters/pocketbase-catalog.ts";
 import { CachedCatalog } from "./adapters/cached-catalog.ts";
 import { createSessionTarget } from "./adapters/session-target.ts";
-import { resolveKankakuDir } from "./adapters/kankaku-dir.ts";
+import { resolveKankakuDir, resolveWritableTarget } from "./adapters/kankaku-dir.ts";
 import { SyncStateStore } from "./adapters/sync-state-store.ts";
 import { PocketBaseSink } from "./adapters/pocketbase-sink.ts";
 import { computeSyncStatus, runSync, singleFlight } from "./adapters/sync-runner.ts";
 import type { SyncTrigger } from "./adapters/sync-runner.ts";
-import { snapshotAncestry, walkAncestry } from "./adapters/ancestry.ts";
+import { snapshotAncestry } from "./adapters/ancestry.ts";
 import { MachineProcessRegistry } from "./adapters/machine-process-registry.ts";
-import { RegistryAwareWorkLog } from "./adapters/registry-aware-work-log.ts";
 import { JsonlWorkLog } from "./adapters/jsonl-work-log.ts";
+import { FileInflightStore } from "./adapters/file-inflight-store.ts";
+import { resolveSubagentStartup } from "./adapters/subagent-startup.ts";
 import { resolveAgentVersion, resolvePluginVersion } from "./adapters/agent-info.ts";
 import type { Catalog } from "./ports/catalog.ts";
 import type { SessionTarget } from "./adapters/session-target.ts";
 import type { SyncCommandDeps } from "./adapters/kankaku-command.ts";
+import type { WorkLog } from "./ports/work-log.ts";
+import type { InflightStore } from "./ports/inflight-store.ts";
 
 export default function kankaku(pi: ExtensionAPI): void {
   const config = loadConfig();
 
-  // Machine-wide process registry (ADR 0023): independent of any project's
-  // KANKAKU_DIR, so a subagent running in a different git worktree can
-  // still discover its true orchestrator. One OS ancestor-chain snapshot at
-  // most, taken here, synchronously, before any pi.on handler is
-  // registered — never on a later hot path (SUBAGENT-REQ-011). Every
-  // operation on `registry` degrades to a no-op/empty-read on its own when
-  // the registry is unavailable (no home dir, no permission) — see
-  // adapters/machine-process-registry.ts.
+  // Machine-wide process registry (ADR 0023, rewritten by F1): independent
+  // of any project's KANKAKU_DIR, so a subagent running in a different git
+  // worktree can still discover its true orchestrator. The registry is a
+  // STARTUP LOOKUP ONLY — "who is my tracked ancestor, and where does it
+  // keep its log" — never a later pointer a reader chases again (see
+  // adapters/subagent-startup.ts). Every operation on `registry` degrades
+  // to a no-op/empty-read on its own when the registry is unavailable (no
+  // home dir, no permission) — see adapters/machine-process-registry.ts.
   const registry = new MachineProcessRegistry(homedir);
-  const registryEntries = registry.readAll();
-  // One ancestry snapshot, reused for every purpose below (ppid map, this
-  // process's own start identity, and the sweep's stale-by-reuse check) —
-  // still a single `ps`/`proc` read, never a second spawn.
-  const ancestrySnapshot = snapshotAncestry();
-  const ancestorPids = walkAncestry(process.ppid, ancestrySnapshot.ppidByPid);
-  const liveStartId = (pid: number): number | undefined => ancestrySnapshot.startIdByPid.get(pid);
-  const ancestorEntry = findAncestorEntry(ancestorPids, registryEntries, liveStartId);
 
-  const { role, roleConfidence } = detectRole(process.env, ancestorEntry !== undefined);
-  const orchestratorRef =
-    role === "subagent" && ancestorEntry !== undefined
-      ? { pid: ancestorEntry.pid, project: ancestorEntry.project, startedAt: ancestorEntry.startedAt }
-      : undefined;
+  // F5: reads the registry first and only pays for an OS ancestor-chain
+  // snapshot (`ps`/`/proc`) when at least one other entry could possibly be
+  // an ancestor — the common case (no other kankaku process running) never
+  // spawns anything.
+  const startup = resolveSubagentStartup({
+    registry,
+    ppid: process.ppid,
+    now: () => Date.now(),
+    uptimeSeconds: () => process.uptime(),
+  });
+  const { ancestorEntry, ownProcessStartId } = startup;
+  const hasTrackedAncestor = ancestorEntry !== undefined;
 
-  // This process's own OS-reported start-time identity, from the same
-  // snapshot (it lists every process on the machine, this one included) —
-  // see `ports/process-registry.ts#RegistryEntry.processStartId`.
-  // `undefined` when unavailable (Windows, or the snapshot missed it),
-  // which the registry/matching machinery already treats as "unprovable"
-  // rather than a guess.
-  const ownProcessStartId = ancestrySnapshot.startIdByPid.get(process.pid);
+  // `role` itself only ever depends on the env marker/override — never on
+  // ancestry or interactivity — so it is safe, and correct, to decide it
+  // once, right here, and never revisit it (F3: only `roleConfidence`, for
+  // an `"orchestrator"` record, is deferred — see `resolveRoleConfidence`
+  // below). `hasTrackedAncestor`/`isInteractive` are irrelevant to `role`
+  // itself, so `false`/`true` are passed here purely to obtain it cheaply.
+  const { role } = detectRole(process.env, false, true);
+  const roleOverride = readRoleOverride(process.env);
+
+  // F4: resolves through a subagent-of-subagent chain to the real top-level
+  // orchestrator (never a middle hop), carrying that orchestrator's `dir`
+  // for F1's write routing below.
+  const orchestratorRef = role === "subagent" ? resolveOrchestratorRef(ancestorEntry) : undefined;
 
   const resolvedDir = resolveKankakuDir(config.dir, process.cwd());
   registry.record(
@@ -77,7 +85,7 @@ export default function kankaku(pi: ExtensionAPI): void {
       ...(ownProcessStartId !== undefined ? { processStartId: ownProcessStartId } : {}),
     },
     undefined,
-    { liveStartId },
+    { liveStartId: startup.liveStartId },
   );
 
   // Best-effort cleanup of this process's own registry file: on a normal
@@ -106,18 +114,32 @@ export default function kankaku(pi: ExtensionAPI): void {
     segmentRules: config.segmentRules,
   });
 
-  const log = new RegistryAwareWorkLog({
-    inner: new LazyJsonlWorkLog(config.dir),
-    registry,
-    readForeignRecords: (dir) => {
-      try {
-        return new JsonlWorkLog(dir).readAll();
-      } catch {
-        return [];
-      }
-    },
-  });
-  const inflight = new LazyFileInflightStore(config.dir, process.pid);
+  // F1: a verified subagent whose real orchestrator's kankaku dir differs
+  // from this process's own writes its work log AND its inflight
+  // checkpoints straight into that dir — so parent and child records live
+  // in the same `worklog.jsonl` forever, joined by `buildTasks`'s existing
+  // pid/parentPid/project-hint keys, with no later discovery through a live
+  // registry pointer ever required again (the old `RegistryAwareWorkLog`
+  // read-time merge is gone: this write-side routing makes it redundant —
+  // see AGENTS.md). A record is written to exactly ONE log, always: either
+  // branch below constructs exactly one `WorkLog`/`InflightStore` pair,
+  // pointed at the same resolved directory. `workLogRouting` is only set
+  // (and only surfaced to `/kankaku doctor`) when this process actually
+  // attempted routing — never for the common orchestrator/local-subagent
+  // path, which keeps today's lazy, lower-cost resolution unchanged.
+  let log: WorkLog;
+  let inflight: InflightStore;
+  let workLogRouting: { usedFallback: boolean; parentDir: string } | undefined;
+
+  if (role === "subagent" && orchestratorRef?.dir !== undefined && orchestratorRef.dir !== resolvedDir) {
+    const routed = resolveWritableTarget(orchestratorRef.dir, resolvedDir);
+    log = new JsonlWorkLog(routed.dir);
+    inflight = new FileInflightStore(routed.dir, process.pid);
+    workLogRouting = { usedFallback: routed.usedFallback, parentDir: orchestratorRef.dir };
+  } else {
+    log = new LazyJsonlWorkLog(config.dir);
+    inflight = new LazyFileInflightStore(config.dir, process.pid);
+  }
 
   const projectClient = new LazyProjectClientSource(config.dir);
   const exportWriter = new LazyExportWriter(config.dir);
@@ -224,7 +246,11 @@ export default function kankaku(pi: ExtensionAPI): void {
     log,
     inflight,
     role,
-    ...(roleConfidence !== undefined ? { roleConfidence } : {}),
+    // F3: interactivity (ctx.mode === "tui") is only knowable once pi's own
+    // ExtensionContext is available, at session_start — later than role
+    // itself must be decided above. `hasTrackedAncestor` is already final
+    // here; only isInteractive is supplied later, by pi-tracker.ts.
+    resolveRoleConfidence: (isInteractive) => (role === "orchestrator" ? detectRole(process.env, hasTrackedAncestor, isInteractive).roleConfidence : undefined),
     ...(orchestratorRef !== undefined ? { orchestratorRef } : {}),
     pid: process.pid,
     parentPid: process.ppid,
@@ -237,6 +263,8 @@ export default function kankaku(pi: ExtensionAPI): void {
     ...(hubConfigError !== undefined ? { hubConfigError } : {}),
     ...(sync !== undefined ? { sync } : {}),
     ...(autoSyncEnabled !== undefined ? { autoSyncEnabled } : {}),
+    ...(roleOverride !== undefined ? { roleOverride } : {}),
+    ...(workLogRouting !== undefined ? { workLogRouting } : {}),
     // Fresh ancestry snapshot on demand, only when `/kankaku doctor` is
     // actually invoked (never on a hot path): a stale snapshot from
     // extension startup could no longer tell a genuine pid reuse apart
@@ -245,5 +273,11 @@ export default function kankaku(pi: ExtensionAPI): void {
       const freshSnapshot = snapshotAncestry();
       return registry.health({ liveStartId: (pid) => freshSnapshot.startIdByPid.get(pid) });
     },
+    // F2: whether the ancestor-chain mechanism itself is actually usable
+    // right now — Windows, or a failed/unavailable ps/proc read on any
+    // platform, both report false here. A fresh snapshot (never the one
+    // taken at startup, which may have been skipped entirely — F5) since
+    // this only runs when a human actually asks for `/kankaku doctor`.
+    ancestorDetectionAvailable: () => snapshotAncestry().ppidByPid.size > 0,
   });
 }

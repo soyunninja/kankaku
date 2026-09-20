@@ -121,11 +121,14 @@ function isConfirmedOrchestrator(record: WorkRecord): boolean {
  * *hint*, never a hard filter (ADR 0021, SUBAGENT-REQ-008): among several
  * candidates matching on pid/time (a reused pid, or a genuine cross-project
  * match), a same-project one is always preferred; a cross-project candidate
- * is only ever eligible here because it already reached this array via
- * registry-corroborated ancestry (see
- * `adapters/registry-aware-work-log.ts`) — this function itself does no
- * registry lookups and stays pure. Each child is assigned at most once;
- * unmatched children are orphans.
+ * is only ever eligible here because its record already lives in the same
+ * `worklog.jsonl` this array was read from — F1's write-side routing
+ * (`extension.ts`, `domain/ancestry-match.ts#resolveOrchestratorRef`)
+ * reunites a verified cross-worktree child with its orchestrator by writing
+ * straight into the orchestrator's own directory, so no later registry
+ * lookup is ever needed here — this function itself does no registry
+ * lookups and stays pure. Each child is assigned at most once; unmatched
+ * children are orphans.
  */
 function matchChildren(records: WorkRecord[]): {
   childrenByOrchestratorId: Map<string, WorkRecord[]>;

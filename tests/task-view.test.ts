@@ -406,7 +406,8 @@ test("an uncertain record's subagent-role child (if any) is not attached to it a
 
 test("a gentle-pi cross-worktree child (different project, matching pid/parentPid/time) is reunited with its orchestrator once both records are in the same array (SUBAGENT-REQ-007, SUBAGENT-REQ-008)", () => {
   // In practice the cross-worktree child's record only reaches this array
-  // via the registry-corroborated merge (adapters/registry-aware-work-log.ts);
+  // because F1's write-side routing (extension.ts) wrote it straight into
+  // the same worklog.jsonl the orchestrator's own record lives in;
   // matchChildren itself stays pure and just needs project to stop being a
   // hard filter.
   const orchestrator = makeRecord({ id: "orch", pid: 100, parentPid: 1, project: "/worktree-a", startedAt: iso(0), settledAt: iso(30) });
