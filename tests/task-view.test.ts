@@ -210,6 +210,28 @@ test("buildTasks treats a record without segments (older log line) as {}", () =>
   assert.deepEqual(tasks[0]!.segments, {});
 });
 
+test("buildTasks sums a segment tag literally named '__proto__' or 'constructor' as an own property, not as an inherited read", () => {
+  // A hand-edited worklog line is free text; nothing stops a tag named
+  // after a plain-object prototype property. Parse the way `readAll()`
+  // actually would (JSON.parse creates a real own "__proto__" property,
+  // unlike the `{ __proto__: ... }` object-literal shorthand) so this
+  // exercises the same shape a malicious/careless worklog line would.
+  const maliciousSegments: Record<string, number> = JSON.parse('{"__proto__":3000,"constructor":2000}');
+  const parent = makeRecord({
+    id: "p3",
+    pid: 400,
+    parentPid: 1,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    segments: maliciousSegments,
+  });
+
+  const tasks = buildTasks([parent]);
+
+  assert.deepEqual(tasks[0]!.segments, JSON.parse('{"__proto__":3000,"constructor":2000}'));
+  assert.equal(Object.getPrototypeOf(tasks[0]!.segments), Object.prototype); // the returned object's own prototype is untouched
+});
+
 test("sumUsage treats a record lacking usage as empty usage", () => {
   const totals: Array<UsageTotals | undefined> = [
     undefined,

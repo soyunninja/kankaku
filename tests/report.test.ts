@@ -346,6 +346,18 @@ test("summarize accumulates segments per role and sums them into the tasks segme
   assert.deepEqual(summary.tasks.segments, { review: 15000, commit: 1000 });
 });
 
+test("summarize sums a segment tag literally named '__proto__' or 'constructor' as an own property, not as an inherited read", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const maliciousSegments: Record<string, number> = JSON.parse('{"__proto__":3000,"constructor":2000}');
+  const record = makeRecord({ id: "r1", startedAt: sameInstant, segments: maliciousSegments });
+
+  const summary = summarize([record], { day });
+
+  assert.deepEqual(summary.orchestrator.segments, JSON.parse('{"__proto__":3000,"constructor":2000}'));
+  assert.equal(Object.getPrototypeOf(summary.orchestrator.segments), Object.prototype);
+});
+
 test("summarize treats records without segments (older log lines) as {}", () => {
   const sameInstant = "2026-09-10T10:00:00.000Z";
   const day = localDay(sameInstant);

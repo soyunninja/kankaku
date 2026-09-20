@@ -42,10 +42,16 @@ function emptyTotals(): RoleTotals {
   return { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, segments: {} };
 }
 
-/** Add per-tag milliseconds from `segments` (missing on older records) into `into`. */
-function addSegments(into: Record<string, number>, segments: Record<string, number> | undefined): void {
+/**
+ * Add per-tag milliseconds from `segments` (missing on older records) into
+ * `into`, a `Map` rather than a plain object so a tag from a hand-edited
+ * worklog line named `__proto__` or `constructor` accumulates as a normal
+ * entry instead of silently reading (and arithmetically corrupting) an
+ * inherited `Object.prototype` value.
+ */
+function addSegments(into: Map<string, number>, segments: Record<string, number> | undefined): void {
   for (const [tag, ms] of Object.entries(segments ?? {})) {
-    into[tag] = (into[tag] ?? 0) + ms;
+    into.set(tag, (into.get(tag) ?? 0) + ms);
   }
 }
 
@@ -63,6 +69,10 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     subagent: emptyTotals(),
     tasks: { count: 0, wallMs: 0, workMs: 0, cost: 0, segments: {} },
   };
+  // Accumulated in Maps (see `addSegments`) and only converted to the
+  // returned plain objects at the very end, via `Object.fromEntries`.
+  const segmentsByRole: Record<WorkRole, Map<string, number>> = { orchestrator: new Map(), subagent: new Map() };
+  const taskSegments = new Map<string, number>();
 
   for (const record of records) {
     if (targetDay !== undefined && localDay(record.startedAt) !== targetDay) continue;
@@ -72,7 +82,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     totals.wallMs += record.wallMs;
     totals.count += 1;
     totals.cost += finiteOrZero(record.usage.cost);
-    addSegments(totals.segments, record.segments);
+    addSegments(segmentsByRole[record.role], record.segments);
   }
 
   const tasks = buildTasks(records).filter((task) => targetDay === undefined || localDay(task.startedAt) === targetDay);
@@ -81,8 +91,12 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     summary.tasks.wallMs += task.wallMs;
     summary.tasks.workMs += task.workMs;
     summary.tasks.cost += task.usage.cost;
-    addSegments(summary.tasks.segments, task.segments);
+    addSegments(taskSegments, task.segments);
   }
+
+  summary.orchestrator.segments = Object.fromEntries(segmentsByRole.orchestrator);
+  summary.subagent.segments = Object.fromEntries(segmentsByRole.subagent);
+  summary.tasks.segments = Object.fromEntries(taskSegments);
 
   return summary;
 }

@@ -62,15 +62,23 @@ function toMs(iso: string): number {
   return Date.parse(iso);
 }
 
-/** Sum per-tag milliseconds across several segment maps (older records without one count as `{}`). */
+/**
+ * Sum per-tag milliseconds across several segment maps (older records
+ * without one count as `{}`). Accumulated in a `Map`, then emitted via
+ * `Object.fromEntries` (never `result[tag] = ...` on a plain object) so a
+ * tag from a hand-edited worklog line named `__proto__` or `constructor`
+ * becomes an own data property with the right total instead of silently
+ * reading (and arithmetically corrupting) an inherited `Object.prototype`
+ * value. Mirrors `work-tracker.ts`'s own segment-building convention.
+ */
 function sumSegments(segmentMaps: Array<Record<string, number> | undefined>): Record<string, number> {
-  const result: Record<string, number> = {};
+  const totals = new Map<string, number>();
   for (const segments of segmentMaps) {
     for (const [tag, ms] of Object.entries(segments ?? {})) {
-      result[tag] = (result[tag] ?? 0) + ms;
+      totals.set(tag, (totals.get(tag) ?? 0) + ms);
     }
   }
-  return result;
+  return Object.fromEntries(totals);
 }
 
 /**
