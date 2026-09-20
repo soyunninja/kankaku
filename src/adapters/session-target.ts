@@ -24,7 +24,20 @@ export interface SessionTargetDeps {
   persistProjectConfig: (ids: WorkTargetCandidate) => void;
   /** Current working directory, matched against catalog `repo_paths`. Defaults to `process.cwd()`. */
   cwd?: () => string;
+  /**
+   * Overall deadline, in ms, for the very first (no-cache) catalog fetch —
+   * see {@link getSnapshot}. Bounds auth, pagination and the 401 retry
+   * together via an `AbortSignal` composed with each request's own
+   * per-request timeout, instead of leaving that awaited path bounded only
+   * per-request. Defaults to 5000.
+   */
+  firstFetchDeadlineMs?: number;
+  /** Injectable for tests; defaults to the global timer functions. */
+  setTimeout?: (handler: () => void, ms: number) => NodeJS.Timeout;
+  clearTimeout?: (timer: NodeJS.Timeout) => void;
 }
+
+const DEFAULT_FIRST_FETCH_DEADLINE_MS = 5000;
 
 export interface SessionTarget {
   /** Restore the session-level target (or its remembered "skipped" state) from the last `kankaku-target` entry. */
@@ -70,6 +83,9 @@ function entryDataFrom(ids: WorkTargetCandidate): KankakuTargetEntryData {
  */
 export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
   const cwd = deps.cwd ?? (() => process.cwd());
+  const scheduleTimeout = deps.setTimeout ?? setTimeout;
+  const cancelTimeout = deps.clearTimeout ?? clearTimeout;
+  const firstFetchDeadlineMs = deps.firstFetchDeadlineMs ?? DEFAULT_FIRST_FETCH_DEADLINE_MS;
 
   /** Session-level override, restored on `session_start` or set by an explicit pick/skip/legacy command. */
   let sessionOverride: WorkTargetSessionOverride;
@@ -152,10 +168,18 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
   /**
    * Resolve a catalog snapshot to show the picker with: the cached
    * snapshot immediately when fresh; the cached snapshot immediately with
-   * a fire-and-forget refresh when stale; or, when there is no cache at
-   * all, one awaited refresh (bounded by the hub client's own timeout).
-   * Notifies "hub unreachable" at most once when no snapshot is available
-   * at all.
+   * a fire-and-forget refresh when stale (not deadline-bound: it is never
+   * awaited, so a slow or hung refresh here cannot block anything); or,
+   * when there is no cache at all, one awaited refresh bounded by an
+   * *overall* deadline ({@link SessionTargetDeps.firstFetchDeadlineMs},
+   * default 5000ms) — not merely the hub client's own per-request timeout,
+   * which alone does not bound the whole sequence of a lazy auth,
+   * pagination, and a possible 401 retry. The deadline is enforced with an
+   * `AbortSignal` composed, per request, with that request's own
+   * per-request timeout (see `pocketbase-client.ts#rawFetch`). Notifies
+   * "hub unreachable" at most once when no snapshot is available at all,
+   * whether because the hub failed outright or because the deadline fired
+   * first — both are treated identically.
    */
   async function getSnapshot(ctx: ExtensionContext): Promise<CatalogSnapshot | undefined> {
     const cached = deps.catalog.read();
@@ -166,7 +190,14 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
       return cached;
     }
 
-    const fresh = await deps.catalog.refresh();
+    const controller = new AbortController();
+    const timer = scheduleTimeout(() => controller.abort(), firstFetchDeadlineMs);
+    let fresh: CatalogSnapshot | undefined;
+    try {
+      fresh = await deps.catalog.refresh(controller.signal);
+    } finally {
+      cancelTimeout(timer);
+    }
     if (!fresh) {
       notifyUnreachableOnce(ctx);
     }

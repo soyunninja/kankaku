@@ -19,6 +19,13 @@ export interface Catalog {
   read(): CatalogSnapshot | undefined;
   /** `true` when there is no snapshot, or the cached one is older than the configured TTL. */
   isStale(): boolean;
-  /** Fetch a fresh snapshot, cache it, and return it. Never throws; resolves `undefined` on failure. */
-  refresh(): Promise<CatalogSnapshot | undefined>;
+  /**
+   * Fetch a fresh snapshot, cache it, and return it. Never throws; resolves
+   * `undefined` on failure. `signal`, when given, is composed with each
+   * underlying request's own per-request timeout (see
+   * `adapters/pocketbase-client.ts`) so a caller can bound the whole fetch
+   * (auth, pagination, retries) with one overall deadline; an abort is
+   * just another failure mode and also resolves `undefined`.
+   */
+  refresh(signal?: AbortSignal): Promise<CatalogSnapshot | undefined>;
 }

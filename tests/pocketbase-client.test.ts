@@ -48,6 +48,58 @@ test("request reuses the token across calls without re-authenticating", async ()
   assert.equal(authCalls, 1);
 });
 
+test("two concurrent requests with no token yet share one in-flight authentication instead of both posting", async () => {
+  let authCalls = 0;
+  let resolveAuth!: (response: Response) => void;
+  const authResponse = new Promise<Response>((resolve) => {
+    resolveAuth = resolve;
+  });
+  const fetchFn = makeFetch((url) => {
+    if (url.includes("auth-with-password")) {
+      authCalls += 1;
+      return authResponse;
+    }
+    return jsonResponse(200, { ok: true });
+  });
+
+  const client = new PocketBaseClient({ url: "https://pb.example.com", email: "a@b.com", password: "x", fetch: fetchFn });
+
+  const first = client.request("GET", "/a");
+  const second = client.request("GET", "/b");
+
+  // Both requests are in flight, blocked on the same not-yet-resolved
+  // authentication call: exactly one POST must have been made.
+  assert.equal(authCalls, 1);
+
+  resolveAuth(jsonResponse(200, { token: "tok-1", record: { id: "u1" } }));
+  const [firstResult, secondResult] = await Promise.all([first, second]);
+
+  assert.deepEqual(firstResult, { ok: true });
+  assert.deepEqual(secondResult, { ok: true });
+  assert.equal(authCalls, 1);
+});
+
+test("a failed authentication does not poison later attempts: the next request re-authenticates fresh", async () => {
+  let authCalls = 0;
+  const fetchFn = makeFetch((url) => {
+    if (url.includes("auth-with-password")) {
+      authCalls += 1;
+      if (authCalls === 1) return jsonResponse(400, { message: "bad credentials" });
+      return jsonResponse(200, { token: "tok-1", record: { id: "u1" } });
+    }
+    return jsonResponse(200, { ok: true });
+  });
+
+  const client = new PocketBaseClient({ url: "https://pb.example.com", email: "a@b.com", password: "x", fetch: fetchFn });
+
+  await assert.rejects(() => client.request("GET", "/a"), (error: unknown) => error instanceof PocketBaseError && error.kind === "auth");
+  assert.equal(authCalls, 1);
+
+  const result = await client.request("GET", "/b");
+  assert.deepEqual(result, { ok: true });
+  assert.equal(authCalls, 2);
+});
+
 test("request re-authenticates once on a 401 and retries the original call", async () => {
   let authCalls = 0;
   let dataCalls = 0;
@@ -164,6 +216,27 @@ test("list returns an empty array for an empty collection", async () => {
   const items = await client.list("clients");
 
   assert.deepEqual(items, []);
+});
+
+test("request aborts through an externally supplied signal, composed with the per-request timeout, and surfaces as a typed timeout error", async () => {
+  const fetchFn: PocketBaseFetch = ((_input: RequestInfo | URL, init?: RequestInit) =>
+    new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => {
+        const error = new Error("aborted");
+        error.name = "AbortError";
+        reject(error);
+      });
+    })) as PocketBaseFetch;
+
+  // A long per-request timeout: only the external signal should be able to
+  // abort this in the timeframe of the test.
+  const client = new PocketBaseClient({ url: "https://pb.example.com", email: "a@b.com", password: "x", fetch: fetchFn, timeoutMs: 60_000 });
+  const controller = new AbortController();
+
+  const pending = client.request("GET", "/x", undefined, controller.signal);
+  controller.abort();
+
+  await assert.rejects(() => pending, (error: unknown) => error instanceof PocketBaseError && error.kind === "timeout");
 });
 
 test("list passes filter and sort through as query params", async () => {

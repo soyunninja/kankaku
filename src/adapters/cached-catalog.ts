@@ -35,7 +35,7 @@ export interface CachedCatalogDeps {
   /** Cache TTL in ms. Defaults to 6 hours. */
   ttlMs?: number;
   /** Fetch a fresh `{ clients, projects }` pair, e.g. `createPocketBaseCatalogFetcher(...)`. */
-  fetchCatalog: () => Promise<{ clients: Client[]; projects: Project[] }>;
+  fetchCatalog: (signal?: AbortSignal) => Promise<{ clients: Client[]; projects: Project[] }>;
 }
 
 /**
@@ -70,9 +70,9 @@ export class CachedCatalog implements Catalog {
     return this.deps.clock.now() - snapshot.fetchedAt > ttl;
   }
 
-  async refresh(): Promise<CatalogSnapshot | undefined> {
+  async refresh(signal?: AbortSignal): Promise<CatalogSnapshot | undefined> {
     try {
-      const { clients, projects } = await this.deps.fetchCatalog();
+      const { clients, projects } = await this.deps.fetchCatalog(signal);
       const snapshot: CatalogSnapshot = { fetchedAt: this.deps.clock.now(), url: this.deps.url, clients, projects };
       this.writeDisk(snapshot);
       this.memo = snapshot;

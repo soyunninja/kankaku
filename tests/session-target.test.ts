@@ -34,6 +34,41 @@ class FakeCatalog implements Catalog {
   }
 }
 
+/** A `Catalog` whose `refresh` never resolves on its own — only when the given `AbortSignal` fires — for deterministically testing the overall first-fetch deadline without real timers. */
+class HangingCatalog implements Catalog {
+  read(): CatalogSnapshot | undefined {
+    return undefined;
+  }
+  isStale(): boolean {
+    return true;
+  }
+  refresh(signal?: AbortSignal): Promise<CatalogSnapshot | undefined> {
+    return new Promise((resolve) => {
+      signal?.addEventListener("abort", () => resolve(undefined));
+    });
+  }
+}
+
+/** A fake `setTimeout`/`clearTimeout` pair that never fires on its own; the test invokes the captured handler(s) itself — mirrors `status-bar.test.ts`'s fake interval scheduler. */
+function makeFakeTimer() {
+  const scheduled: Array<{ handler: () => void; ms: number }> = [];
+  const cleared: unknown[] = [];
+  return {
+    scheduled,
+    cleared,
+    setTimeout: (handler: () => void, ms: number): NodeJS.Timeout => {
+      scheduled.push({ handler, ms });
+      return scheduled.length as unknown as NodeJS.Timeout;
+    },
+    clearTimeout: (handle: NodeJS.Timeout) => {
+      cleared.push(handle);
+    },
+    fireAll: () => {
+      for (const entry of scheduled) entry.handler();
+    },
+  };
+}
+
 function makeCtx(hasUI: boolean, selectResponses: Array<string | undefined>, confirmResponse = true) {
   const notified: Array<[string, string?]> = [];
   const selectCalls: Array<{ title: string; options: string[] }> = [];
@@ -219,6 +254,56 @@ test("ensurePicked notifies once when there is no cache and the hub is unreachab
   assert.equal(selectCalls.length, 0);
   assert.equal(notified.length, 1);
   assert.match(notified[0]?.[0] ?? "", /hub unreachable/);
+});
+
+test("the very first (no-cache) fetch is bounded by an overall deadline: when it fires, ensurePicked behaves exactly like hub-unreachable", async () => {
+  const timer = makeFakeTimer();
+  const target = createSessionTarget(makeDeps({ catalog: new HangingCatalog(), setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout }));
+  const { ctx, notified, selectCalls } = makeCtx(true, []);
+
+  const promise = target.ensurePicked(makeFakePi(), ctx);
+  timer.fireAll(); // simulate the deadline elapsing, no real wait
+  await promise;
+
+  assert.equal(selectCalls.length, 0);
+  assert.equal(notified.length, 1);
+  assert.match(notified[0]?.[0] ?? "", /hub unreachable/);
+});
+
+test("the first-fetch deadline defaults to 5000ms", async () => {
+  const timer = makeFakeTimer();
+  const target = createSessionTarget(makeDeps({ catalog: new HangingCatalog(), setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout }));
+  const { ctx } = makeCtx(true, []);
+
+  const promise = target.ensurePicked(makeFakePi(), ctx);
+  assert.equal(timer.scheduled[0]?.ms, 5000);
+  timer.fireAll();
+  await promise;
+});
+
+test("the first-fetch deadline is injectable via firstFetchDeadlineMs", async () => {
+  const timer = makeFakeTimer();
+  const target = createSessionTarget(
+    makeDeps({ catalog: new HangingCatalog(), firstFetchDeadlineMs: 1234, setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout }),
+  );
+  const { ctx } = makeCtx(true, []);
+
+  const promise = target.ensurePicked(makeFakePi(), ctx);
+  assert.equal(timer.scheduled[0]?.ms, 1234);
+  timer.fireAll();
+  await promise;
+});
+
+test("the deadline timer is cleared once the first fetch resolves normally, before the deadline fires", async () => {
+  const timer = makeFakeTimer();
+  const catalog = new FakeCatalog();
+  catalog.refreshResult = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog, setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout }));
+  const { ctx } = makeCtx(true, ["Acme", "(no project)"]);
+
+  await target.ensurePicked(makeFakePi(), ctx);
+
+  assert.equal(timer.cleared.length, 1);
 });
 
 test("ensurePicked awaits refresh when there is no cache at all", async () => {
