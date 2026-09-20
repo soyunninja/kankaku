@@ -22,6 +22,19 @@ export interface SubagentSpan {
 }
 
 /**
+ * Identity of the tracked ancestor process a `subagent` record discovered
+ * via the machine-wide process registry (`~/.kankaku/run/<pid>.json`, see
+ * `ports/process-registry.ts`). Used to reunite a cross-worktree child with
+ * its orchestrator locally, before `buildTasks` runs (ADR 0023) — never
+ * set on an `orchestrator` record.
+ */
+export interface OrchestratorRef {
+  pid: number;
+  project: string;
+  startedAt: string;
+}
+
+/**
  * Fields the pure {@link WorkTracker} state machine can compute on its own,
  * with no knowledge of the pi process or session it runs in.
  */
@@ -73,6 +86,22 @@ export interface WorkRecordMetadata {
   projectName?: string;
   /** This machine's hostname, or `KANKAKU_MACHINE`, set only when the hub is configured. */
   machine?: string;
+  /**
+   * Set only on an `orchestrator` record that could not be positively
+   * proven top-level (ADR 0022's four-state classification, applied on top
+   * of this still-binary `role`): no recognised child-env-marker matched,
+   * but a live tracked ancestor process was found in the machine-wide
+   * registry. Never counted as a new task locally or synced to the hub
+   * until the ambiguity is resolved (see README "Subagents"). Omitted
+   * entirely for a confirmed orchestrator, so a record from a build
+   * predating this field is indistinguishable from a confirmed one.
+   */
+  roleConfidence?: "uncertain";
+  /**
+   * The tracked ancestor a `subagent` record discovered via the
+   * machine-wide process registry. See {@link OrchestratorRef}.
+   */
+  orchestratorRef?: OrchestratorRef;
 }
 
 export type WorkRecord = WorkRecordCore & WorkRecordMetadata;
@@ -92,6 +121,12 @@ const STATUSES = new Set<WorkStatus>(["completed", "aborted", "interrupted"]);
 /** A finite, non-negative number: durations such as `wallMs` can never be negative. */
 function isNonNegativeFinite(value: unknown): boolean {
   return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+function isOrchestratorRef(value: unknown): value is OrchestratorRef {
+  if (!value || typeof value !== "object") return false;
+  const ref = value as Record<string, unknown>;
+  return typeof ref["pid"] === "number" && typeof ref["project"] === "string" && typeof ref["startedAt"] === "string";
 }
 
 /**
@@ -130,6 +165,8 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     (record["clientName"] === undefined || typeof record["clientName"] === "string") &&
     (record["projectId"] === undefined || typeof record["projectId"] === "string") &&
     (record["projectName"] === undefined || typeof record["projectName"] === "string") &&
-    (record["machine"] === undefined || typeof record["machine"] === "string")
+    (record["machine"] === undefined || typeof record["machine"] === "string") &&
+    (record["roleConfidence"] === undefined || record["roleConfidence"] === "uncertain") &&
+    (record["orchestratorRef"] === undefined || isOrchestratorRef(record["orchestratorRef"]))
   );
 }

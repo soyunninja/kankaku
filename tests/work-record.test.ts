@@ -104,6 +104,34 @@ test("isWorkRecord rejects a record with a non-string hub metadata field", () =>
   assert.equal(isWorkRecord({ ...makeRecord(), machine: 42 }), false);
 });
 
+test("isWorkRecord accepts a record without roleConfidence or orchestratorRef (SUBAGENT-REQ-016: an older record stays valid)", () => {
+  assert.equal(isWorkRecord(makeRecord()), true);
+});
+
+test("isWorkRecord accepts an orchestrator record with roleConfidence 'uncertain'", () => {
+  const record = makeRecord({ roleConfidence: "uncertain" });
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord rejects a roleConfidence value other than 'uncertain'", () => {
+  assert.equal(isWorkRecord({ ...makeRecord(), roleConfidence: "confirmed" }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), roleConfidence: 1 }), false);
+});
+
+test("isWorkRecord accepts a subagent record with a well-formed orchestratorRef", () => {
+  const record = makeRecord({
+    role: "subagent",
+    orchestratorRef: { pid: 42, project: "/other/worktree", startedAt: "2026-09-10T16:00:00.000Z" },
+  });
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord rejects a malformed orchestratorRef", () => {
+  assert.equal(isWorkRecord({ ...makeRecord(), orchestratorRef: { pid: "42", project: "/x", startedAt: "t" } }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), orchestratorRef: { pid: 42 } }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), orchestratorRef: "not-an-object" }), false);
+});
+
 test("finiteOrZero returns the number for finite values", () => {
   assert.equal(finiteOrZero(5), 5);
   assert.equal(finiteOrZero(0), 0);
