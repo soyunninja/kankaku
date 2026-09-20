@@ -74,13 +74,23 @@ Each line in `worklog.jsonl` is one JSON object:
   "subagents": [{ "toolCallId": "…", "agent": "sdd-explore", "mode": "task", "taskId": "t1", "ms": 90000 }],
   "segments": { "review": 62000 },
   "usage": { "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "cost": 0 },
-  "status": "completed"
+  "status": "completed",
+  "roleConfidence": "uncertain",
+  "orchestratorRef": { "pid": 4000, "project": "/abs/other-worktree", "startedAt": "2026-09-10T15:59:00.000Z" }
 }
 ```
 
 `status` is one of `completed`, `aborted` (the last assistant message had
 `stopReason: "aborted"`), or `interrupted` (pi shut down while still
 running).
+
+`roleConfidence` and `orchestratorRef` are both optional and normally
+absent — see "Subagents" below. `roleConfidence` is only ever set to
+`"uncertain"`, and only on an `orchestrator`-role record kankaku could not
+positively prove top-level; `orchestratorRef` is only ever set on a
+`subagent`-role record that discovered its tracked ancestor via the
+machine-wide process registry. Neither field bumps `WORK_RECORD_SCHEMA` —
+a record without them (from an older kankaku build) remains valid.
 
 `clientId`, `clientName`, `projectId`, `projectName` and `machine` are only
 present once a hub is configured (see "Hub (PocketBase)"); every report and
@@ -97,11 +107,14 @@ correct for that, built purely from `pid`/`parentPid`/`startedAt`/`settledAt`
 already present on every record — no new fields are persisted to
 `worklog.jsonl`.
 
-- **Task**: one orchestrator record plus every subagent record matched to
-  it — same `project`, `parentPid === orchestrator.pid`, and the child's
-  `startedAt` falling inside the orchestrator's `[startedAt, settledAt]`
-  window. (If a pid is reused across runs and several orchestrator records
-  match, the child attaches to the latest-starting one.) A task's `wallMs`
+- **Task**: one *confirmed* orchestrator record (see "Subagents" below —
+  an orchestrator-role record flagged uncertain never anchors a task) plus
+  every subagent record matched to it — `parentPid === orchestrator.pid`
+  and the child's `startedAt` falling inside the orchestrator's
+  `[startedAt, settledAt]` window; `project` is only a **hint**, preferred
+  when it matches but never a hard filter (see "Subagents"). (If a pid is
+  reused across runs and several orchestrator records match, a same-project
+  candidate is preferred, then the latest-starting one.) A task's `wallMs`
   is the **union** of the orchestrator's interval and every matched child's
   interval — never their sum — so parallel background children are not
   double-counted, and a child that outlives the orchestrator's own settle
@@ -114,10 +127,136 @@ already present on every record — no new fields are persisted to
   `waitingMs` is the sum of each task's `waitingMs`, and `workMs = wallMs -
   waitingMs`.
 - **Orphan subagents**: a subagent record with no matching orchestrator
-  record (for example, its parent's record was lost, or it belongs to a
-  different project) is excluded from every task but is not silently
-  dropped — it stays visible so gaps in the log are noticeable rather than
-  hidden.
+  record (for example, its parent's record was lost, or a cross-worktree
+  registry entry had already expired) is excluded from every task but is
+  not silently dropped — it stays visible so gaps in the log are noticeable
+  rather than hidden. See "Subagents" for how a cross-worktree child is
+  usually reunited *before* it ever becomes an orphan.
+
+## Subagents
+
+kankaku recognises gentle-pi's `subagent_run` tool as opening a subagent
+span (unchanged from before this section); this describes how it decides,
+for a process that shows no such marker, whether it is a genuine top-level
+session or actually someone's subagent — and how a gentle-pi subagent
+running in a *different git worktree* than its orchestrator still gets
+correctly counted.
+
+### The role/state model
+
+Every record still carries the same binary persisted `role`
+(`"orchestrator"` | `"subagent"`, unchanged — see "Record schema"). On top
+of it, kankaku's task/session views and the hub sync apply a four-state
+classification:
+
+- **orchestrator** — confirmed top-level: no recognised child-env-marker
+  (`GENTLE_PI_AGENTS_CHILD=1`) is present, and no live tracked ancestor
+  process was found (see "The registry" below). This is the default for a
+  plain, ordinary `pi` session — unaffected by any of this.
+- **subagent (joined)** — a gentle-pi child matched to its orchestrator, as
+  described in "Task and session views" above.
+- **subagent (orphan)** — a gentle-pi child that could not be matched to
+  any orchestrator (shown separately, never dropped — `orphanSubagents`).
+- **uncertain** — no recognised child-env-marker, but a live tracked
+  ancestor process *was* found: this process cannot be proven top-level,
+  so it is never counted as a new task locally and never synced to the hub
+  as one, but it is not dropped either — `WorkRecord.roleConfidence` is set
+  to `"uncertain"` on it, and `/kankaku doctor` (and a one-line hint on the
+  plain `/kankaku` summary) surface it so the gap is visible instead of
+  silently wrong. This is the fix for a real bug: a subagent mechanism
+  kankaku does not specifically recognise (for example, pi's own bundled
+  reference `subagent` example, which sets no env marker at all) used to
+  default to `"orchestrator"` outright — a phantom top-level task on top of
+  the time already measured inside its parent's own tool-call span, billed
+  twice. An unrecognised process now degrades to a safe, visible
+  **undercount** instead of a silent, unrecoverable **overcount**.
+
+An `uncertain` classification is recoverable: once the mechanism is
+recognised (for example, by upgrading kankaku, or — in a later version —
+registering it via a configured tool/env marker), a later `/kankaku sync
+all` or `backfill` picks up the record correctly. It never resolves itself
+by guessing.
+
+### The registry
+
+Every kankaku process writes a small entry to
+`~/.kankaku/run/<pid>.json` at startup — `pid`, `parentPid`, `role`,
+`project`, its resolved `KANKAKU_DIR`, and `startedAt` — independent of any
+project's own `KANKAKU_DIR`, so it survives a project boundary. This is
+what powers both of the above:
+
+- **Uncertain detection**: a process with no child-env-marker walks its own
+  OS ancestor chain (one snapshot, see "Ancestor-chain detection" below)
+  looking for *any* live registry entry. Finding one means some other
+  tracked kankaku process is an ancestor of this one — this process is not
+  a confirmed top-level session, so it is classified `uncertain` rather
+  than defaulting to `orchestrator`.
+- **Cross-worktree reunification**: a gentle-pi subagent running in a
+  different git worktree than its orchestrator writes its own record to
+  *that worktree's* `worklog.jsonl` — a different file the orchestrator's
+  own report/sync never reads. The child also walks its ancestor chain,
+  finds its orchestrator's registry entry, and records that identity as
+  `orchestratorRef` (`{ pid, project, startedAt }`) on its own record. When
+  the orchestrator's own process later builds its task list (for a report
+  or a sync), it additionally scans the registry for any subagent entry
+  whose `orchestratorRef` names it exactly, and — only then — reads that
+  one other worktree's `worklog.jsonl` to pull in the matching record
+  before the usual union/task-building logic runs. The interval-union rule
+  itself is still computed in exactly one place (`buildTasks`); this only
+  changes what records that call can see. If the registry entry has
+  already expired (or ancestry could not be established at all) by the
+  time sync runs, the child stays a visible orphan instead — undercounted,
+  never lost, and never compensated for by summing two independently
+  synced rows: **the hub never sums two unions to recover a missing one**,
+  since that would double-count the overlap between parent and child.
+  `project` is therefore only ever a *hint* for this join (preferred when
+  it matches), never a hard filter.
+- The registry is swept for dead-process entries opportunistically (when a
+  process writes its own entry), so it does not grow unbounded.
+
+### Ancestor-chain detection
+
+Reading "a live tracked ancestor process" above requires one OS-level
+ancestor-chain snapshot, taken **once**, at extension startup — never on a
+later hot path. On Linux this is a set of `/proc/<pid>/status` reads; on
+macOS, one `ps -eo pid,ppid` snapshot; a shell-wrapper hop with no registry
+entry of its own is walked past, not stopped at. **On Windows, this
+mechanism is not implemented in this version**: it degrades gracefully to
+"no ancestor found" (never a spawn attempt, never a crash) — an unmarked
+process on Windows can therefore only ever be classified `orchestrator` or
+`uncertain` based on what a future config-driven marker tells kankaku, not
+on ancestry. `/kankaku doctor` reports whether ancestor-chain detection is
+available on the current platform.
+
+### The `/kankaku doctor` diagnostic
+
+`/kankaku doctor` reports, with no network call: how many records are
+orphaned subagents and why, how many are `uncertain` and why, and whether
+ancestor-chain detection is available on this platform. The plain
+`/kankaku` summary also appends a one-line hint (`N uncertain record(s)
+excluded from tasks — run /kankaku doctor`) whenever any exist, so an
+undercount is never silent.
+
+### Limitations, honestly
+
+- **In-process subagents are not handled yet.** A subagent mechanism that
+  runs entirely inside the same OS process (no separate `pid`) is invisible
+  to the registry/ancestry mechanism above; it is a planned, separate
+  follow-up.
+- **Only gentle-pi's `subagent_run` is recognised as a subagent-opening
+  tool call today.** Other ecosystem packages are not yet specifically
+  profiled — an unmarked child from one of them is `uncertain`, safely, but
+  not automatically joined the way a gentle-pi child is.
+- **Windows has no ancestor-chain detection**, as above.
+- **gentle-pi's child cannot currently read its own task id** — the
+  cross-worktree join above relies on ancestry plus the registry, not on an
+  explicit shared id, because upstream gentle-pi does not hand the child
+  process its task id today. If that changes upstream, a future kankaku
+  version can upgrade this join to a higher-confidence explicit-id match.
+- **Ancestor-chain detection only sees the chain as it exists when a
+  process looks.** A detached child reparented to init/launchd before that
+  point cannot recover its original ancestry this way — the same limitation
+  the existing `pid`/`parentPid` capture already has (see AGENTS.md).
 
 ## The `/kankaku` command
 
@@ -144,6 +283,9 @@ Arguments are whitespace-separated and order-insensitive:
 - `/kankaku clients` — one line per client (work/waiting/wall time, cost,
   task count) for today. Add `all` for every day. Tasks with no resolved
   client are grouped under `(none)`.
+- `/kankaku doctor` — orphan/uncertain subagent record counts and why,
+  plus ancestor-detection platform availability. No network call. See
+  "Subagents".
 
 The following are available only when a hub is configured (see "Hub
 (PocketBase)" below):
@@ -523,3 +665,9 @@ Columns (in this order for CSV; the same fields for JSON):
 - Linking a `task_entries` row to an existing `tasks` record (phase 3 in the
   hub's own data model) — kankaku never invents tasks; it would only ever
   link to one created in the manager.
+- Generic subagent detection (phase 6): this version (6a) fixes the two
+  correctness bugs described in "Subagents" above (a phantom-orchestrator
+  double count; a gentle-pi cross-worktree child's work going missing). A
+  `SubagentProfile` abstraction recognising other ecosystem packages
+  (`KANKAKU_SUBAGENT_TOOLS`/`KANKAKU_SUBAGENT_CHILD_ENV`) and in-process
+  subagent usage attribution are planned follow-ups, not built yet.

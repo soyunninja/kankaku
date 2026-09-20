@@ -11,7 +11,8 @@ Read `README.md` for behaviour and the record schema before changing code.
   from the injected `Clock` port. `WorkTracker` is the only stateful domain
   object and it must stay deterministic under test.
 - `src/ports/` holds interfaces only (`Clock`, `WorkLog`, `Catalog`,
-  `WorkSink`).
+  `WorkSink`, `ProcessRegistry` — the machine-wide `~/.kankaku/run/`
+  registry, see README "Subagents").
 - `src/adapters/` talks to the outside world: pi events and UI
   (`pi-tracker.ts`, wiring `status-bar.ts` for the footer clock/client
   status, `session-client.ts` for the session billing-client override,
@@ -23,7 +24,11 @@ Read `README.md` for behaviour and the record schema before changing code.
   generic; `pocketbase-catalog.ts`, maps records to domain types;
   `pocketbase-sink.ts`, the `WorkSink` that uploads task rows), sync
   orchestration (`sync-runner.ts`, using the pure `domain/hub-entry.ts` and
-  `domain/sync-plan.ts`), and report formatting (`report.ts`).
+  `domain/sync-plan.ts`), report formatting (`report.ts`), and subagent
+  detection (`ancestry.ts`, OS ancestor-chain snapshot;
+  `machine-process-registry.ts`, the `ProcessRegistry`;
+  `registry-aware-work-log.ts`, the `WorkLog` decorator that reunites a
+  cross-worktree child before `buildTasks` runs — see README "Subagents").
 - `src/extension.ts` only wires config, tracker, log and adapter together.
   Do not put logic there.
 - Dependencies point inwards: adapters import domain and ports; domain
@@ -41,6 +46,25 @@ Read `README.md` for behaviour and the record schema before changing code.
 - Subagent time is linked through `pid`/`parentPid` and reported separately.
   Task and session views compute wall time as the union of orchestrator and
   child intervals.
+- Role classification is four-state, applied by `domain/task-view.ts`
+  (`buildTasks`, `uncertainRecords`) on top of the still-binary persisted
+  `role`: **orchestrator** (confirmed), **subagent-joined**,
+  **subagent-unjoined** (orphan), and **uncertain** (no recognised
+  child-env-marker, but a live tracked ancestor process was found via the
+  machine-wide registry, `ports/process-registry.ts`). An **uncertain**
+  record never defaults to `"orchestrator"`, is never counted as a new task
+  locally, and is never synced to the hub as one (ADR 0022) — see README
+  "Subagents". `WorkRecord.roleConfidence` (optional, only ever
+  `"uncertain"`) carries this; adding it did not bump
+  `WORK_RECORD_SCHEMA`.
+- `project` is a **hint** for joining a subagent to its orchestrator in
+  `matchChildren`, never a hard filter (ADR 0021): a same-project candidate
+  is preferred, but a cross-project one is eligible when it reaches the
+  matched array via `adapters/registry-aware-work-log.ts`'s
+  registry-corroborated cross-worktree merge (ADR 0023). The interval-union
+  aggregation rule (`unionMs`) still lives exactly once, in `buildTasks` —
+  the registry/ancestry machinery only ever expands which records that one
+  call can see, never re-implements the union itself.
 - `.kankaku/worklog.jsonl` is user data. Append only, one `JSON.stringify`
   line per record, tolerate malformed lines when reading, never rewrite it.
 - Bump `WORK_RECORD_SCHEMA` when a persisted field changes meaning or is
