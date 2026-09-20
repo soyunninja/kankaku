@@ -1,4 +1,5 @@
 import type { RegistryEntry } from "../ports/process-registry.ts";
+import type { OrchestratorRef } from "./work-record.ts";
 
 /**
  * Max allowed drift (ms) between a live process's freshly re-derived start
@@ -58,4 +59,26 @@ export function findAncestorEntry(ancestryPids: number[], entries: RegistryEntry
     // ancestor. Keep walking — a further, verifiable ancestor may still exist.
   }
   return undefined;
+}
+
+/**
+ * Resolve the ultimate, top-level {@link OrchestratorRef} for `ancestorEntry`
+ * (the nearest verified ancestor {@link findAncestorEntry} returned) — F4's
+ * nested-subagent fix. When that ancestor is itself a `subagent`-role entry
+ * that already resolved its own verified `orchestratorRef` (a
+ * subagent-of-subagent chain: this process's parent is itself someone's
+ * child), that inherited ref is returned instead of one built from the
+ * ancestor's own identity — so a grandchild's `orchestratorRef` (and, via
+ * its `dir`, `extension.ts`'s F1 write-routing target) always points at
+ * the real top-level orchestrator, never a middle hop. Falls back to an
+ * ancestor's own identity when it is an orchestrator, or a subagent that
+ * never resolved a ref of its own (e.g. it discovered no tracked ancestor
+ * at its own startup) — never invents one. `undefined` in, `undefined` out.
+ */
+export function resolveOrchestratorRef(ancestorEntry: RegistryEntry | undefined): OrchestratorRef | undefined {
+  if (ancestorEntry === undefined) return undefined;
+  if (ancestorEntry.role === "subagent" && ancestorEntry.orchestratorRef !== undefined) {
+    return ancestorEntry.orchestratorRef;
+  }
+  return { pid: ancestorEntry.pid, project: ancestorEntry.project, startedAt: ancestorEntry.startedAt, dir: ancestorEntry.dir };
 }

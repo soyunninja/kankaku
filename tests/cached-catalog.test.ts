@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { CachedCatalog } from "../src/adapters/cached-catalog.ts";
 import type { Clock } from "../src/ports/clock.ts";
+
+const posix = platform() !== "win32";
 
 class FakeClock implements Clock {
   private current: number;
@@ -68,6 +70,24 @@ test("refresh fetches, caches to disk, and read returns the snapshot", async () 
 
     const onDisk = JSON.parse(readFileSync(join(dir, "catalog.json"), "utf8"));
     assert.deepEqual(onDisk, snapshot);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("refresh writes the cache file with mode 0o600 (F4 — this file lives under ~/.kankaku)", { skip: !posix }, async () => {
+  const dir = makeDir();
+  try {
+    const catalog = new CachedCatalog({
+      filePath: join(dir, "catalog.json"),
+      url: "https://pb.example.com",
+      clock: new FakeClock(1000),
+      fetchCatalog: async () => ({ clients: CLIENTS, projects: PROJECTS }),
+    });
+
+    await catalog.refresh();
+
+    assert.equal(statSync(join(dir, "catalog.json")).mode & 0o777, 0o600);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

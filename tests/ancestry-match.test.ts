@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { findAncestorEntry, START_ID_TOLERANCE_MS } from "../src/domain/ancestry-match.ts";
+import { findAncestorEntry, resolveOrchestratorRef, START_ID_TOLERANCE_MS } from "../src/domain/ancestry-match.ts";
 import type { RegistryEntry } from "../src/ports/process-registry.ts";
 
 const BASE_START_ID = 1_757_000_000_000;
@@ -107,4 +107,32 @@ test("an unavailable live start identity (this process could not read its own an
     findAncestorEntry([50], [parent], () => undefined),
     undefined,
   );
+});
+
+test("resolveOrchestratorRef returns undefined for no ancestor entry", () => {
+  assert.equal(resolveOrchestratorRef(undefined), undefined);
+});
+
+test("resolveOrchestratorRef builds a ref from a directly tracked top-level orchestrator entry, carrying its dir (F1 write-routing target)", () => {
+  const top = entry({ pid: 10, role: "orchestrator", project: "/top", dir: "/top/.kankaku", startedAt: "2026-09-10T16:00:00.000Z" });
+  assert.deepEqual(resolveOrchestratorRef(top), { pid: 10, project: "/top", startedAt: "2026-09-10T16:00:00.000Z", dir: "/top/.kankaku" });
+});
+
+test("resolveOrchestratorRef inherits the real top-level orchestrator's ref when the nearest tracked ancestor is itself a subagent (F4, 3-level chain)", () => {
+  // grandparent (orchestrator) -> parent (subagent, already resolved its own
+  // orchestratorRef back to the grandparent) -> this process (grandchild).
+  const middleSubagent = entry({
+    pid: 20,
+    role: "subagent",
+    project: "/mid",
+    startedAt: "2026-09-10T16:00:05.000Z",
+    orchestratorRef: { pid: 10, project: "/top", startedAt: "2026-09-10T16:00:00.000Z" },
+  });
+
+  assert.deepEqual(resolveOrchestratorRef(middleSubagent), { pid: 10, project: "/top", startedAt: "2026-09-10T16:00:00.000Z" });
+});
+
+test("resolveOrchestratorRef falls back to the subagent entry's own identity (including its own dir) when it carries no orchestratorRef of its own (never invents one)", () => {
+  const orphanSubagentEntry = entry({ pid: 20, role: "subagent", project: "/mid", dir: "/mid/.kankaku", startedAt: "2026-09-10T16:00:05.000Z" });
+  assert.deepEqual(resolveOrchestratorRef(orphanSubagentEntry), { pid: 20, project: "/mid", startedAt: "2026-09-10T16:00:05.000Z", dir: "/mid/.kankaku" });
 });

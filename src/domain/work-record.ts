@@ -32,6 +32,18 @@ export interface OrchestratorRef {
   pid: number;
   project: string;
   startedAt: string;
+  /**
+   * The real orchestrator's resolved, absolute kankaku directory (its
+   * `RegistryEntry.dir`), when known — carried through a nested
+   * subagent-of-subagent chain via `domain/ancestry-match.ts#resolveOrchestratorRef`
+   * so a grandchild can route its writes (F1) straight to the true root's
+   * directory without a fresh registry lookup for an ancestor that may no
+   * longer even be alive. Optional so an older-format entry/record (written
+   * before this field existed) still validates and — when absent — the
+   * reader simply falls back to its own local directory rather than
+   * routing anywhere (see `adapters/extension.ts`'s write-routing).
+   */
+  dir?: string;
 }
 
 /**
@@ -147,7 +159,12 @@ function isNonNegativeFinite(value: unknown): boolean {
 function isOrchestratorRef(value: unknown): value is OrchestratorRef {
   if (!value || typeof value !== "object") return false;
   const ref = value as Record<string, unknown>;
-  return typeof ref["pid"] === "number" && typeof ref["project"] === "string" && typeof ref["startedAt"] === "string";
+  return (
+    typeof ref["pid"] === "number" &&
+    typeof ref["project"] === "string" &&
+    typeof ref["startedAt"] === "string" &&
+    (ref["dir"] === undefined || typeof ref["dir"] === "string")
+  );
 }
 
 /**

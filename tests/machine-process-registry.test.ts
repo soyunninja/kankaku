@@ -1,10 +1,13 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, beforeEach, test } from "node:test";
 import { MachineProcessRegistry } from "../src/adapters/machine-process-registry.ts";
 import type { RegistryEntry } from "../src/ports/process-registry.ts";
+
+/** File-mode bits are a POSIX concept; skip mode assertions on a platform where they are not meaningful (e.g. Windows). */
+const posix = platform() !== "win32";
 
 let home: string;
 
@@ -132,7 +135,7 @@ test("record keeps a live entry whose start id still matches", () => {
   assert.deepEqual(pids.sort(), [500, 501]);
 });
 
-test("record sweeps a legacy entry with no processStartId, even though the pid is alive (never trusted, matches malformed-entry cleanup)", () => {
+test("record keeps a live legacy entry with no processStartId — unverifiable is never itself grounds for deletion (F4)", () => {
   const runDir = join(home, ".kankaku", "run");
   mkdirSync(runDir, { recursive: true });
   const { processStartId: _omit, ...legacy } = entry({ pid: 600 });
@@ -140,6 +143,19 @@ test("record sweeps a legacy entry with no processStartId, even though the pid i
 
   const registry = new MachineProcessRegistry(() => home);
   registry.record(entry({ pid: 601 }), () => true);
+
+  const pids = registry.readAll().map((e) => e.pid);
+  assert.deepEqual(pids.sort(), [600, 601]);
+});
+
+test("record still sweeps a dead legacy entry with no processStartId (dead pids are cleaned regardless of identity verifiability)", () => {
+  const runDir = join(home, ".kankaku", "run");
+  mkdirSync(runDir, { recursive: true });
+  const { processStartId: _omit, ...legacy } = entry({ pid: 600 });
+  writeFileSync(join(runDir, "600.json"), JSON.stringify(legacy));
+
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 601 }), (pid) => pid !== 600);
 
   const pids = registry.readAll().map((e) => e.pid);
   assert.deepEqual(pids.sort(), [601]);
@@ -183,4 +199,75 @@ test("removeOwn is a no-op (never throws) when the registry/home is unavailable 
     throw new Error("no HOME");
   });
   assert.doesNotThrow(() => unavailable.removeOwn(1, 1));
+});
+
+test("record creates ~/.kankaku/run with mode 0o700 and an entry file with mode 0o600 (F4)", { skip: !posix }, () => {
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 900 }));
+
+  const runDir = join(home, ".kankaku", "run");
+  assert.equal(statSync(runDir).mode & 0o777, 0o700);
+  assert.equal(statSync(join(runDir, "900.json")).mode & 0o777, 0o600);
+});
+
+test("record tightens an existing looser run directory mode (best effort, never throws)", { skip: !posix }, () => {
+  const runDir = join(home, ".kankaku", "run");
+  mkdirSync(runDir, { recursive: true, mode: 0o755 });
+  assert.equal(statSync(runDir).mode & 0o777, 0o755);
+
+  const registry = new MachineProcessRegistry(() => home);
+  assert.doesNotThrow(() => registry.record(entry({ pid: 901 })));
+
+  assert.equal(statSync(runDir).mode & 0o777, 0o700);
+});
+
+test("record tightens an existing looser entry file mode left by a prior build (best effort)", { skip: !posix }, () => {
+  const runDir = join(home, ".kankaku", "run");
+  mkdirSync(runDir, { recursive: true });
+  const target = join(runDir, "902.json");
+  writeFileSync(target, JSON.stringify(entry({ pid: 902 })), { mode: 0o644 });
+  assert.equal(statSync(target).mode & 0o777, 0o644);
+
+  const registry = new MachineProcessRegistry(() => home);
+  // A fresh record() for a different pid sweeps/re-touches the directory;
+  // it must tighten a looser sibling file's mode as a best-effort side
+  // effect without throwing, even though it does not own that entry.
+  assert.doesNotThrow(() => registry.record(entry({ pid: 903 }), () => true));
+
+  assert.equal(statSync(target).mode & 0o777, 0o600);
+});
+
+test("sweep re-reads an entry's raw bytes immediately before unlinking, and skips deletion when they no longer match what was judged stale (TOCTOU / pid-reuse-during-sweep, F4)", () => {
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 700, processStartId: 1000 }), () => true); // seed, alive at write time
+  const path = join(home, ".kankaku", "run", "700.json");
+
+  const racedEntry = entry({ pid: 700, processStartId: 9_999_999, project: "/new-owner", startedAt: new Date().toISOString() });
+
+  // A fresh record() sweep judges pid 700 dead from its own directory
+  // snapshot, but — simulated via isAlive's side effect, since everything
+  // else in this call is synchronous — the OS has, in the meantime, reused
+  // pid 700 for a brand new process that already wrote its own fresh entry
+  // to the very same file.
+  registry.record(entry({ pid: 701 }), (pid) => {
+    if (pid === 700) {
+      writeFileSync(path, JSON.stringify(racedEntry));
+      return false;
+    }
+    return true;
+  });
+
+  const onDisk: unknown = JSON.parse(readFileSync(path, "utf8"));
+  assert.deepEqual(onDisk, racedEntry); // never unlinked: the raced-in entry survives byte-for-byte
+});
+
+test("sweep still deletes a discarded entry normally when nothing raced it (no false negative from the TOCTOU guard)", () => {
+  const registry = new MachineProcessRegistry(() => home);
+  registry.record(entry({ pid: 710 }), () => true);
+  registry.record(entry({ pid: 711 }), (pid) => pid !== 710);
+
+  assert.deepEqual(
+    registry.readAll().map((e) => e.pid),
+    [711],
+  );
 });

@@ -1,8 +1,9 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Client, Project } from "../domain/work-target.ts";
 import type { Clock } from "../ports/clock.ts";
 import type { Catalog, CatalogSnapshot } from "../ports/catalog.ts";
+import { ensureDirMode, OWNER_FILE_MODE } from "./file-modes.ts";
 
 /** Six hours in milliseconds — clients and projects change rarely. */
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
@@ -97,9 +98,13 @@ export class CachedCatalog implements Catalog {
 
   private writeDisk(snapshot: CatalogSnapshot): void {
     try {
-      mkdirSync(dirname(this.deps.filePath), { recursive: true });
+      // This cache lives under `~/.kankaku` (machine-wide, not a project's
+      // own KANKAKU_DIR); `ensureDirMode` also tightens an already-existing,
+      // looser `~/.kankaku` (e.g. from an older kankaku build) — F4.
+      ensureDirMode(dirname(this.deps.filePath));
       const tmp = `${this.deps.filePath}.${process.pid}.${Date.now()}.tmp`;
-      writeFileSync(tmp, JSON.stringify(snapshot));
+      // Owner-only: this file names every client/project the machine's user has touched.
+      writeFileSync(tmp, JSON.stringify(snapshot), { mode: OWNER_FILE_MODE });
       renameSync(tmp, this.deps.filePath);
     } catch {
       // Best-effort cache write: a failure here must not fail the refresh

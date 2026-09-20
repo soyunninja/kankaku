@@ -141,6 +141,18 @@ test("isWorkRecord rejects a malformed orchestratorRef", () => {
   assert.equal(isWorkRecord({ ...makeRecord(), orchestratorRef: "not-an-object" }), false);
 });
 
+test("isWorkRecord accepts an orchestratorRef carrying the optional dir field (F1/F4: propagates the real orchestrator's kankaku dir through nested chains)", () => {
+  const record = makeRecord({
+    role: "subagent",
+    orchestratorRef: { pid: 42, project: "/other/worktree", startedAt: "2026-09-10T16:00:00.000Z", dir: "/other/worktree/.kankaku" },
+  });
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord rejects an orchestratorRef whose dir is present but not a string", () => {
+  assert.equal(isWorkRecord({ ...makeRecord(), orchestratorRef: { pid: 42, project: "/x", startedAt: "t", dir: 42 } }), false);
+});
+
 test("finiteOrZero returns the number for finite values", () => {
   assert.equal(finiteOrZero(5), 5);
   assert.equal(finiteOrZero(0), 0);

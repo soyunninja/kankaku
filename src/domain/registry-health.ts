@@ -16,8 +16,6 @@ export type DiscardReason =
   | "dead"
   /** The pid is alive, but its live start identity no longer matches what this entry recorded: the OS has reused this pid for a different process instance. */
   | "stale-reuse"
-  /** The entry carries no `processStartId` at all (written by a build predating this field, or a torn/partial write) — its identity can never be proven, so it is never trusted regardless of aliveness. */
-  | "unverifiable-identity"
   | "over-age";
 
 export interface RegistryClassifyDeps {
@@ -37,9 +35,22 @@ export interface RegistryClassification {
  * Classify every entry except `ownPid`'s (the caller's own, just-written
  * entry — always kept, never re-evaluated against its own freshly-recorded
  * data). An entry is discarded the first reason that applies, in this
- * order: dead pid; no verifiable `processStartId`; alive but identity
- * mismatched beyond {@link START_ID_TOLERANCE_MS} (pid reuse); older than
- * `maxAgeMs`. Anything else is kept.
+ * order: dead pid; alive but identity mismatched beyond
+ * {@link START_ID_TOLERANCE_MS} (pid reuse) — only ever checked when the
+ * entry actually carries a `processStartId`; older than `maxAgeMs`.
+ * Anything else is kept.
+ *
+ * An entry with no verifiable `processStartId` at all (written by a build
+ * predating this field, or a torn/partial write) is **never used for
+ * identity matching** (`domain/ancestry-match.ts#findAncestorEntry` already
+ * requires both sides to carry a start id) — but that alone is no longer
+ * grounds for deletion here (F4): a live, in-age entry that merely cannot be
+ * verified is kept, exactly like a verified one, so a sweep run by an
+ * unrelated sibling process can never un-register a genuinely live
+ * orchestrator whose own start-time read happened to fail. It still gets
+ * cleaned up the ordinary way once its pid dies or it ages out — dead and
+ * over-age entries are discarded regardless of whether they carry a
+ * `processStartId`.
  */
 export function classifyRegistryEntries(entries: RegistryEntry[], ownPid: number, deps: RegistryClassifyDeps): RegistryClassification {
   const keep: RegistryEntry[] = [];
@@ -56,15 +67,12 @@ export function classifyRegistryEntries(entries: RegistryEntry[], ownPid: number
       continue;
     }
 
-    if (entry.processStartId === undefined) {
-      discard.push({ entry, reason: "unverifiable-identity" });
-      continue;
-    }
-
-    const liveId = deps.liveStartId(entry.pid);
-    if (liveId !== undefined && Math.abs(liveId - entry.processStartId) > START_ID_TOLERANCE_MS) {
-      discard.push({ entry, reason: "stale-reuse" });
-      continue;
+    if (entry.processStartId !== undefined) {
+      const liveId = deps.liveStartId(entry.pid);
+      if (liveId !== undefined && Math.abs(liveId - entry.processStartId) > START_ID_TOLERANCE_MS) {
+        discard.push({ entry, reason: "stale-reuse" });
+        continue;
+      }
     }
 
     if (deps.now - Date.parse(entry.startedAt) > deps.maxAgeMs) {

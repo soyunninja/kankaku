@@ -55,11 +55,36 @@ test("discards an alive-pid entry whose recorded identity no longer matches the 
   assert.deepEqual(result.discard, [{ entry: reused, reason: "stale-reuse" }]);
 });
 
-test("discards a legacy entry with no processStartId as unverifiable, even when the pid is alive", () => {
+test("keeps a live entry with no processStartId (unverifiable identity is never itself grounds for deletion — F4)", () => {
   const legacy = entry({ pid: 200 });
   delete (legacy as { processStartId?: number }).processStartId;
   const result = classifyRegistryEntries([legacy], 999, deps({ isAlive: () => true }));
-  assert.deepEqual(result.discard, [{ entry: legacy, reason: "unverifiable-identity" }]);
+  assert.deepEqual(result.keep, [legacy]);
+  assert.deepEqual(result.discard, []);
+});
+
+test("still discards a dead entry with no processStartId, as 'dead' (legacy entries left by dead processes are still cleaned)", () => {
+  const legacy = entry({ pid: 200 });
+  delete (legacy as { processStartId?: number }).processStartId;
+  const result = classifyRegistryEntries([legacy], 999, deps({ isAlive: () => false }));
+  assert.deepEqual(result.discard, [{ entry: legacy, reason: "dead" }]);
+});
+
+test("still discards an over-age entry with no processStartId, as 'over-age' (unverifiable identity never grants immunity from the age ceiling)", () => {
+  const legacy = entry({ pid: 200, startedAt: new Date(NOW - DEFAULT_MAX_ENTRY_AGE_MS - 1000).toISOString() });
+  delete (legacy as { processStartId?: number }).processStartId;
+  const result = classifyRegistryEntries([legacy], 999, deps({ isAlive: () => true }));
+  assert.deepEqual(result.discard, [{ entry: legacy, reason: "over-age" }]);
+});
+
+test("a live entry with no processStartId is never used to detect stale-reuse (unverifiable, not comparable)", () => {
+  const legacy = entry({ pid: 200 });
+  delete (legacy as { processStartId?: number }).processStartId;
+  // liveStartId reports a value for pid 200, but since the entry itself
+  // carries no processStartId there is nothing to compare it against — this
+  // must never surface as a "stale-reuse" verdict.
+  const result = classifyRegistryEntries([legacy], 999, deps({ isAlive: () => true, liveStartId: (pid) => (pid === 200 ? 999_999 : undefined) }));
+  assert.deepEqual(result.keep, [legacy]);
 });
 
 test("keeps an alive entry when liveStartId is unknown for that pid (fails safe, no stale-reuse verdict without evidence)", () => {

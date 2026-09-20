@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { classifyRegistryEntries, DEFAULT_MAX_ENTRY_AGE_MS } from "../domain/registry-health.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { ProcessRegistry, RegistryEntry, RegistrySweepDeps } from "../ports/process-registry.ts";
+import { ensureDirMode, OWNER_FILE_MODE, tightenMode } from "./file-modes.ts";
 
 const RUN_DIR_NAME = "run";
 const JSON_EXT = ".json";
@@ -11,7 +12,12 @@ function isOrchestratorRef(value: unknown): boolean {
   if (value === undefined) return true;
   if (!value || typeof value !== "object") return false;
   const ref = value as Record<string, unknown>;
-  return typeof ref["pid"] === "number" && typeof ref["project"] === "string" && typeof ref["startedAt"] === "string";
+  return (
+    typeof ref["pid"] === "number" &&
+    typeof ref["project"] === "string" &&
+    typeof ref["startedAt"] === "string" &&
+    (ref["dir"] === undefined || typeof ref["dir"] === "string")
+  );
 }
 
 function isRegistryEntry(value: unknown): value is RegistryEntry {
@@ -35,6 +41,28 @@ function safeUnlink(filePath: string): void {
   } catch {
     // Best effort: another process (or a concurrent sweep) may have already removed it.
   }
+}
+
+/**
+ * Delete `filePath` only when its on-disk bytes, re-read right now, are
+ * still byte-for-byte `expectedText` (F4, TOCTOU fix). Between this sweep's
+ * directory scan (where `expectedText` was captured) and this call, the pid
+ * this file is named after may have been reused by a brand new process that
+ * already wrote its own fresh entry to the very same path — deleting it then
+ * would destroy a live registration this sweep never actually judged.
+ * Skipping (rather than deleting) on any mismatch, a read failure, or the
+ * file already being gone is always the safe choice: a file that is
+ * genuinely stale gets a further chance on the next sweep.
+ */
+function safeUnlinkIfUnchanged(filePath: string, expectedText: string): void {
+  let current: string;
+  try {
+    current = readFileSync(filePath, "utf8");
+  } catch {
+    return; // already gone, or unreadable — nothing this call should touch.
+  }
+  if (current !== expectedText) return; // raced: a fresh entry now lives at this path.
+  safeUnlink(filePath);
 }
 
 /** Default `isAlive`: probe with signal 0 — mirrors `pi-tracker.ts`/`sync-state-store.ts`'s own default. */
@@ -77,10 +105,10 @@ export class MachineProcessRegistry implements ProcessRegistry {
     if (dir === undefined) return;
 
     try {
-      mkdirSync(dir, { recursive: true });
+      ensureDirMode(dir);
       const target = join(dir, `${entry.pid}${JSON_EXT}`);
       const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-      writeFileSync(tmp, JSON.stringify(entry));
+      writeFileSync(tmp, JSON.stringify(entry), { mode: OWNER_FILE_MODE });
       renameSync(tmp, target);
     } catch {
       // Best effort: a write failure (no permission, disk full) must not
@@ -181,15 +209,28 @@ export class MachineProcessRegistry implements ProcessRegistry {
 
     const entries: RegistryEntry[] = [];
     const pathByPid = new Map<number, string>();
+    // Raw file text as read during this scan, keyed by pid — kept so a
+    // later deletion can re-verify byte-for-byte against what was actually
+    // judged stale (see the TOCTOU re-check below), never against a
+    // re-parsed/re-serialized copy that could mask a real change.
+    const textByPid = new Map<number, string>();
     for (const name of names) {
       if (!name.endsWith(JSON_EXT)) continue;
       const pid = Number(name.slice(0, -JSON_EXT.length));
       if (!Number.isFinite(pid)) continue;
+      const path = join(dir, name);
+      // Best-effort mode tightening for every entry file this sweep
+      // encounters (F4), not just this process's own — an older kankaku
+      // build, or a filesystem with a permissive default, may have left one
+      // world/group-readable.
+      tightenMode(path, OWNER_FILE_MODE);
       try {
-        const parsed: unknown = JSON.parse(readFileSync(join(dir, name), "utf8"));
+        const text = readFileSync(path, "utf8");
+        const parsed: unknown = JSON.parse(text);
         if (isRegistryEntry(parsed)) {
           entries.push(parsed);
-          pathByPid.set(pid, join(dir, name));
+          pathByPid.set(pid, path);
+          textByPid.set(pid, text);
         }
         // A structurally invalid/corrupt file is left alone here — readAll
         // already tolerates it by skipping, and this sweep only acts on
@@ -208,7 +249,8 @@ export class MachineProcessRegistry implements ProcessRegistry {
 
     for (const { entry } of discard) {
       const path = pathByPid.get(entry.pid);
-      if (path) safeUnlink(path);
+      const expectedText = textByPid.get(entry.pid);
+      if (path && expectedText !== undefined) safeUnlinkIfUnchanged(path, expectedText);
     }
   }
 }
