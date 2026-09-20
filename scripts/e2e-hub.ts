@@ -26,6 +26,8 @@ import { SyncStateStore } from "../src/adapters/sync-state-store.ts";
 import { PocketBaseClient } from "../src/adapters/pocketbase-client.ts";
 import { PocketBaseSink } from "../src/adapters/pocketbase-sink.ts";
 import { runSync } from "../src/adapters/sync-runner.ts";
+import { MachineProcessRegistry } from "../src/adapters/machine-process-registry.ts";
+import { RegistryAwareWorkLog } from "../src/adapters/registry-aware-work-log.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 
 const PB_BIN = "/Users/baldboy/desarrollo/soyun.ninja/kankaku-hub/pocketbase/bin/pocketbase";
@@ -143,6 +145,14 @@ async function findTaskEntry(superuserToken: string, taskId: string): Promise<Re
   );
   assert.equal(result.items.length, 1, `expected exactly one task_entries row for ${taskId}, found ${result.items.length}`);
   return result.items[0]!;
+}
+
+async function countTaskEntries(superuserToken: string, taskId: string): Promise<number> {
+  const result = await pbFetch<{ totalItems: number }>(
+    `/api/collections/task_entries/records?filter=${encodeURIComponent(`task_id="${taskId}"`)}`,
+    { token: superuserToken },
+  );
+  return result.totalItems;
 }
 
 async function countWorkRecords(superuserToken: string, taskEntryId: string): Promise<number> {
@@ -475,6 +485,119 @@ async function main(): Promise<void> {
     assert.notEqual(stateAfterDead?.target, "http://127.0.0.1:8099", "a failed sync must not persist a new target as if it succeeded");
     void stateBeforeDead;
     log(`  summary: ${JSON.stringify(summary6)} (failed cleanly, did not throw, watermark not corrupted)`);
+
+    // --- Phase 6a scenario: a gentle-pi cross-worktree subagent is
+    // reunited with its orchestrator locally, via the machine-wide process
+    // registry, and syncs as exactly ONE consolidated task_entries row ---
+    // (ADR 0023, SUBAGENT-REQ-007/008/009/018). ---
+    log("phase-6a scenario: gentle-pi cross-worktree subagent reunification");
+    const worktreeA = join(runDir, "worktree-a");
+    const worktreeB = join(runDir, "worktree-b");
+    mkdirSync(worktreeA, { recursive: true });
+    mkdirSync(worktreeB, { recursive: true });
+
+    const t3 = Date.parse("2026-09-19T13:00:00.000Z");
+    const orchPid = 5000;
+    const childPid = 5001;
+    const orchStartedAt = iso(t3);
+    const orchSettledAt = iso(t3 + 20_000);
+
+    const crossOrchestrator = makeRecord({
+      id: "task-cross-worktree",
+      role: "orchestrator",
+      pid: orchPid,
+      parentPid: 1,
+      project: "/repo/worktree-a",
+      startedAt: orchStartedAt,
+      settledAt: orchSettledAt,
+      wallMs: 20_000,
+      workMs: 20_000,
+      client: "cajamar",
+      usage: { input: 10, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.02 },
+    });
+    const crossChild = makeRecord({
+      id: "task-cross-worktree-sub1",
+      role: "subagent",
+      pid: childPid,
+      parentPid: orchPid,
+      project: "/repo/worktree-b", // a DIFFERENT worktree/project than its orchestrator
+      startedAt: iso(t3 + 5_000), // inside the orchestrator's window
+      settledAt: iso(t3 + 35_000), // outlives it by 15s, extending the union
+      wallMs: 30_000,
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.005 },
+      orchestratorRef: { pid: orchPid, project: "/repo/worktree-a", startedAt: orchStartedAt },
+    });
+
+    new JsonlWorkLog(worktreeA).append(crossOrchestrator);
+    new JsonlWorkLog(worktreeB).append(crossChild);
+
+    // Both processes' registry entries, as `extension.ts` would write them
+    // at session start. `isAlive: () => true` keeps this e2e's own
+    // synthetic pids from being swept as "dead" between the two writes.
+    const registryHome = join(runDir, "registry-home");
+    const registry = new MachineProcessRegistry(() => registryHome);
+    registry.record(
+      { pid: orchPid, parentPid: 1, role: "orchestrator", project: "/repo/worktree-a", dir: worktreeA, startedAt: orchStartedAt },
+      () => true,
+    );
+    registry.record(
+      {
+        pid: childPid,
+        parentPid: orchPid,
+        role: "subagent",
+        project: "/repo/worktree-b",
+        dir: worktreeB,
+        startedAt: iso(t3 + 5_000),
+        orchestratorRef: { pid: orchPid, project: "/repo/worktree-a", startedAt: orchStartedAt },
+      },
+      () => true,
+    );
+
+    const crossWorktreeLog = new RegistryAwareWorkLog({
+      inner: new JsonlWorkLog(worktreeA),
+      registry,
+      readForeignRecords: (dir) => new JsonlWorkLog(dir).readAll(),
+    });
+
+    const summary7 = await runSync(
+      { log: crossWorktreeLog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
+      {},
+    );
+    assert.equal(summary7.error, undefined, `cross-worktree sync should not error: ${summary7.error}`);
+    assert.equal(summary7.uploaded, 1, `expected exactly one new task_entries row, got ${JSON.stringify(summary7)}`);
+
+    assert.equal(await countTaskEntries(superuserToken, "task-cross-worktree"), 1, "exactly one consolidated row, never two, never summed (SUBAGENT-REQ-018)");
+    const crossRow = await findTaskEntry(superuserToken, "task-cross-worktree");
+    assert.equal(crossRow["wall_ms"], 35_000, "union of [0,20] and [5,35] (relative seconds) = 35s, computed once locally");
+    assert.ok(Math.abs((crossRow["cost"] as number) - 0.025) < 1e-9, `cost should sum once: 0.02 + 0.005, got ${crossRow["cost"]}`);
+    assert.equal(crossRow["subagent_count"], 1);
+    const crossWorkRecordCount = await countWorkRecords(superuserToken, crossRow["id"] as string);
+    assert.equal(crossWorkRecordCount, 2, "orchestrator + the reunited cross-worktree child, as work_records");
+    log(`  task-cross-worktree: reunited locally, wall_ms=35000, cost summed once, subagent_count=1 — verified`);
+
+    // --- Phase 6a scenario: a phantom/uncertain-role record (ADR 0022,
+    // e.g. an unrecognised subagent mechanism with a tracked ancestor) is
+    // NEVER synced as its own task_entries row. ---
+    log("phase-6a scenario: an uncertain-role record is never synced as a phantom task (SUBAGENT-REQ-013/014)");
+    const phantom = makeRecord({
+      id: "task-phantom",
+      role: "orchestrator",
+      roleConfidence: "uncertain",
+      pid: 6000,
+      parentPid: 5000,
+      startedAt: iso(t3 + 200_000),
+      settledAt: iso(t3 + 210_000),
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.001 },
+    });
+    new JsonlWorkLog(worktreeA).append(phantom);
+
+    const summary8 = await runSync(
+      { log: crossWorktreeLog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
+      {},
+    );
+    assert.equal(summary8.error, undefined, `phantom-orchestrator sync should not error: ${summary8.error}`);
+    assert.equal(await countTaskEntries(superuserToken, "task-phantom"), 0, "an uncertain-role record must never become its own task_entries row");
+    log("  task-phantom: confirmed absent from the hub — never billed as a phantom task");
 
     log("ALL E2E ASSERTIONS PASSED");
   } finally {
