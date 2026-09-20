@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { detectRole, loadConfig, loadMachine, loadSyncConfig } from "./config.ts";
 import { WorkTracker } from "./domain/work-tracker.ts";
+import { findAncestorEntry } from "./domain/ancestry-match.ts";
 import { LazyJsonlWorkLog } from "./adapters/lazy-jsonl-work-log.ts";
 import { LazyFileInflightStore } from "./adapters/lazy-file-inflight-store.ts";
 import { createPiTracker } from "./adapters/pi-tracker.ts";
@@ -18,13 +19,46 @@ import { SyncStateStore } from "./adapters/sync-state-store.ts";
 import { PocketBaseSink } from "./adapters/pocketbase-sink.ts";
 import { computeSyncStatus, runSync, singleFlight } from "./adapters/sync-runner.ts";
 import type { SyncTrigger } from "./adapters/sync-runner.ts";
+import { snapshotAncestry, walkAncestry } from "./adapters/ancestry.ts";
+import { MachineProcessRegistry } from "./adapters/machine-process-registry.ts";
+import { RegistryAwareWorkLog } from "./adapters/registry-aware-work-log.ts";
+import { JsonlWorkLog } from "./adapters/jsonl-work-log.ts";
 import type { Catalog } from "./ports/catalog.ts";
 import type { SessionTarget } from "./adapters/session-target.ts";
 import type { SyncCommandDeps } from "./adapters/kankaku-command.ts";
 
 export default function kankaku(pi: ExtensionAPI): void {
   const config = loadConfig();
-  const role = detectRole();
+
+  // Machine-wide process registry (ADR 0023): independent of any project's
+  // KANKAKU_DIR, so a subagent running in a different git worktree can
+  // still discover its true orchestrator. One OS ancestor-chain snapshot at
+  // most, taken here, synchronously, before any pi.on handler is
+  // registered — never on a later hot path (SUBAGENT-REQ-011). Every
+  // operation on `registry` degrades to a no-op/empty-read on its own when
+  // the registry is unavailable (no home dir, no permission) — see
+  // adapters/machine-process-registry.ts.
+  const registry = new MachineProcessRegistry(homedir);
+  const registryEntries = registry.readAll();
+  const ancestorPids = walkAncestry(process.ppid, snapshotAncestry().ppidByPid);
+  const ancestorEntry = findAncestorEntry(ancestorPids, registryEntries);
+
+  const { role, roleConfidence } = detectRole(process.env, ancestorEntry !== undefined);
+  const orchestratorRef =
+    role === "subagent" && ancestorEntry !== undefined
+      ? { pid: ancestorEntry.pid, project: ancestorEntry.project, startedAt: ancestorEntry.startedAt }
+      : undefined;
+
+  const resolvedDir = resolveKankakuDir(config.dir, process.cwd());
+  registry.record({
+    pid: process.pid,
+    parentPid: process.ppid,
+    role,
+    project: process.cwd(),
+    dir: resolvedDir,
+    startedAt: new Date().toISOString(),
+    ...(orchestratorRef !== undefined ? { orchestratorRef } : {}),
+  });
 
   const tracker = new WorkTracker({
     clock: { now: () => Date.now() },
@@ -33,7 +67,17 @@ export default function kankaku(pi: ExtensionAPI): void {
     segmentRules: config.segmentRules,
   });
 
-  const log = new LazyJsonlWorkLog(config.dir);
+  const log = new RegistryAwareWorkLog({
+    inner: new LazyJsonlWorkLog(config.dir),
+    registry,
+    readForeignRecords: (dir) => {
+      try {
+        return new JsonlWorkLog(dir).readAll();
+      } catch {
+        return [];
+      }
+    },
+  });
   const inflight = new LazyFileInflightStore(config.dir, process.pid);
 
   const projectClient = new LazyProjectClientSource(config.dir);
@@ -129,6 +173,8 @@ export default function kankaku(pi: ExtensionAPI): void {
     log,
     inflight,
     role,
+    ...(roleConfidence !== undefined ? { roleConfidence } : {}),
+    ...(orchestratorRef !== undefined ? { orchestratorRef } : {}),
     pid: process.pid,
     parentPid: process.ppid,
     ...(config.client !== undefined ? { envClient: config.client } : {}),
