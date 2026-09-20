@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { isValidClient } from "../domain/client-label.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
-import type { WorkRecord, WorkRecordCore, WorkRole } from "../domain/work-record.ts";
+import type { OrchestratorRef, WorkRecord, WorkRecordCore, WorkRole } from "../domain/work-record.ts";
 import type { WorkTracker } from "../domain/work-tracker.ts";
 import type { Catalog } from "../ports/catalog.ts";
 import type { InflightStore } from "../ports/inflight-store.ts";
@@ -21,6 +21,22 @@ export interface PiTrackerDeps {
   /** Crash-recovery checkpoint store; see the "Crash recovery" README section. */
   inflight: InflightStore;
   role: WorkRole;
+  /**
+   * Set only when `role` is `"orchestrator"` but this process could not be
+   * positively proven top-level (ADR 0022, `config.ts#detectRole`). Never
+   * counted as a new task locally or synced to the hub — see
+   * `domain/task-view.ts#buildTasks`/`uncertainRecords` and
+   * `triggerAutoSync` below.
+   */
+  roleConfidence?: "uncertain";
+  /**
+   * Set only when `role` is `"subagent"` and this process discovered a
+   * tracked ancestor via the machine-wide process registry (ADR 0023).
+   * Attached to every record this process appends so `matchChildren` can
+   * reunite it with its orchestrator even across a different project/
+   * `KANKAKU_DIR` (see `adapters/registry-aware-work-log.ts`).
+   */
+  orchestratorRef?: OrchestratorRef;
   pid: number;
   parentPid: number;
   /** Status line refresh interval in ms. Defaults to 1000. */
@@ -150,7 +166,11 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
   /** Fire-and-forget a sync (orchestrator role, `sync` configured, auto-sync enabled). Never awaited, never throws. `trigger` lets the automatic path's version short-circuit and throttle (see `adapters/sync-runner.ts#runSync`) tell apart `session_start` from `agent_settled`. */
   function triggerAutoSync(ctx: ExtensionContext, trigger: SyncTrigger): void {
-    if (!deps.sync || role !== "orchestrator" || deps.autoSyncEnabled === false) return;
+    // An uncertain-role process (ADR 0022) never anchors a task (see
+    // `domain/task-view.ts#buildTasks`), so a sync attempt from it would
+    // only ever find nothing new to push — skip it outright, exactly like
+    // a subagent, rather than pay for a pointless run.
+    if (!deps.sync || role !== "orchestrator" || deps.roleConfidence === "uncertain" || deps.autoSyncEnabled === false) return;
     void deps.sync
       .run({ trigger })
       .then((summary) => {
@@ -202,6 +222,8 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
           }
         : {}),
       ...(deps.machine !== undefined ? { machine: deps.machine } : {}),
+      ...(deps.roleConfidence !== undefined ? { roleConfidence: deps.roleConfidence } : {}),
+      ...(deps.orchestratorRef !== undefined ? { orchestratorRef: deps.orchestratorRef } : {}),
     };
   }
 

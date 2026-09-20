@@ -644,6 +644,51 @@ test("'kankaku sessions all' appends a durable report entry with sessions across
   assert.match(lines[0]!, /tasks 1/);
 });
 
+test("buildRecord attaches roleConfidence 'uncertain' when configured, and omits it otherwise", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    roleConfidence: "uncertain",
+    pid: 1,
+    parentPid: 0,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.roleConfidence, "uncertain");
+});
+
+test("buildRecord attaches orchestratorRef when configured (subagent discovered its ancestor via the registry)", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const orchestratorRef = { pid: 42, project: "/worktree-a", startedAt: "2026-09-10T16:00:00.000Z" };
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "subagent",
+    orchestratorRef,
+    pid: 2,
+    parentPid: 42,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.deepEqual(log.records[0]?.orchestratorRef, orchestratorRef);
+});
+
 test("buildRecord fills client from env config and sessionName from pi.getSessionName()", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
@@ -900,7 +945,7 @@ test("kankaku command exposes getArgumentCompletions offering the known subcomma
   const items = (await command!.getArgumentCompletions!("")) as Array<{ value: string }>;
   assert.deepEqual(
     items.map((item) => item.value).sort(),
-    ["all", "client", "clients", "export", "sessions", "tasks"],
+    ["all", "client", "clients", "doctor", "export", "sessions", "tasks"],
   );
 });
 
@@ -1520,6 +1565,30 @@ test("auto-sync: a subagent process never triggers a sync", async () => {
     role: "subagent",
     pid: 2,
     parentPid: 1,
+    sync,
+  });
+
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await flushMicrotasks();
+
+  assert.equal(sync.runCalls, 0);
+});
+
+test("auto-sync: an uncertain-role orchestrator never triggers a sync (ADR 0022)", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    roleConfidence: "uncertain",
+    pid: 1,
+    parentPid: 0,
     sync,
   });
 
