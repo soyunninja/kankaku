@@ -197,7 +197,12 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
     }
 
     const mergedHashes = { ...(state?.hashes ?? {}), ...Object.fromEntries(newHashes) };
-    const prunedHashes = pruneHashes(mergedHashes, tasks, syncedThrough, deps.windowHours);
+    // G2: no longer window-bound — see `domain/sync-plan.ts#pruneHashes`'s
+    // doc comment. `tasks` here is every task `buildTasks` currently knows
+    // about (the full `readAll()`, not just this run's eligible/window
+    // subset), so a hash is only ever dropped for a task id that has
+    // genuinely vanished, never merely because it is old.
+    const prunedHashes = pruneHashes(mergedHashes, tasks);
     // Only adopt deps.target as the persisted target once this run has
     // actually resolved something against it; otherwise keep whatever
     // target (if any) the previous state was synced against.

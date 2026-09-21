@@ -293,6 +293,42 @@ test("a late subagent extending a previously-synced task's union causes it to be
   assert.equal(summary.uploaded, 0);
 });
 
+test("G2: an unchanged old task's hash survives repeated real runSync passes even after it falls outside the revisit window, so computeSyncStatus never reports it stale", async () => {
+  const oldOrchestrator = makeRecord({ id: "old-task", startedAt: iso(0), settledAt: iso(10) });
+  const stateStore = fakeStateStore();
+  const clock = makeClock();
+
+  // First run: sync the old task while it is still inside the window.
+  const first = fakeSink({ "old-task": { kind: "created", unassigned: false } });
+  await runSync({ log: fakeLog([oldOrchestrator]), sink: first.sink, stateStore: stateStore as never, clock, target: TARGET, windowHours: 1 });
+  assert.ok(Object.prototype.hasOwnProperty.call(stateStore._state()?.hashes ?? {}, "old-task"));
+
+  // Several later runs: a different, newer task keeps advancing the
+  // watermark far past `old-task` (which never changes again) — exactly
+  // the scenario that used to prune `old-task`'s hash forever.
+  for (let round = 0; round < 3; round++) {
+    clock.advance(2 * 60 * 60 * 1000); // 2h — well past the 1h window each round
+    const recentOrchestrator = makeRecord({ id: `recent-task-${round}`, startedAt: iso(50_000 * (round + 1)), settledAt: iso(50_000 * (round + 1) + 10) });
+    const sink = fakeSink({ [`recent-task-${round}`]: { kind: "created", unassigned: false } });
+    await runSync({
+      log: fakeLog([oldOrchestrator, recentOrchestrator]),
+      sink: sink.sink,
+      stateStore: stateStore as never,
+      clock,
+      target: TARGET,
+      windowHours: 1,
+    });
+
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(stateStore._state()?.hashes ?? {}, "old-task"),
+      `round ${round}: old-task's hash must not have been pruned just because it is outside the window`,
+    );
+  }
+
+  const status = computeSyncStatus(fakeLog([oldOrchestrator]) as never, stateStore as never, TARGET, 1);
+  assert.equal(status.staleOutsideWindow, 0, "an unchanged old task must never be reported stale after real, repeated sync passes");
+});
+
 test("when the lock cannot be acquired, nothing is attempted and the summary reports locked", async () => {
   const { sink, calls } = fakeSink({});
   const stateStore = fakeStateStore();

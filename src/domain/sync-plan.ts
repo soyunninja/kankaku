@@ -178,10 +178,44 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
 }
 
 /**
- * Drop hash entries for tasks that have fallen out of the revisit window
- * behind `newSyncedThrough` (or that no longer exist in `tasks`, which
- * should not normally happen since `worklog.jsonl` is append-only) — keeps
- * `sync-state.json` from growing forever.
+ * Drop hash entries for task ids that no longer exist in `tasks` (which
+ * should not normally happen since `worklog.jsonl` is append-only — this
+ * is a defensive backstop, not the normal path). `sync-state.json`'s
+ * `hashes` are otherwise kept **forever** for every task this process
+ * still knows about, regardless of how far outside the revisit window its
+ * `endedAt` has fallen (G2 fix).
+ *
+ * This used to also drop a hash once its task's `endedAt` fell behind
+ * `syncedThrough - window` — but `planSync`'s `staleOutsideWindow` treats a
+ * *missing* hash exactly like "content changed" (there is no third state
+ * for "unchanged but I forgot"), so that window-based pruning made every
+ * task older than the window look permanently changed, forever, the moment
+ * its hash was first pruned: `/kankaku sync status` would report a
+ * never-shrinking "changed outside the window" count that training taught
+ * users to ignore (the bug this rewrite fixes).
+ *
+ * Never pruning by window instead means `hashes` grows with the total
+ * number of distinct tasks a directory has ever synced, not with time — an
+ * FNV-1a hash is 8 hex chars and a task id (a `crypto.randomUUID()`) is 36,
+ * so each retained entry costs roughly 50 bytes of JSON. Measured: 10,000
+ * entries serialize to well under 1MB (see `tests/sync-plan.test.ts`'s
+ * state-size-bound test) — even a directory with a decade of daily,
+ * multi-task-per-day history stays a small, instantly-parseable file. A
+ * coarser design (e.g. one rolling digest per closed day) would bound the
+ * file even tighter, but cannot answer "which specific task changed" —
+ * `staleOutsideWindow` needs exactly that, per-task precision, to stay
+ * useful — so it was rejected in favour of this simpler, still-cheap
+ * per-task scheme.
+ *
+ * No migration is needed for an existing `sync-state.json`: it already has
+ * exactly this shape (`Record<taskId, hash>`), just with some outside-
+ * window entries already missing from a build that pruned them. The first
+ * sync after upgrading treats each of those exactly like "never synced" —
+ * a real fact this process cannot know is false, since the old hash is
+ * genuinely gone — and reports it once via `staleOutsideWindow`; once that
+ * task's hash is recorded again (an ordinary `sync all`, or simply being
+ * observed unchanged), this function never drops it again. See
+ * `tests/sync-plan.test.ts`'s "first sync after upgrading" test.
  *
  * Accumulated in a `Map` and emitted via `Object.fromEntries` (never
  * `pruned[id] = ...` on a plain object), since a task id ultimately traces
@@ -189,17 +223,12 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
  * plain object would silently no-op (the inherited accessor ignores a
  * non-object assignment) instead of being kept as an own property.
  */
-export function pruneHashes(hashes: Record<string, string>, tasks: TaskView[], newSyncedThrough: string | undefined, windowHours = DEFAULT_WINDOW_HOURS): Record<string, string> {
-  if (!newSyncedThrough) return {};
-  const cutoff = Date.parse(newSyncedThrough) - windowMs(windowHours);
-  const byId = new Map(tasks.map((task) => [task.id, task]));
+export function pruneHashes(hashes: Record<string, string>, tasks: TaskView[]): Record<string, string> {
+  const knownIds = new Set(tasks.map((task) => task.id));
 
   const pruned = new Map<string, string>();
   for (const [id, hash] of Object.entries(hashes)) {
-    const task = byId.get(id);
-    if (task && Date.parse(task.endedAt) > cutoff) {
-      pruned.set(id, hash);
-    }
+    if (knownIds.has(id)) pruned.set(id, hash);
   }
   return Object.fromEntries(pruned);
 }

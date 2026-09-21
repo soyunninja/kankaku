@@ -244,27 +244,27 @@ test("computeTaskContentHash does not depend on assignment fields (client/projec
   assert.equal(computeTaskContentHash(unassignedTask), computeTaskContentHash(assignedTask));
 });
 
-test("pruneHashes drops entries for tasks that fell out of the revisit window", () => {
+test("pruneHashes (G2) keeps a hash for a task that fell out of the revisit window, as long as the task itself still exists — pruning by window is exactly the bug that made every old task look permanently changed", () => {
   const oldTask = makeTask("old", 0, 10);
   const recentTask = makeTask("recent", 100000, 100010);
   const hashes = { old: computeTaskContentHash(oldTask), recent: computeTaskContentHash(recentTask) };
 
-  const pruned = pruneHashes(hashes, [oldTask, recentTask], iso(100020), 1);
+  const pruned = pruneHashes(hashes, [oldTask, recentTask]);
 
-  assert.deepEqual(Object.keys(pruned), ["recent"]);
+  assert.deepEqual(Object.keys(pruned).sort(), ["old", "recent"]);
 });
 
 test("pruneHashes drops entries for task ids no longer present in the task list", () => {
   const recentTask = makeTask("recent", 100000, 100010);
   const hashes = { ghost: "deadbeef", recent: computeTaskContentHash(recentTask) };
 
-  const pruned = pruneHashes(hashes, [recentTask], iso(100020), 24);
+  const pruned = pruneHashes(hashes, [recentTask]);
 
   assert.deepEqual(Object.keys(pruned), ["recent"]);
 });
 
-test("pruneHashes returns {} when there is no new syncedThrough yet", () => {
-  const pruned = pruneHashes({ a: "x" }, [], undefined);
+test("pruneHashes returns {} for an empty task list", () => {
+  const pruned = pruneHashes({ a: "x" }, []);
   assert.deepEqual(pruned, {});
 });
 
@@ -278,9 +278,86 @@ test("pruneHashes keeps a task id literally named '__proto__' as an own property
   // actually would, so this exercises the real shape.
   const hashes: Record<string, string> = JSON.parse(JSON.stringify({ marker: hash }).replace('"marker"', '"__proto__"'));
 
-  const pruned = pruneHashes(hashes, [task], iso(100020), 24);
+  const pruned = pruneHashes(hashes, [task]);
 
   assert.deepEqual(Object.keys(pruned), ["__proto__"]);
   assert.equal(pruned["__proto__"], hash);
   assert.equal(Object.getPrototypeOf(pruned), Object.prototype);
+});
+
+test("G2: a synced-then-pruned-then-retained old task is never reported stale across repeated sync passes, even though its endedAt is far outside the revisit window", () => {
+  const oldTask = makeTask("old", 0, 10);
+  const recentTask = makeTask("recent", 300000, 300010);
+  let hashes: Record<string, string> = { old: computeTaskContentHash(oldTask), recent: computeTaskContentHash(recentTask) };
+
+  // Simulate several later sync passes (recentTask keeps advancing the
+  // watermark far past oldTask, which never changes again): each pass
+  // merges in nothing new for `old` and re-runs pruneHashes, exactly like
+  // `adapters/sync-runner.ts#runSync` does after every real run.
+  for (let pass = 0; pass < 5; pass++) {
+    const state: SyncState = { target: TARGET, syncedThrough: iso(300000 + pass * 100000), hashes };
+    const plan = planSync([oldTask, recentTask], state, { target: TARGET, windowHours: 1 });
+    assert.deepEqual(
+      plan.staleOutsideWindow,
+      [],
+      `pass ${pass}: an unchanged old task must never be reported stale just because it fell outside the window`,
+    );
+    hashes = pruneHashes(hashes, [oldTask, recentTask]);
+    assert.ok(Object.prototype.hasOwnProperty.call(hashes, "old"), `pass ${pass}: pruneHashes must not have dropped the still-valid hash for the unchanged old task`);
+  }
+});
+
+test("G2: a genuinely changed old task (a late subagent settling long after its orchestrator) is still reported stale outside the window, hash retention notwithstanding", () => {
+  const oldTaskBefore = makeTask("old", 0, 10);
+  const hashes = { old: computeTaskContentHash(oldTaskBefore) };
+  const prunedHashes = pruneHashes(hashes, [oldTaskBefore]);
+
+  // A late subagent later bumps this same task's endedAt/content.
+  const oldTaskAfter = makeTask("old", 0, 10, { wallMs: 999999, endedAt: iso(50) });
+  const state: SyncState = { target: TARGET, syncedThrough: iso(300000), hashes: prunedHashes };
+  const plan = planSync([oldTaskAfter], state, { target: TARGET, windowHours: 1 });
+
+  assert.deepEqual(
+    plan.staleOutsideWindow.map((t) => t.id),
+    ["old"],
+    "a real content change on an old task must still surface as stale-outside-window even though its hash was retained",
+  );
+});
+
+test("G2: first sync after upgrading from a version that pruned hashes by window — a task already stripped of its hash by the OLD bug is reported stale exactly once, then never again", () => {
+  const oldTask = makeTask("old", 0, 10);
+  const recentTask = makeTask("recent", 300000, 300010);
+  // Simulates an on-disk sync-state.json written by the pre-fix code: the
+  // old task's hash is already gone (the OLD pruneHashes stripped it), even
+  // though the task itself never changed. This state file needs no
+  // migration — it is structurally identical to any other SyncState, just
+  // missing an entry the new code would otherwise have kept.
+  const upgradeState: SyncState = { target: TARGET, syncedThrough: iso(300010), hashes: { recent: computeTaskContentHash(recentTask) } };
+
+  const firstRun = planSync([oldTask, recentTask], upgradeState, { target: TARGET, windowHours: 1 });
+  assert.deepEqual(
+    firstRun.staleOutsideWindow.map((t) => t.id),
+    ["old"],
+    "the one unavoidable correction pass: a hash already lost to the old bug cannot be un-lost, so it is reported once",
+  );
+
+  // The next real sync run persists `old`'s freshly computed hash (a manual
+  // `sync all`, or simply carrying it forward once observed) and, from then
+  // on, pruneHashes (G2) never drops it again for an unchanged task.
+  const healedHashes = pruneHashes({ ...upgradeState.hashes, old: computeTaskContentHash(oldTask) }, [oldTask, recentTask]);
+  const secondRunState: SyncState = { target: TARGET, syncedThrough: iso(400000), hashes: healedHashes };
+  const secondRun = planSync([oldTask, recentTask], secondRunState, { target: TARGET, windowHours: 1 });
+  assert.deepEqual(secondRun.staleOutsideWindow, [], "after the one-time correction, the old task must never be reported stale again");
+});
+
+test("G2: state-size bound — 10,000 retained hash entries (uuid-shaped ids, 8-hex-char FNV hashes) stay well under 1MB serialized, so keeping every known task's hash forever is cheap for years of real-world history", () => {
+  const hashes: Record<string, string> = {};
+  for (let i = 0; i < 10_000; i++) {
+    // Same shape as a real WorkRecord id (`crypto.randomUUID()`, 36 chars)
+    // and a real FNV-1a fingerprint (8 lowercase hex chars).
+    const id = `00000000-0000-4000-8000-${i.toString(16).padStart(12, "0")}`;
+    hashes[id] = (i >>> 0).toString(16).padStart(8, "0");
+  }
+  const bytes = Buffer.byteLength(JSON.stringify({ target: TARGET, syncedThrough: iso(0), hashes }), "utf8");
+  assert.ok(bytes < 1_000_000, `expected under 1MB for 10,000 retained hashes, measured ${bytes} bytes`);
 });
