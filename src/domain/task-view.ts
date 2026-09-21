@@ -248,6 +248,60 @@ export function uncertainRecords(records: WorkRecord[]): WorkRecord[] {
   return records.filter((record) => record.role === "orchestrator" && record.roleConfidence === "uncertain");
 }
 
+/** One cluster of confirmed-orchestrator records sharing a pid with overlapping `[startedAt, settledAt]` windows — see {@link detectSameProcessOverlaps}. */
+export interface SameProcessOverlap {
+  pid: number;
+  recordIds: string[];
+  /** The union (never the sum) of every clustered record's own wall-time window, via `unionMs`. */
+  unionedWallMs: number;
+}
+
+/**
+ * SUBAGENT-REQ-015: flag confirmed-orchestrator records that share an OS
+ * pid AND overlap in time — a pattern that should never occur if pi only
+ * ever runs one session per process at a time, but is the observable
+ * signature an in-process nested session mechanism (if one existed) would
+ * leave behind: two independent `WorkTracker` records, same pid, running
+ * concurrently. Purely informational (`/kankaku doctor` reads this, see
+ * `adapters/kankaku-command.ts`) — it never changes {@link buildTasks}'
+ * own per-task `wallMs`, so a plain pi run or today's gentle-pi setup is
+ * completely unaffected; each flagged record still anchors its own
+ * `TaskView` exactly as before. `unionedWallMs` is provided (via the
+ * existing `unionMs` primitive, ADR 0006 — the interval-union rule stays
+ * in exactly this one place) so a human reading the doctor report can see
+ * what the corrected total would be, without kankaku silently changing any
+ * number on its own.
+ */
+export function detectSameProcessOverlaps(records: WorkRecord[]): SameProcessOverlap[] {
+  const orchestratorsByPid = new Map<number, WorkRecord[]>();
+  for (const record of records.filter(isConfirmedOrchestrator)) {
+    const group = orchestratorsByPid.get(record.pid);
+    if (group) {
+      group.push(record);
+    } else {
+      orchestratorsByPid.set(record.pid, [record]);
+    }
+  }
+
+  const overlaps: SameProcessOverlap[] = [];
+
+  for (const [pid, group] of orchestratorsByPid) {
+    if (group.length < 2) continue;
+
+    const intervals = group.map((record) => ({ start: toMs(record.startedAt), end: toMs(record.settledAt) }));
+    const anyOverlap = intervals.some((a, i) => intervals.some((b, j) => i !== j && a.start < b.end && b.start < a.end));
+    if (!anyOverlap) continue;
+
+    overlaps.push({
+      pid,
+      recordIds: group.map((record) => record.id),
+      unionedWallMs: unionMs(intervals),
+    });
+  }
+
+  return overlaps;
+}
+
 /**
  * Group tasks by `sessionId` (tasks without one fall under `"unknown"`).
  * `wallMs` is the union of every interval — orchestrator and subagent alike

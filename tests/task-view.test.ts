@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildSessions, buildTasks, orphanSubagents, sumUsage, uncertainRecords } from "../src/domain/task-view.ts";
+import { buildSessions, buildTasks, detectSameProcessOverlaps, orphanSubagents, sumUsage, uncertainRecords } from "../src/domain/task-view.ts";
 import type { UsageTotals, WorkRecord } from "../src/domain/work-record.ts";
 
 function iso(secondsFromEpoch: number): string {
@@ -457,4 +457,70 @@ test("two unrelated top-level orchestrator sessions in the same repo, overlappin
     tasks.map((t) => t.subagents.length),
     [0, 0],
   );
+});
+
+// --- SUBAGENT-REQ-015: same-pid overlapping-orchestrator union-not-sum guard (6c) ---
+
+test("SUBAGENT-REQ-015: two confirmed-orchestrator records sharing the same pid with overlapping windows are flagged, wall time unioned via unionMs", () => {
+  const first = makeRecord({ id: "a", pid: 555, parentPid: 1, startedAt: iso(0), settledAt: iso(30) });
+  const second = makeRecord({ id: "b", pid: 555, parentPid: 1, startedAt: iso(10), settledAt: iso(50) });
+
+  const overlaps = detectSameProcessOverlaps([first, second]);
+
+  assert.equal(overlaps.length, 1);
+  assert.equal(overlaps[0]?.pid, 555);
+  assert.deepEqual(overlaps[0]?.recordIds.sort(), ["a", "b"]);
+  // union of [0,30] and [10,50] = [0,50] -> 50s, never the naive sum (30+40=70s).
+  assert.equal(overlaps[0]?.unionedWallMs, 50000);
+});
+
+test("SUBAGENT-REQ-015: two confirmed-orchestrator records sharing a pid but NOT overlapping in time (e.g. sequential /fork/new sessions) are never flagged", () => {
+  const first = makeRecord({ id: "a", pid: 555, parentPid: 1, startedAt: iso(0), settledAt: iso(10) });
+  const second = makeRecord({ id: "b", pid: 555, parentPid: 1, startedAt: iso(20), settledAt: iso(30) });
+
+  assert.deepEqual(detectSameProcessOverlaps([first, second]), []);
+});
+
+test("SUBAGENT-REQ-015: different pids are never flagged, however much their windows overlap", () => {
+  const first = makeRecord({ id: "a", pid: 555, parentPid: 1, startedAt: iso(0), settledAt: iso(30) });
+  const second = makeRecord({ id: "b", pid: 556, parentPid: 1, startedAt: iso(10), settledAt: iso(50) });
+
+  assert.deepEqual(detectSameProcessOverlaps([first, second]), []);
+});
+
+test("SUBAGENT-REQ-015: an uncertain orchestrator record is never flagged (only CONFIRMED orchestrators participate)", () => {
+  const first = makeRecord({ id: "a", pid: 555, parentPid: 1, startedAt: iso(0), settledAt: iso(30) });
+  const second = makeRecord({ id: "b", pid: 555, parentPid: 1, startedAt: iso(10), settledAt: iso(50), roleConfidence: "uncertain" });
+
+  assert.deepEqual(detectSameProcessOverlaps([first, second]), []);
+});
+
+test("SUBAGENT-REQ-015: a subagent-role record is never flagged, even sharing a pid and overlapping in time with an orchestrator", () => {
+  const orchestrator = makeRecord({ id: "a", pid: 555, parentPid: 1, startedAt: iso(0), settledAt: iso(30) });
+  const child = makeRecord({ id: "b", role: "subagent", pid: 555, parentPid: 1, startedAt: iso(10), settledAt: iso(50) });
+
+  assert.deepEqual(detectSameProcessOverlaps([orchestrator, child]), []);
+});
+
+test("SUBAGENT-REQ-015: three overlapping same-pid orchestrator records are unioned and flagged together", () => {
+  const a = makeRecord({ id: "a", pid: 9, parentPid: 1, startedAt: iso(0), settledAt: iso(10) });
+  const b = makeRecord({ id: "b", pid: 9, parentPid: 1, startedAt: iso(5), settledAt: iso(15) });
+  const c = makeRecord({ id: "c", pid: 9, parentPid: 1, startedAt: iso(12), settledAt: iso(20) });
+
+  const overlaps = detectSameProcessOverlaps([a, b, c]);
+
+  assert.equal(overlaps.length, 1);
+  assert.deepEqual(overlaps[0]?.recordIds.sort(), ["a", "b", "c"]);
+  assert.equal(overlaps[0]?.unionedWallMs, 20000);
+});
+
+test("SUBAGENT-REQ-015: detectSameProcessOverlaps never changes buildTasks' own per-task wallMs — plain and gentle-pi runs are unaffected (informational/doctor-only, ADR 0006's aggregation rule stays exactly where it was)", () => {
+  const first = makeRecord({ id: "a", pid: 555, parentPid: 1, startedAt: iso(0), settledAt: iso(30) });
+  const second = makeRecord({ id: "b", pid: 555, parentPid: 1, startedAt: iso(10), settledAt: iso(50) });
+
+  const tasks = buildTasks([first, second]);
+
+  assert.equal(tasks.length, 2);
+  assert.equal(tasks.find((t) => t.id === "a")?.wallMs, 30000);
+  assert.equal(tasks.find((t) => t.id === "b")?.wallMs, 40000);
 });
