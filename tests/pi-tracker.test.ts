@@ -764,6 +764,42 @@ test("buildRecord attaches orchestratorRef when configured (subagent discovered 
   assert.deepEqual(log.records[0]?.orchestratorRef, orchestratorRef);
 });
 
+test("SUBAGENT-REQ-005/017: buildRecord attaches profile when configured (this process's role was confirmed by a specific SubagentProfile's child-env marker)", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "subagent",
+    profile: "pi-subagents",
+    pid: 2,
+    parentPid: 42,
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.profile, "pi-subagents");
+});
+
+test("buildRecord omits profile entirely when not configured (an orchestrator, or a subagent whose role came from ancestry alone)", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 2, parentPid: 42 });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.profile, undefined);
+});
+
 test("buildRecord fills client from env config and sessionName from pi.getSessionName()", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });

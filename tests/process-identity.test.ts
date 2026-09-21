@@ -4,6 +4,7 @@ import { resolveProcessIdentity } from "../src/adapters/process-identity.ts";
 import type { RegistryEntry } from "../src/ports/process-registry.ts";
 import type { ProcessRegistry } from "../src/ports/process-registry.ts";
 import type { AncestrySnapshot } from "../src/adapters/ancestry.ts";
+import { BUILTIN_SUBAGENT_PROFILES } from "../src/domain/subagent-profile.ts";
 
 function entry(overrides: Partial<RegistryEntry> = {}): RegistryEntry {
   return {
@@ -104,6 +105,31 @@ test("role=orchestrator never resolves an orchestratorRef, even when a tracked a
   // hasTrackedAncestor is still reported truthfully even for an orchestrator
   // — it is what `resolveRoleConfidence` later needs, at session_start.
   assert.equal(identity.hasTrackedAncestor, true);
+});
+
+test("SUBAGENT-REQ-005/017: identity.profile is undefined by default (no subagentProfiles supplied) — the pre-6b default, only GENTLE_PI_AGENTS_CHILD is recognised", () => {
+  const identity = resolveProcessIdentity(baseDeps({ env: { GENTLE_PI_AGENTS_CHILD: "1" } }));
+  assert.equal(identity.role, "subagent");
+  assert.equal(identity.profile, "gentle-pi");
+});
+
+test("SUBAGENT-REQ-005/017: with the full built-in profile set, PI_SUBAGENT_DEPTH alone confirms role=subagent and identity.profile='pi-subagents'", () => {
+  const identity = resolveProcessIdentity(baseDeps({ env: { PI_SUBAGENT_DEPTH: "1" }, subagentProfiles: BUILTIN_SUBAGENT_PROFILES }));
+  assert.equal(identity.role, "subagent");
+  assert.equal(identity.childMarkerPresent, true);
+  assert.equal(identity.profile, "pi-subagents");
+});
+
+test("PI_SUBAGENT_DEPTH is NOT recognised when subagentProfiles is not supplied (the pre-6b default stays exactly GENTLE_PI_AGENTS_CHILD-only — no regression for a caller that has not opted into the wider profile set)", () => {
+  const identity = resolveProcessIdentity(baseDeps({ env: { PI_SUBAGENT_DEPTH: "1" } }));
+  assert.equal(identity.role, "orchestrator");
+  assert.equal(identity.childMarkerPresent, false);
+  assert.equal(identity.profile, undefined);
+});
+
+test("identity.profile stays undefined when no known marker is present (ancestry-only, e.g. pi's bundled reference example)", () => {
+  const identity = resolveProcessIdentity(baseDeps({ env: {}, subagentProfiles: BUILTIN_SUBAGENT_PROFILES }));
+  assert.equal(identity.profile, undefined);
 });
 
 test("liveStartId is threaded through from resolveSubagentStartup for the registry's own sweep", () => {

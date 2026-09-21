@@ -61,6 +61,14 @@ export interface PiTrackerDeps {
    * two records end up in the same `worklog.jsonl` to begin with.
    */
   orchestratorRef?: OrchestratorRef;
+  /**
+   * SUBAGENT-REQ-005/017: the {@link SubagentProfile} `id` whose child-env
+   * marker(s) confirmed this process's `role: "subagent"` (see
+   * `adapters/process-identity.ts#ProcessIdentity.profile`). Attached to
+   * every record this process appends so `/kankaku doctor` can report which
+   * profile matched each record. Never set for an `orchestrator` record.
+   */
+  profile?: string;
   pid: number;
   parentPid: number;
   /** Status line refresh interval in ms. Defaults to 1000. */
@@ -287,6 +295,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       ...(deps.machine !== undefined ? { machine: deps.machine } : {}),
       ...(roleConfidence !== undefined ? { roleConfidence } : {}),
       ...(deps.orchestratorRef !== undefined ? { orchestratorRef: deps.orchestratorRef } : {}),
+      ...(deps.profile !== undefined ? { profile: deps.profile } : {}),
     };
   }
 
