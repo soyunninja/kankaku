@@ -686,14 +686,17 @@ async function main(): Promise<void> {
     // (KANKAKU_SUBAGENT_TOOLS/KANKAKU_SUBAGENT_CHILD_ENV, no separate
     // OS-process child of its own in this scenario — the child never runs
     // kankaku, so there is no separately-joined WorkRecord for it) whose
-    // tool result forwarded `usage` (SUBAGENT-REQ-006). The forwarded
-    // usage/cost is already folded into the orchestrator's own `usage`
-    // totals exactly as `WorkTracker.onToolEnd` computes it — this proves
-    // the sync pipeline carries that through to the hub row's cost/input/
-    // output, counted once, with subagent_linkage correctly reported
-    // "unlinked" (a span was opened, but no child record ever joined it —
-    // the same conservative bucket a genuine in-process mechanism would
-    // fall into, see domain/hub-entry.ts#computeSubagentLinkage). ---
+    // tool result forwarded `usage` (SUBAGENT-REQ-006, revised by C1). The
+    // forwarded usage/cost lives on the span as `forwardedUsage` (never
+    // folded into the orchestrator's own `usage` at write time any more —
+    // see domain/work-tracker.ts#onToolEnd); `domain/task-view.ts#buildTasks`
+    // adds it to the task total because no same-profile child was ever
+    // joined here. This proves the sync pipeline carries that reconciled
+    // total through to the hub row's cost/input/output, counted once, with
+    // subagent_linkage correctly reported "unlinked" (a span was opened,
+    // but no child record ever joined it — the same conservative bucket a
+    // genuine in-process mechanism would fall into, see
+    // domain/hub-entry.ts#computeSubagentLinkage). ---
     log("phase-6b/6c scenario: a configured subagent tool's forwarded usage reaches the hub row, counted once, subagent_linkage=unlinked");
     const t4 = Date.parse("2026-09-19T14:00:00.000Z");
     const configuredToolTask = makeRecord({
@@ -706,15 +709,23 @@ async function main(): Promise<void> {
       wallMs: 20_000,
       waitingMs: 0,
       workMs: 20_000,
-      // The orchestrator's own turn usage (100/40/0.01) PLUS the configured
-      // tool's forwarded usage (25/10/0.004), already summed exactly once
-      // by WorkTracker.onToolEnd — see domain/work-tracker.ts.
-      usage: { input: 125, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.014 },
+      // Only the orchestrator's own real turn usage — the configured
+      // tool's forwarded usage lives on the span below, not here (C1).
+      usage: { input: 100, output: 40, cacheRead: 0, cacheWrite: 0, cost: 0.01 },
       costObserved: true,
       runs: 1,
       turns: 1,
       tools: { my_review_tool: 1 },
-      subagents: [{ toolCallId: "call-configured-1", agent: "reviewer", mode: "task", ms: 5_000, profile: "configured" }],
+      subagents: [
+        {
+          toolCallId: "call-configured-1",
+          agent: "reviewer",
+          mode: "task",
+          ms: 5_000,
+          profile: "configured",
+          forwardedUsage: { input: 25, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.004 },
+        },
+      ],
     });
     worktreeALog.append(configuredToolTask);
 
@@ -726,12 +737,132 @@ async function main(): Promise<void> {
     const configuredRow = await findTaskEntry(superuserToken, "task-configured-tool");
     assert.equal(configuredRow["input"], 125);
     assert.equal(configuredRow["output"], 50);
-    assert.ok(Math.abs((configuredRow["cost"] as number) - 0.014) < 1e-9, "forwarded usage cost must be counted exactly once");
+    assert.ok(Math.abs((configuredRow["cost"] as number) - 0.014) < 1e-9, "forwarded usage cost must be counted exactly once — no joined same-profile child here, so buildTasks adds it");
     assert.equal(configuredRow["cost_quality"], "measured");
     assert.equal(configuredRow["subagent_count"], 0, "no child record was ever joined for this span");
     assert.equal(configuredRow["subagent_linkage"], "unlinked", "a span was opened but never joined — the conservative bucket, never guessed 'linked'");
     assert.equal(await countWorkRecords(superuserToken, configuredRow["id"] as string), 1, "exactly one work_records row — the orchestrator's own, nothing duplicated");
     log("  task-configured-tool: forwarded usage counted once, subagent_linkage=unlinked — verified");
+
+    // --- C1 (CRITICAL fix) scenario A: an ambiguous "subagent" tool call
+    // (2+ profiles register the same name — e.g. pi-reference and
+    // pi-subagents, both always active) must never forward usage/taskId
+    // from any candidate. This is already guaranteed at the unit level
+    // (tests/work-tracker.test.ts), but proves it end to end through the
+    // real sync pipeline: the span carries NO `profile` and NO
+    // `forwardedUsage` (exactly what WorkTracker now produces for an
+    // ambiguous match), so the hub row's cost must be EXACTLY the
+    // orchestrator's own directly-observed turn usage, unaffected. ---
+    log("C1 scenario A: an ambiguous subagent call carrying usage never inflates the hub row's cost");
+    const t5 = Date.parse("2026-09-19T15:00:00.000Z");
+    const ambiguousTask = makeRecord({
+      id: "task-ambiguous-subagent",
+      role: "orchestrator",
+      pid: 8000,
+      parentPid: 1,
+      startedAt: iso(t5),
+      settledAt: iso(t5 + 20_000),
+      wallMs: 20_000,
+      waitingMs: 0,
+      workMs: 20_000,
+      // The orchestrator's own real turn usage — nothing else. An
+      // ambiguous span never contributes forwardedUsage (C1), even though
+      // a real "subagent" tool call happened (see `tools`/`subagents`
+      // below, mirroring what WorkTracker.onToolStart/onToolEnd actually
+      // produce for a genuinely ambiguous tool-name match).
+      usage: { input: 200, output: 80, cacheRead: 0, cacheWrite: 0, cost: 0.05 },
+      costObserved: true,
+      runs: 1,
+      turns: 1,
+      tools: { subagent: 1 },
+      subagents: [{ toolCallId: "call-ambiguous-1", agent: "unknown", mode: "task", ms: 5_000 }],
+    });
+    worktreeALog.append(ambiguousTask);
+
+    const summary10 = await runSync(
+      { log: worktreeALog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
+      {},
+    );
+    assert.equal(summary10.error, undefined, `ambiguous-subagent sync should not error: ${summary10.error}`);
+    const ambiguousRow = await findTaskEntry(superuserToken, "task-ambiguous-subagent");
+    assert.equal(ambiguousRow["input"], 200, "an ambiguous span must never add anything to input");
+    assert.equal(ambiguousRow["output"], 80, "an ambiguous span must never add anything to output");
+    assert.ok(Math.abs((ambiguousRow["cost"] as number) - 0.05) < 1e-9, "hub row cost must equal ONLY the orchestrator's own observed turn cost — unchanged by the ambiguous call");
+    assert.equal(ambiguousRow["subagent_count"], 0, "no child record was ever joined for this span");
+    assert.equal(ambiguousRow["subagent_linkage"], "unlinked");
+    log("  task-ambiguous-subagent: hub row cost unchanged by the ambiguous call — verified");
+
+    // --- C1 (CRITICAL fix) scenario B: a configured tool whose child IS
+    // joined (a confirmed child-env marker fired for that same child
+    // process, so it became its own subagent-role WorkRecord in this same
+    // worklog, ancestry-joined by matchChildren) AND whose result ALSO
+    // carried `usage` (the configured profile's own documented residual
+    // risk — see buildConfiguredProfile's doc comment). The joined child's
+    // own `usage` must count; the orchestrator span's `forwardedUsage` for
+    // the SAME profile must be excluded — counted exactly once, not twice
+    // (the runtime guard domain/task-view.ts#unjoinedForwardedUsage adds). ---
+    log("C1 scenario B: a configured tool with a joined child AND forwarded usage is counted exactly once");
+    const t6 = Date.parse("2026-09-19T16:00:00.000Z");
+    const joinedParent = makeRecord({
+      id: "task-configured-joined",
+      role: "orchestrator",
+      pid: 9000,
+      parentPid: 1,
+      startedAt: iso(t6),
+      settledAt: iso(t6 + 30_000),
+      wallMs: 30_000,
+      waitingMs: 0,
+      workMs: 30_000,
+      usage: { input: 50, output: 20, cacheRead: 0, cacheWrite: 0, cost: 0.005 },
+      costObserved: true,
+      runs: 1,
+      turns: 1,
+      tools: { my_review_tool: 1 },
+      subagents: [
+        {
+          toolCallId: "call-configured-joined-1",
+          agent: "reviewer",
+          mode: "task",
+          ms: 10_000,
+          profile: "configured",
+          // The SAME cost the joined child below also independently
+          // observed — if this were added on top, the hub row would be
+          // billed twice for the same nested work.
+          forwardedUsage: { input: 500, output: 200, cacheRead: 0, cacheWrite: 0, cost: 1.5 },
+        },
+      ],
+    });
+    const joinedChild = makeRecord({
+      id: "task-configured-joined-child",
+      role: "subagent",
+      pid: 9001,
+      parentPid: 9000,
+      project: "/repo/e2e-project",
+      startedAt: iso(t6 + 1_000),
+      settledAt: iso(t6 + 20_000),
+      wallMs: 19_000,
+      waitingMs: 0,
+      workMs: 19_000,
+      usage: { input: 500, output: 200, cacheRead: 0, cacheWrite: 0, cost: 1.5 },
+      costObserved: true,
+      profile: "configured",
+    });
+    worktreeALog.append(joinedParent);
+    worktreeALog.append(joinedChild);
+
+    const summary11 = await runSync(
+      { log: worktreeALog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
+      {},
+    );
+    assert.equal(summary11.error, undefined, `configured-tool-with-joined-child sync should not error: ${summary11.error}`);
+    const joinedRow = await findTaskEntry(superuserToken, "task-configured-joined");
+    assert.equal(joinedRow["input"], 550, "50 (orchestrator) + 500 (child, once) — never + the span's own forwardedUsage on top");
+    assert.equal(joinedRow["output"], 220);
+    assert.ok(Math.abs((joinedRow["cost"] as number) - 1.505) < 1e-9, "cost counted exactly once: 0.005 (orchestrator) + 1.5 (child) — the span's forwardedUsage excluded");
+    assert.equal(joinedRow["subagent_count"], 1, "exactly one child record was joined");
+    assert.equal(joinedRow["subagent_linkage"], "linked");
+    assert.equal(await countWorkRecords(superuserToken, joinedRow["id"] as string), 2, "both the orchestrator's own and the joined child's work_records rows");
+    log("  task-configured-joined: forwarded usage excluded in favour of the joined child's own usage — counted once, verified");
 
     log("ALL E2E ASSERTIONS PASSED");
   } finally {
