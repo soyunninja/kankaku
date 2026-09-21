@@ -85,15 +85,21 @@ Read `README.md` for behaviour and the record schema before changing code.
   child marker) always wins over `KANKAKU_ROLE=orchestrator`. Since 6b
   (`domain/subagent-profile.ts`, ADR 0020) this precedence is no longer
   gentle-pi-specific — `config.ts#detectRole`'s `childMarkers` parameter
-  generalises the check to any confirmed marker from the active
-  `SubagentProfile` set (built-in: gentle-pi, pi's bundled reference
-  example — no marker, ancestry-only — and pi-subagents' `PI_SUBAGENT_DEPTH`;
-  plus any `KANKAKU_SUBAGENT_CHILD_ENV`-configured one), with the exact same
-  "always wins" rule; every pre-6b 3-arg `detectRole` call site is
-  unaffected (its default `childMarkers` is still exactly
-  `GENTLE_PI_AGENTS_CHILD=1` alone). So a
-  `KANKAKU_ROLE=orchestrator` leaked into the environment (a shell rc,
-  tmux, CI) can never turn a genuine subagent into a confirmed,
+  generalises the check to any confirmed BUILT-IN marker from the active
+  `SubagentProfile` set (gentle-pi, pi's bundled reference example — no
+  marker, ancestry-only — and pi-subagents' `PI_SUBAGENT_DEPTH`), with the
+  exact same "always wins" rule; every pre-6b 3-arg `detectRole` call site
+  is unaffected (its default `childMarkers` is still exactly
+  `GENTLE_PI_AGENTS_CHILD=1` alone). **Since C2, a `KANKAKU_SUBAGENT_CHILD_ENV`-
+  configured marker is a SEPARATE, weaker 5th-param tier (`configuredMarkers`)
+  — it does NOT get the unconditional "always wins" rule**: it still
+  confirms a subagent for a non-interactive process, but never demotes an
+  interactive one (see the "Measurement rules" C2 bullet below) — an
+  earlier version of this precedence generalised both tiers identically,
+  which was the C2 bug: a configured marker present on the user's own
+  top-level interactive session silently made it `role: "subagent"` with
+  no parent. So a `KANKAKU_ROLE=orchestrator` leaked into the environment
+  (a shell rc, tmux, CI) can never turn a genuine subagent into a confirmed,
   independently-billed orchestrator; and `KANKAKU_ROLE=subagent` with no
   confirmed marker is ignored for an interactive (`ctx.mode === "tui"`)
   process — no subagent mechanism kankaku recognises ever launches its
@@ -300,6 +306,43 @@ Read `README.md` for behaviour and the record schema before changing code.
   (optional, set by `domain/work-tracker.ts#onTurnEnd` when any turn
   reports a real finite `cost`) is what `cost_quality` is computed from;
   adding it did not bump `WORK_RECORD_SCHEMA`.
+- **An ambiguous subagent-profile match contributes nothing that affects
+  money or joins** (C1). When 2+ profiles register the same tool name and
+  neither can be told apart (`domain/subagent-profile.ts#resolveToolProfile`,
+  SUBAGENT-REQ-005), the span still opens (best-effort agent/mode via
+  `mergeAgreeingLaunchInfo` — kept only when every candidate that reports
+  one agrees), but `usage`, `taskId` and `profile` are never taken from any
+  candidate (`safeAmbiguousResultInfo`). Forwarded usage in general is
+  never folded into the triggering `WorkRecord`'s own `usage` at write time
+  any more — it lives on the span as `SubagentSpan.forwardedUsage`
+  (`domain/work-tracker.ts#onToolEnd`), and `domain/task-view.ts#buildTasks`
+  is the only place (ADR 0006: aggregation stays in exactly one place) that
+  adds it to a task's total, and only when this task has no joined child
+  record confirmed by the **same** profile — closing the documented
+  "configured profile with both a marker and usage forwarding" double-count
+  risk (`buildConfiguredProfile`'s doc comment) with a runtime guard, not
+  just a README warning.
+- **A configured child-env marker never demotes an interactive session**
+  (C2). `KANKAKU_SUBAGENT_CHILD_ENV` markers are validated at load time
+  (`config.ts#validateSubagentChildEnvMarkers`): a name that looks
+  pi/shell/OS/npm-owned (`PI_CODING_AGENT`, `AI_AGENT`, generic shell/OS
+  vars, or a `PI_`/`TERM`/`LC_`/`NODE_`/`NPM_`/`KANKAKU_` prefix) is
+  rejected outright and never reaches the configured profile
+  (`KankakuConfig.rejectedSubagentChildEnvMarkers`, surfaced once via
+  `ctx.ui.notify` and `/kankaku doctor`). This denylist cannot enumerate
+  every possible ambient variable, so `config.ts#detectRole` also treats a
+  user-configured marker as a SEPARATE, weaker tier from the built-in ones
+  it hardcodes: like `KANKAKU_ROLE=subagent`, a configured marker matched
+  on an interactive process is ignored, never honoured
+  (`configuredMarkerIgnoredInteractive`) — a built-in marker
+  (`GENTLE_PI_AGENTS_CHILD`, `PI_SUBAGENT_DEPTH`) keeps its unconditional
+  precedence, since no built-in mechanism kankaku recognises ever launches
+  its child interactively. `adapters/process-identity.ts#resolveProcessIdentity`
+  only ever attributes `profile` when this process's `role` actually ended
+  up `"subagent"` — a configured marker present but ignored for
+  interactivity must never leave an `orchestrator` record carrying
+  `profile: "configured"`. See README "Subagents" > "Subagent profiles
+  (phase 6b)" for the user-facing rules.
 
 ## Code conventions
 

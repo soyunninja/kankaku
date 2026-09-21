@@ -539,10 +539,14 @@ Two packages registering a tool with the exact same name (`subagent`) is a
 real ambiguity kankaku never guesses through: which ecosystem package
 actually made a given call can only be told apart by its child-env marker
 (present in the *child* process, not visible from the parent's tool-call
-alone), so a call to `subagent` still opens a span (best-effort
-agent/mode), but is never attributed to one specific profile unless a
-marker resolves it. `/kankaku doctor` reports this as an "ambiguous tool
-name" line.
+alone), so a call to `subagent` still opens a span (best-effort agent/mode,
+kept only when every candidate profile that reports one agrees), but is
+never attributed to one specific profile unless a marker resolves it.
+**Nothing money- or join-affecting is ever taken from an ambiguous call
+either** — no `usage`, no `taskId` — even when one of the colliding
+profiles would normally forward one, because kankaku cannot tell whether
+that specific call actually came from that profile. `/kankaku doctor`
+reports this as an "ambiguous tool name" line.
 
 **`KANKAKU_SUBAGENT_TOOLS`** registers one or more additional tool names as
 subagent-opening spans, comma-separated, parsed exactly like
@@ -560,25 +564,68 @@ KANKAKU_SUBAGENT_TOOLS=my_subagent_tool
 KANKAKU_SUBAGENT_CHILD_ENV=MY_TOOL_CHILD=1
 ```
 
-A confirmed marker from a configured profile takes the exact same
-"always wins over `KANKAKU_ROLE`" precedence gentle-pi's own marker
-already had — see "Interactive sessions and `KANKAKU_ROLE`" above.
+**What NOT to use as a marker.** A configured marker must be exclusive to
+the child process your subagent tool actually spawns — never an ambient
+variable pi, your shell, npm, or the OS sets on *every* process. kankaku
+rejects an obviously-ambient name outright at load time (case-insensitive):
+`PI_CODING_AGENT` and `AI_AGENT` (pi sets both on every process it runs,
+not just a subagent's child), the generic shell/OS variables `PATH`,
+`HOME`, `USER`, `SHELL`, `PWD`, `CI`, `LANG`, `TMUX`, and anything prefixed
+`PI_`, `TERM`, `LC_`, `NODE_`, `NPM_`, or `KANKAKU_`. A rejected marker
+never reaches the configured profile — it is reported once via
+`ctx.ui.notify` and listed in `/kankaku doctor`, never silently accepted.
+This denylist cannot enumerate every possible ambient variable, though, so
+there is a second, runtime layer: **a configured marker never demotes an
+interactive session**, exactly like `KANKAKU_ROLE=subagent` already does
+not (see "Interactive sessions and `KANKAKU_ROLE`" above) — if a configured
+marker matches on a session that turns out to be interactive, kankaku
+treats it as the orchestrator it structurally must be and warns once
+(escalated to a stronger warning when that session also has no tracked
+ancestor at all, the clearest sign the "marker" is actually ambient). A
+**built-in** marker (`GENTLE_PI_AGENTS_CHILD`, `PI_SUBAGENT_DEPTH`) keeps
+the unconditional precedence it always had — no built-in mechanism kankaku
+recognises ever launches its child interactively, so this exception never
+actually applies to it in practice.
+
+**Verify with `/kankaku doctor`.** After configuring
+`KANKAKU_SUBAGENT_CHILD_ENV`, run `/kankaku doctor` from an ordinary
+top-level session: it must **not** report a "configured marker" or
+"rejected marker" line for a ordinary interactive session. If it does, the
+chosen name is either denylisted or ambient enough to trip the interactive
+guard — pick something the third-party tool's own child process sets that
+nothing else on the system would ever set.
+
+A confirmed marker from a configured profile that passes both layers above
+still takes the same "always wins over `KANKAKU_ROLE`" precedence gentle-pi's
+own marker already had for a **non-interactive** process — see "Interactive
+sessions and `KANKAKU_ROLE`" above.
 
 `/kankaku doctor` reports the active profile set, any configured tools/
-markers, and which profile matched each subagent record (or "unmatched"
-when no marker resolved it).
+markers, which profile matched each subagent record (or "unmatched" when
+no marker resolved it), any rejected marker names with why, and a
+configured-marker-ignored-for-interactivity contradiction when one occurs.
 
 ### In-process subagents (phase 6c)
 
 A subagent tool result's `usage` field — pi's own documented convention
 for "a tool making nested LLM calls should return their combined `Usage`
-as `usage`" — is added to the triggering record's own usage totals, once,
-right where it is read. gentle-pi is unaffected (its result never carries
-one — cost for its children is, and stays, tracked through the registry/
-ancestry join above). A profile whose marker can also produce an
-ancestry-joined child record with its own usage (pi-subagents) never
-forwards `usage` even when its result happens to carry one, to avoid
-counting the same nested work twice.
+as `usage`" — is recorded on the span itself (never folded into the
+triggering record's own usage totals at write time any more), and added to
+the *task's* aggregate total by `buildTasks` — the one place per-task
+usage is ever assembled — except when this same task also has a joined
+child record confirmed by the **same** profile: that child's own usage
+already carries this cost through its own confirmed-marker/ancestry join,
+so the span's forwarded figure is excluded instead of counted a second
+time. gentle-pi is unaffected (its result never carries one — cost for its
+children is, and stays, tracked through the registry/ancestry join above).
+A profile whose marker can also produce an ancestry-joined child record
+with its own usage (pi-subagents) never forwards `usage` even when its
+result happens to carry one, to avoid counting the same nested work twice
+by construction; a *configured* profile that declares **both** a marker
+and forwards usage relies on the runtime reconciliation above instead (see
+"Subagent profiles (phase 6b)"). **Usage is never forwarded for an
+ambiguous tool-name match** (2+ profiles registering the same name, e.g.
+`subagent`) — see "Subagent profiles (phase 6b)" above.
 
 Real in-process (same-OS-process, no separate `pid`) subagent nesting was
 investigated directly against pi's own source and documented API
@@ -1072,8 +1119,13 @@ Columns (in this order for CSV; the same fields for JSON):
 - `KANKAKU_SUBAGENT_CHILD_ENV`: `;`-separated `NAME=VALUE` (exact match) or
   bare `NAME` (presence-only) child-process env markers that confirm a
   process as the configured tool's subagent — parsed like `KANKAKU_SEGMENTS`,
-  malformed entries skipped. See "Subagents" > "Subagent profiles (phase
-  6b)". Unset by default.
+  malformed entries skipped. A name that looks pi/shell/OS/npm-owned
+  (`PI_CODING_AGENT`, `AI_AGENT`, `PATH`, `HOME`, `USER`, `SHELL`, `PWD`,
+  `CI`, `LANG`, `TMUX`, or a `PI_`/`TERM`/`LC_`/`NODE_`/`NPM_`/`KANKAKU_`
+  prefix, case-insensitive) is rejected outright, and even an accepted
+  marker never demotes an interactive session — see "Subagents" > "Subagent
+  profiles (phase 6b)" for both layers, and verify with `/kankaku doctor`.
+  Unset by default.
 - `KANKAKU_ROLE`: `orchestrator` or `subagent` — an explicit escape hatch
   for this process. Any other value is ignored. Scope it to one
   invocation (`KANKAKU_ROLE=orchestrator pi ...`) — **never export it in
