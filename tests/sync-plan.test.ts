@@ -402,3 +402,10 @@ test("an incremental sync never re-pushes the whole history at once: out-of-wind
   assert.equal(plan.toSync[0]!.id, "t499");
   assert.equal(plan.correctionsDeferred, 500 - MAX_CORRECTIONS_PER_RUN);
 });
+
+test("pendingTotal counts deferred corrections too, so sync status never under-reports how stale the hub is", () => {
+  const tasks = Array.from({ length: 120 }, (_, i) => makeTask(`t${i}`, i * 10, i * 10 + 5));
+  const state: SyncState = { target: TARGET, syncedThrough: iso(10_000_000), hashes: Object.fromEntries(tasks.map((t) => [t.id, "x"])) };
+  const plan = planSync(tasks, state, { target: TARGET, windowHours: 24 });
+  assert.equal(plan.toSync.length + plan.correctionsDeferred, 120);
+});

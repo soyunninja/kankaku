@@ -846,16 +846,28 @@ test("a USER prompt that races ahead of the previous settle keeps its own prompt
   assert.deepEqual(second.map((r) => [r.prompt, r.trigger, r.wallMs]), [["second", undefined, 900]]);
 });
 
-test("shutdown while a split is pending loses neither record", () => {
+test("shutdown while a record is set aside writes ONE record under the set-aside id — the same shape the crash checkpoint has, so a recovered copy can never overlap a second id", () => {
+  // Writing the two halves separately double-billed: the checkpoint on disk is
+  // the MERGED snapshot under the old id, and if the process dies before it is
+  // cleared, recovery re-appends it next to the new run's own record.
   const { clock, tracker } = splitTracker();
   tracker.onRunStart("first");
   tracker.onAgentStart();
+  const firstId = tracker.peek("interrupted")!.id;
   clock.advanceTo(1000);
+  tracker.onTurnEnd({ cost: 10 });
   tracker.onRunEnd([]);
   tracker.onAgentStart();
   clock.advanceTo(5000);
+  tracker.onTurnEnd({ cost: 7 });
+  const checkpoint = tracker.peek("interrupted")!;
   const records = tracker.shutdownAll();
-  assert.deepEqual(records.map((r) => [r.prompt === "first", r.status, r.wallMs]), [[true, "completed", 1000], [false, "interrupted", 4000]]);
+  assert.equal(records.length, 1);
+  assert.equal(records[0]!.id, firstId);
+  assert.equal(records[0]!.id, checkpoint.id);
+  assert.equal(records[0]!.usage.cost, 17);
+  assert.equal(records[0]!.wallMs, 5000);
+  assert.equal(records[0]!.status, "interrupted");
 });
 
 test("crash safety: while a record is set aside, the checkpoint (peek) still carries ITS cost — continuation case", () => {

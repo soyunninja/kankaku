@@ -364,8 +364,18 @@ export class WorkTracker {
   shutdownAll(): WorkRecordCore[] {
     const now = this.clock.now();
     const records: WorkRecordCore[] = [];
-    if (this.closing) records.push(this.buildRecordFrom(this.closing.state, this.closing.state.status, this.closing.at));
-    if (this.state) records.push(this.buildRecordFrom(this.state, "interrupted", now));
+    if (this.closing && this.state) {
+      // ONE record, the same shape and id as the crash checkpoint (peek). Two
+      // separate records here double-billed: if the process died before the
+      // checkpoint was cleared, recovery re-appended the merged snapshot next
+      // to the new run's own record — overlapping cost under two ids, which
+      // no dedupe by id can see.
+      records.push(this.buildRecordFrom(mergeRunStates(this.closing.state, this.state), "interrupted", now));
+    } else if (this.closing) {
+      records.push(this.buildRecordFrom(this.closing.state, this.closing.state.status, this.closing.at));
+    } else if (this.state) {
+      records.push(this.buildRecordFrom(this.state, "interrupted", now));
+    }
     this.closing = undefined;
     this.state = undefined;
     this.runAnnounced = false;

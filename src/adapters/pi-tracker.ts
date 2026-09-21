@@ -360,10 +360,10 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       // the crash-recovery checkpoint here instead. A no-op for a user prompt.
       const wasIdle = tracker.peek("interrupted") === undefined;
       tracker.onAgentStart();
-      if (wasIdle) {
-        statusBar.start(ctx);
-        checkpoint(ctx);
-      }
+      if (wasIdle) statusBar.start(ctx);
+      // Always: when this start set a record aside, the checkpoint on disk
+      // must become the merged snapshot now, not at the next turn_end.
+      checkpoint(ctx);
     }),
   );
 

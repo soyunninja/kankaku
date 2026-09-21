@@ -1,5 +1,6 @@
 import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { dedupeById } from "../domain/task-view.ts";
 import type { WorkLog } from "../ports/work-log.ts";
 import type { WorkRecord } from "../domain/work-record.ts";
 import { isWorkRecord } from "../domain/work-record.ts";
@@ -59,6 +60,8 @@ export class JsonlWorkLog implements WorkLog {
         // Tolerate malformed lines (e.g. a torn write); skip them.
       }
     }
-    return records;
+    // One id can be in the file twice (written at settle, then re-appended by
+    // crash recovery): every reader gets it once — see dedupeById.
+    return dedupeById(records);
   }
 }

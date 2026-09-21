@@ -245,7 +245,8 @@ function persistError(deps: SyncRunnerDeps, state: ReturnType<SyncStateStore["re
 
 /** Number of tasks pending a sync right now, for `/kankaku sync status` — computed locally, no network. */
 export function pendingCount(tasks: TaskView[], state: ReturnType<SyncStateStore["read"]>, target: string, windowHours?: number): number {
-  return planSync(tasks, state, { target, ...(windowHours !== undefined ? { windowHours } : {}) }).toSync.length;
+  const plan = planSync(tasks, state, { target, ...(windowHours !== undefined ? { windowHours } : {}) });
+  return plan.toSync.length + plan.correctionsDeferred;
 }
 
 /**
@@ -264,7 +265,8 @@ export function computeSyncStatus(
   const state = stateStore.read();
   const tasks = buildTasks(log.readAll());
   const plan = planSync(tasks, state, { target, ...(windowHours !== undefined ? { windowHours } : {}) });
-  return { state, pending: plan.toSync.length, staleOutsideWindow: plan.staleOutsideWindow.length };
+  // Deferred corrections are pending too: the cap only spreads them over runs.
+  return { state, pending: plan.toSync.length + plan.correctionsDeferred, staleOutsideWindow: plan.staleOutsideWindow.length };
 }
 
 /**

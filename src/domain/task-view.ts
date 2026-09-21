@@ -114,6 +114,17 @@ function isConfirmedOrchestrator(record: WorkRecord): boolean {
   return record.role === "orchestrator" && record.roleConfidence !== "uncertain";
 }
 
+/** How long after a record settled a child it launched may still start and be joined to it by span evidence (see {@link matchChildren}). */
+const LATE_CHILD_GRACE_MS = 5000;
+
+/** `true` when `orchestrator` opened more subagent spans of `child`'s profile than it has been given children for. A missing profile on either side matches any. */
+function hasUnclaimedSpan(orchestrator: WorkRecord, child: WorkRecord, alreadyAssigned: WorkRecord[]): boolean {
+  const sameKind = (profile: string | undefined): boolean => child.profile === undefined || profile === undefined || profile === child.profile;
+  const spans = orchestrator.subagents.filter((span) => sameKind(span.profile)).length;
+  const claimed = alreadyAssigned.filter((other) => sameKind(other.profile)).length;
+  return spans > claimed;
+}
+
 /** A pid means nothing across machines. Only decidable when both records name theirs (`machine` is written when a hub is configured). */
 function differentMachines(a: WorkRecord, b: WorkRecord): boolean {
   return a.machine !== undefined && b.machine !== undefined && a.machine !== b.machine;
@@ -126,13 +137,24 @@ function differentMachines(a: WorkRecord, b: WorkRecord): boolean {
  * the later `settledAt` (a checkpoint taken while a newer run was folded in
  * is later AND larger than the settled copy; a stale one is earlier).
  */
-function dedupeById(records: WorkRecord[]): WorkRecord[] {
+/** Later `settledAt` wins; on a tie the copy carrying more cost, then more wall time — never insertion order. */
+function moreComplete(candidate: WorkRecord, seen: WorkRecord): boolean {
+  const byEnd = toMs(candidate.settledAt) - toMs(seen.settledAt);
+  if (byEnd !== 0) return byEnd > 0;
+  const byCost = finiteOrZero(candidate.usage?.cost) - finiteOrZero(seen.usage?.cost);
+  if (byCost !== 0) return byCost > 0;
+  return candidate.wallMs > seen.wallMs;
+}
+
+export function dedupeById(records: WorkRecord[]): WorkRecord[] {
   const byId = new Map<string, WorkRecord>();
   for (const record of records) {
     const seen = byId.get(record.id);
-    if (!seen || toMs(record.settledAt) > toMs(seen.settledAt)) byId.set(record.id, record);
+    if (!seen || moreComplete(record, seen)) byId.set(record.id, record);
   }
-  return byId.size === records.length ? records : records.filter((record) => byId.get(record.id) === record);
+  if (byId.size === records.length) return records;
+  const kept = new Set(byId.values());
+  return records.filter((record) => kept.delete(record));
 }
 
 /**
@@ -159,7 +181,7 @@ function dedupeById(records: WorkRecord[]): WorkRecord[] {
  * of a reused pid) or newer than the child is never eligible; a child with
  * no `orchestratorRef` is never rescued at all.
  */
-function rescueByParentIdentity(child: WorkRecord, orchestrators: WorkRecord[]): WorkRecord | undefined {
+function rescueByParentIdentity(child: WorkRecord, orchestrators: WorkRecord[], assigned: Map<string, WorkRecord[]>): WorkRecord | undefined {
   const ref = child.orchestratorRef;
   if (!ref) return undefined;
   const processStart = toMs(ref.startedAt);
@@ -168,6 +190,7 @@ function rescueByParentIdentity(child: WorkRecord, orchestrators: WorkRecord[]):
 
   let best: WorkRecord | undefined;
   let bestStart = Number.NEGATIVE_INFINITY;
+  let bestLaunched = false;
   for (const orchestrator of orchestrators) {
     if (orchestrator.pid !== ref.pid) continue;
     // A pid is only unique on ONE machine: a worklog shared between two
@@ -175,9 +198,13 @@ function rescueByParentIdentity(child: WorkRecord, orchestrators: WorkRecord[]):
     if (differentMachines(orchestrator, child)) continue;
     const start = toMs(orchestrator.startedAt);
     if (!(start >= processStart && start <= childStart)) continue;
-    if (start > bestStart) {
+    // Among the proven process's records, one that actually launched a
+    // subagent of this kind beats a newer one that launched nothing.
+    const launched = hasUnclaimedSpan(orchestrator, child, assigned.get(orchestrator.id) ?? []);
+    if (best === undefined || (launched && !bestLaunched) || (launched === bestLaunched && start > bestStart)) {
       best = orchestrator;
       bestStart = start;
+      bestLaunched = launched;
     }
   }
   return best;
@@ -205,7 +232,7 @@ function matchChildren(allRecords: WorkRecord[]): {
 } {
   const records = dedupeById(allRecords);
   const orchestrators = records.filter(isConfirmedOrchestrator);
-  const subagents = records.filter((record) => record.role === "subagent");
+  const subagents = records.filter((record) => record.role === "subagent").sort((a, b) => toMs(a.startedAt) - toMs(b.startedAt));
 
   const childrenByOrchestratorId = new Map<string, WorkRecord[]>();
   for (const orchestrator of orchestrators) {
@@ -219,6 +246,7 @@ function matchChildren(allRecords: WorkRecord[]): {
     let best: WorkRecord | undefined;
     let bestStart = Number.NEGATIVE_INFINITY;
     let bestSameProject = false;
+    let bestLaunched = false;
 
     for (const orchestrator of orchestrators) {
       if (orchestrator.pid !== child.parentPid) continue;
@@ -226,18 +254,32 @@ function matchChildren(allRecords: WorkRecord[]): {
 
       const parentStart = toMs(orchestrator.startedAt);
       const parentEnd = toMs(orchestrator.settledAt);
-      if (childStart < parentStart || childStart > parentEnd) continue;
+      if (childStart < parentStart) continue;
+      // Evidence that THIS record launched a subagent of the child's kind
+      // and has not been given a child for every such span yet.
+      const launched = hasUnclaimedSpan(orchestrator, child, childrenByOrchestratorId.get(orchestrator.id)!);
+      // A record can be closed the instant the next run begins (see
+      // WorkTracker.settleAll): its background child then appears a moment
+      // AFTER it settled, inside the next record's window. Only a record with
+      // span evidence gets this short grace — never time alone.
+      const inWindow = childStart <= parentEnd;
+      if (!inWindow && !(launched && childStart - parentEnd <= LATE_CHILD_GRACE_MS)) continue;
 
       const sameProject = orchestrator.project === child.project;
-      const better = best === undefined || (sameProject && !bestSameProject) || (sameProject === bestSameProject && parentStart > bestStart);
+      const better =
+        best === undefined ||
+        (launched && !bestLaunched) ||
+        (launched === bestLaunched && sameProject && !bestSameProject) ||
+        (launched === bestLaunched && sameProject === bestSameProject && parentStart > bestStart);
       if (better) {
         best = orchestrator;
         bestStart = parentStart;
         bestSameProject = sameProject;
+        bestLaunched = launched;
       }
     }
 
-    best ??= rescueByParentIdentity(child, orchestrators);
+    best ??= rescueByParentIdentity(child, orchestrators, childrenByOrchestratorId);
 
     if (best) {
       childrenByOrchestratorId.get(best.id)!.push(child);
@@ -280,10 +322,24 @@ function unjoinedForwardedUsage(orchestrator: WorkRecord, subagents: WorkRecord[
   // profile cancelling this span's forwarded usage) under-bills instead,
   // which is the safer side to be wrong on.
   const launchedHere = subagents.filter((child) => child.parentPid === orchestrator.pid);
-  const joinedProfiles = new Set(launchedHere.map((child) => child.profile).filter((id): id is string => id !== undefined));
-  return orchestrator.subagents
-    .filter((span) => span.forwardedUsage !== undefined && !(span.profile !== undefined && joinedProfiles.has(span.profile)))
-    .map((span) => span.forwardedUsage!);
+  // One joined child accounts for ONE span of its profile, not for all of
+  // them: three spans and one child record means two children never wrote a
+  // record, and their forwarded usage is the only trace of their cost.
+  const remaining = new Map<string, number>();
+  for (const child of launchedHere) {
+    if (child.profile !== undefined) remaining.set(child.profile, (remaining.get(child.profile) ?? 0) + 1);
+  }
+  const kept: Array<Partial<UsageTotals>> = [];
+  for (const span of orchestrator.subagents) {
+    if (span.forwardedUsage === undefined) continue;
+    const left = span.profile !== undefined ? (remaining.get(span.profile) ?? 0) : 0;
+    if (left > 0) {
+      remaining.set(span.profile!, left - 1);
+      continue;
+    }
+    kept.push(span.forwardedUsage);
+  }
+  return kept;
 }
 
 function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskView {

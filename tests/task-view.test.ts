@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildSessions, buildTasks, detectSameProcessOverlaps, orphanSubagents, sumUsage, uncertainRecords } from "../src/domain/task-view.ts";
+import { buildSessions, buildTasks, dedupeById, detectSameProcessOverlaps, orphanSubagents, sumUsage, uncertainRecords } from "../src/domain/task-view.ts";
 import type { SubagentSpan, UsageTotals, WorkRecord } from "../src/domain/work-record.ts";
 
 function iso(secondsFromEpoch: number): string {
@@ -743,4 +743,31 @@ test("the primary parentPid+window join never crosses machines either", () => {
   const parent = makeRecord({ id: "p1", pid: 100, machine: "mac-a", startedAt: iso(0), settledAt: iso(100) });
   const child = makeRecord({ id: "c1", role: "subagent", pid: 200, parentPid: 100, machine: "mac-b", startedAt: iso(10), settledAt: iso(20) });
   assert.equal(buildTasks([parent, child])[0]!.subagents.length, 0);
+});
+
+test("dedupe tie-break: two copies with the SAME settledAt keep the more complete one, whatever their order", () => {
+  const small = makeRecord({ id: "same", startedAt: iso(0), settledAt: iso(10), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 3 } });
+  const large = makeRecord({ id: "same", startedAt: iso(0), settledAt: iso(10), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 8 } });
+  assert.equal(buildTasks([small, large])[0]!.usage.cost, 8);
+  assert.equal(buildTasks([large, small])[0]!.usage.cost, 8);
+  assert.equal(dedupeById([small, large, small]).length, 1);
+});
+
+test("rescue prefers the record that actually opened a subagent span over a newer one that launched nothing", () => {
+  // A split closes R2 the instant R3 begins; R2's background child shows up
+  // just after. It belongs to R2 (which has the span), not to R3.
+  const r2 = makeRecord({ id: "r2", pid: 100, startedAt: iso(20), settledAt: iso(30), subagents: [span({ profile: "gentle-pi" })] });
+  const r3 = makeRecord({ id: "r3", pid: 100, startedAt: iso(30), settledAt: iso(90) });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, profile: "gentle-pi", startedAt: iso(31), settledAt: iso(80), orchestratorRef: parentRef() });
+  // iso(31) is inside r3's window, so the PRIMARY join takes r3 unless spans are considered there too.
+  const byId = new Map(buildTasks([r2, r3, child]).map((task) => [task.id, task.subagents.length]));
+  assert.equal(byId.get("r2"), 1);
+  assert.equal(byId.get("r3"), 0);
+});
+
+test("forwarded usage: N joined children cancel at most N spans of their profile, never all of them", () => {
+  const spans = [1, 2, 3].map((n) => span({ toolCallId: `s${n}`, profile: "configured", forwardedUsage: { cost: 1 } }));
+  const parent = makeRecord({ id: "p1", pid: 100, startedAt: iso(0), settledAt: iso(100), subagents: spans });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 200, parentPid: 100, profile: "configured", startedAt: iso(5), settledAt: iso(50), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 1 } });
+  assert.equal(buildTasks([parent, child])[0]!.usage.cost, 3); // child 1 + two uncancelled spans
 });
