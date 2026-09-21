@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { platform, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -189,6 +189,42 @@ test("refresh never throws: a failing fetchCatalog resolves undefined and leaves
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test(
+  "refresh never tightens the mode of an already-existing ~/.kankaku-shaped directory (R2 — cwd === $HOME makes it the same path as a project's own default KANKAKU_DIR, which must never be tightened)",
+  { skip: !posix },
+  async () => {
+    const dir = makeDir();
+    try {
+      // Simulate a project's own `.kankaku` dir already sitting at this
+      // exact path (the case when pi runs with cwd === $HOME and the
+      // project uses the default relative KANKAKU_DIR) with a looser,
+      // group/world-readable mode a project dir is allowed to have.
+      // `makeDir()` already created `dir` (mkdtemp always uses 0700), so an
+      // explicit chmod is needed — `mkdirSync`'s own `mode` option only
+      // applies to a directory it actually creates, never one that exists.
+      chmodSync(dir, 0o755);
+      assert.equal(statSync(dir).mode & 0o777, 0o755);
+
+      const catalog = new CachedCatalog({
+        filePath: join(dir, "catalog.json"),
+        url: "https://pb.example.com",
+        clock: new FakeClock(1000),
+        fetchCatalog: async () => ({ clients: CLIENTS, projects: PROJECTS }),
+      });
+
+      await catalog.refresh();
+
+      // The directory's mode must be completely untouched...
+      assert.equal(statSync(dir).mode & 0o777, 0o755);
+      // ...while the catalog cache FILE itself is still always written 0600.
+      assert.equal(statSync(join(dir, "catalog.json")).mode & 0o777, 0o600);
+    } finally {
+      chmodSync(dir, 0o700);
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
 
 test("readDisk tolerates malformed JSON and a structurally invalid snapshot", () => {
   const dir = makeDir();

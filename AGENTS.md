@@ -150,7 +150,14 @@ Read `README.md` for behaviour and the record schema before changing code.
   `0600` (`adapters/file-modes.ts`) — an existing looser mode is tightened,
   best-effort, whenever encountered. Not applied to a project's own
   `<KANKAKU_DIR>` (`worklog.jsonl`, `inflight/`, …), which is project-local
-  and frequently committed alongside.
+  and frequently committed alongside. **`~/.kankaku` itself is never
+  chmod'd (R2)**: when pi runs with `cwd === $HOME`, a project's own
+  default `KANKAKU_DIR` (`.kankaku`, relative) resolves to that exact same
+  path, so tightening the directory would tighten a project's kankaku dir
+  by accident. Only what this package exclusively owns is tightened: the
+  `run/` subdirectory (`MachineProcessRegistry`) and the catalog cache
+  *file* (`CachedCatalog`, always written 0600 via its own tmp+rename, so
+  it needs no separate chmod either) — never the shared parent directory.
 - Bump `WORK_RECORD_SCHEMA` when a persisted field changes meaning or is
   removed. Adding optional fields does not require a bump.
 - Tagged tool segments (`segments`) are the union of milliseconds per tag

@@ -1,9 +1,9 @@
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { Client, Project } from "../domain/work-target.ts";
 import type { Clock } from "../ports/clock.ts";
 import type { Catalog, CatalogSnapshot } from "../ports/catalog.ts";
-import { ensureDirMode, OWNER_FILE_MODE } from "./file-modes.ts";
+import { OWNER_FILE_MODE } from "./file-modes.ts";
 
 /** Six hours in milliseconds — clients and projects change rarely. */
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
@@ -99,9 +99,18 @@ export class CachedCatalog implements Catalog {
   private writeDisk(snapshot: CatalogSnapshot): void {
     try {
       // This cache lives under `~/.kankaku` (machine-wide, not a project's
-      // own KANKAKU_DIR); `ensureDirMode` also tightens an already-existing,
-      // looser `~/.kankaku` (e.g. from an older kankaku build) — F4.
-      ensureDirMode(dirname(this.deps.filePath));
+      // own KANKAKU_DIR) — but `~/.kankaku` itself is never mode-tightened
+      // here (R2): when pi runs with cwd === $HOME, a project's own default
+      // KANKAKU_DIR (`.kankaku`, relative) resolves to this exact same
+      // path, and a project's kankaku dir must never be tightened
+      // (AGENTS.md). Only what this package exclusively owns is touched:
+      // the directory is merely created if missing, never chmod'd, and the
+      // file itself is always written fresh via tmp+rename with
+      // OWNER_FILE_MODE below, which already guarantees 0600 on every
+      // write regardless of whatever mode an older file at this path (or
+      // an older kankaku build) left behind — a rename replaces the whole
+      // inode, so a stale looser mode can never survive a write.
+      mkdirSync(dirname(this.deps.filePath), { recursive: true });
       const tmp = `${this.deps.filePath}.${process.pid}.${Date.now()}.tmp`;
       // Owner-only: this file names every client/project the machine's user has touched.
       writeFileSync(tmp, JSON.stringify(snapshot), { mode: OWNER_FILE_MODE });
