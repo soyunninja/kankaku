@@ -8,6 +8,8 @@ import { createSessionTarget } from "../src/adapters/session-target.ts";
 import type { SyncCommandDeps } from "../src/adapters/kankaku-command.ts";
 import { localDay } from "../src/domain/day.ts";
 import { WorkTracker } from "../src/domain/work-tracker.ts";
+import { BUILTIN_SUBAGENT_PROFILES } from "../src/domain/subagent-profile.ts";
+import type { SubagentProfile } from "../src/domain/subagent-profile.ts";
 import type { Clock } from "../src/ports/clock.ts";
 import type { Catalog, CatalogSnapshot } from "../src/ports/catalog.ts";
 import type { InflightStore } from "../src/ports/inflight-store.ts";
@@ -186,7 +188,7 @@ test("a full run with a subagent call and an interactive tool appends exactly on
   const tracker = new WorkTracker({
     clock,
     interactiveTools: ["ask_user_question", "ask_user_choice"],
-    subagentTool: "subagent_run",
+    subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[],
   });
   const log = new FakeWorkLog();
   const pi = new FakePi();
@@ -266,7 +268,7 @@ test("a full run with a subagent call and an interactive tool appends exactly on
 
 test("before_agent_start alone saves an in-flight checkpoint, so a crash on the first turn is still recoverable", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const inflight = new FakeInflightStore();
   const pi = new FakePi();
@@ -284,7 +286,7 @@ test("before_agent_start alone saves an in-flight checkpoint, so a crash on the 
 
 test("session_shutdown while running appends an interrupted record", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -301,7 +303,7 @@ test("session_shutdown while running appends an interrupted record", async () =>
 
 test("session_shutdown while idle appends nothing", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -315,7 +317,7 @@ test("session_shutdown while idle appends nothing", async () => {
 
 test("registers a kankaku command that appends a durable summary entry", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: string[] = [];
@@ -336,7 +338,7 @@ test("registers a kankaku command that appends a durable summary entry", async (
 
 test("a handler failure does not throw and notifies ui when available", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log: WorkLog = {
     append: () => {
       throw new Error("disk full");
@@ -368,7 +370,7 @@ test("a handler failure does not throw and notifies ui when available", async ()
 
 test("session_shutdown also clears status and the in-flight checkpoint when log.append throws", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log: WorkLog = {
     append: () => {
       throw new Error("disk full");
@@ -400,7 +402,7 @@ test("session_shutdown also clears status and the in-flight checkpoint when log.
 
 test("turn_end with usage missing cost accumulates zero cost", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const inflight = new FakeInflightStore();
   const pi = new FakePi();
@@ -425,7 +427,7 @@ test("turn_end with usage missing cost accumulates zero cost", async () => {
 
 test("turn_end and tool_execution_end save an in-flight checkpoint with the eventual record's id", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const inflight = new FakeInflightStore();
   const pi = new FakePi();
@@ -468,7 +470,7 @@ test("turn_end and tool_execution_end save an in-flight checkpoint with the even
 
 test("session_start recovers stale checkpoints into the log and notifies", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const staleRecord = makeRecord({ id: "stale-1", status: "completed" });
   const inflight = new FakeInflightStore([staleRecord]);
@@ -489,7 +491,7 @@ test("session_start recovers stale checkpoints into the log and notifies", async
 
 test("session_start with no stale checkpoints appends nothing and does not notify", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const inflight = new FakeInflightStore();
   const pi = new FakePi();
@@ -506,7 +508,7 @@ test("session_start with no stale checkpoints appends nothing and does not notif
 
 test("'kankaku tasks' appends a durable report entry for the current session, unioning a background child's span", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: string[] = [];
@@ -578,7 +580,7 @@ test("'kankaku tasks' appends a durable report entry for the current session, un
 
 test("'kankaku' falls back to notify when no UI is available", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: string[] = [];
@@ -594,7 +596,7 @@ test("'kankaku' falls back to notify when no UI is available", async () => {
 
 test("createPiTracker registers the kankaku-report entry renderer", () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
   assert.ok(pi.renderers.has("kankaku-report"));
@@ -602,7 +604,7 @@ test("createPiTracker registers the kankaku-report entry renderer", () => {
 
 test("'kankaku sessions all' appends a durable report entry with sessions across every day", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: string[] = [];
@@ -645,7 +647,7 @@ test("'kankaku sessions all' appends a durable report entry with sessions across
 });
 
 test("buildRecord attaches roleConfidence 'uncertain' when configured, and omits it otherwise", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -667,7 +669,7 @@ test("buildRecord attaches roleConfidence 'uncertain' when configured, and omits
 });
 
 test("F3: resolveRoleConfidence is consulted at session_start with ctx.mode === 'tui' (interactive), never marking a TUI session uncertain", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx({ mode: "tui" });
@@ -695,7 +697,7 @@ test("F3: resolveRoleConfidence is consulted at session_start with ctx.mode === 
 });
 
 test("F3: resolveRoleConfidence receives isInteractive=false for a non-tui mode (rpc/json/print), matching an 'uncertain' verdict onto the record", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx({ mode: "rpc" });
@@ -718,7 +720,7 @@ test("F3: resolveRoleConfidence receives isInteractive=false for a non-tui mode 
 });
 
 test("F3: without resolveRoleConfidence configured, a static roleConfidence still applies unchanged (back-compat, no session_start required)", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -740,7 +742,7 @@ test("F3: without resolveRoleConfidence configured, a static roleConfidence stil
 });
 
 test("buildRecord attaches orchestratorRef when configured (subagent discovered its ancestor via the registry)", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -764,7 +766,7 @@ test("buildRecord attaches orchestratorRef when configured (subagent discovered 
 
 test("buildRecord fills client from env config and sessionName from pi.getSessionName()", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   pi.sessionName = "billing sprint";
@@ -792,7 +794,7 @@ test("buildRecord fills client from env config and sessionName from pi.getSessio
 
 test("buildRecord carries sessionDir when the session manager reports a non-default one", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx({
@@ -824,7 +826,7 @@ test("buildRecord carries sessionDir when the session manager reports a non-defa
 
 test("buildRecord omits sessionDir when the session manager reports the default one", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx({
@@ -857,7 +859,7 @@ test("buildRecord omits sessionDir when the session manager reports the default 
 
 test("buildRecord omits sessionDir when the session manager (an older pi version) exposes no usesDefaultSessionDir at all", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx(); // makeFakeCtx's default sessionManager has no usesDefaultSessionDir/getSessionDir
@@ -881,7 +883,7 @@ test("buildRecord omits sessionDir when the session manager (an older pi version
 
 test("buildRecord omits sessionDir (never throws) when usesDefaultSessionDir itself throws", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx({
@@ -916,7 +918,7 @@ test("buildRecord omits sessionDir (never throws) when usesDefaultSessionDir its
 
 test("buildRecord falls back to the project client when env and session are absent", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -940,7 +942,7 @@ test("buildRecord falls back to the project client when env and session are abse
 
 test("session_start restores the session client from the last kankaku-client custom entry, taking precedence over env", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const entries = [
@@ -976,7 +978,7 @@ test("session_start restores the session client from the last kankaku-client cus
 
 test("session_start restores an undefined session client when the last kankaku-client entry cleared it", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const entries = [
@@ -1011,7 +1013,7 @@ test("session_start restores an undefined session client when the last kankaku-c
 
 test("'kankaku client <name>' sets the session client, persists it, and confirms via the durable report card", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1037,7 +1039,7 @@ test("'kankaku client <name>' sets the session client, persists it, and confirms
 
 test("'kankaku client' rejects an invalid name and notifies without setting or persisting anything", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: Array<{ message: string; type?: string }> = [];
@@ -1055,7 +1057,7 @@ test("'kankaku client' rejects an invalid name and notifies without setting or p
 
 test("'kankaku client' with no argument shows the effective client and its source", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1082,7 +1084,7 @@ test("'kankaku client' with no argument shows the effective client and its sourc
 
 test("'kankaku client' shows no client when none of the sources resolve", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1098,7 +1100,7 @@ test("'kankaku client' shows no client when none of the sources resolve", async 
 
 test("'kankaku client --clear' clears the session client label and falls back to the next source", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1129,7 +1131,7 @@ test("'kankaku client --clear' clears the session client label and falls back to
 test("kankaku command exposes getArgumentCompletions offering the known subcommands", async () => {
   const pi = new FakePi();
   createPiTracker(pi as never, {
-    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" }),
+    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] }),
     log: new FakeWorkLog(),
     inflight: new FakeInflightStore(),
     role: "orchestrator",
@@ -1153,7 +1155,7 @@ test("kankaku command's getArgumentCompletions offers distinct client names afte
   log.append(makeRecord({ id: "r3", client: "acme", pid: 3 }));
   const pi = new FakePi();
   createPiTracker(pi as never, {
-    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" }),
+    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] }),
     log,
     inflight: new FakeInflightStore(),
     role: "orchestrator",
@@ -1174,7 +1176,7 @@ test("kankaku command's getArgumentCompletions caches client names and does not 
   log.append(makeRecord({ id: "r1", client: "acme" }));
   const pi = new FakePi();
   createPiTracker(pi as never, {
-    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" }),
+    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] }),
     log,
     inflight: new FakeInflightStore(),
     role: "orchestrator",
@@ -1194,7 +1196,7 @@ test("kankaku command's getArgumentCompletions refreshes the client name cache a
   const clock = new FakeClock(0);
   const log = new FakeWorkLogWithoutVersion();
   log.append(makeRecord({ id: "r1", client: "acme" }));
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const ctx = makeFakeCtx();
 
@@ -1222,7 +1224,7 @@ test("kankaku command's getArgumentCompletions refreshes the client name cache w
   log.append(makeRecord({ id: "r1", client: "acme" }));
   const pi = new FakePi();
   createPiTracker(pi as never, {
-    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" }),
+    tracker: new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] }),
     log,
     inflight: new FakeInflightStore(),
     role: "orchestrator",
@@ -1248,7 +1250,7 @@ test("kankaku command's getArgumentCompletions refreshes the client name cache w
 
 test("'kankaku clients' appends a durable report entry with per-client totals for today", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: string[] = [];
@@ -1283,7 +1285,7 @@ test("'kankaku clients' appends a durable report entry with per-client totals fo
 
 test("'kankaku export' writes today's tasks as CSV by default and confirms via the durable report card", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: string[] = [];
@@ -1326,7 +1328,7 @@ test("'kankaku export' writes today's tasks as CSV by default and confirms via t
 
 test("'kankaku export json all' writes every task as JSON with the 'all' filename suffix", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1359,7 +1361,7 @@ test("'kankaku export json all' writes every task as JSON with the 'all' filenam
 
 test("'kankaku export' notifies an error when export is not configured", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: Array<{ message: string; type?: string }> = [];
@@ -1377,7 +1379,7 @@ test("'kankaku export' notifies an error when export is not configured", async (
 
 test("a subagent record never carries a client even when env and project sources resolve", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1404,7 +1406,7 @@ test("a subagent record never carries a client even when env and project sources
 
 test("the status line shows a clock emoji followed by a space and mm:ss", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const statusCalls: Array<[string, string | undefined]> = [];
   const ctx = makeFakeCtx({
@@ -1420,7 +1422,7 @@ test("the status line shows a clock emoji followed by a space and mm:ss", async 
 
 test("the project client is read once per run, not on every checkpoint", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1452,7 +1454,7 @@ test("the project client is read once per run, not on every checkpoint", async (
 
 test("the status line shows the client next to the elapsed time when one resolves", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const statusCalls: Array<[string, string | undefined]> = [];
   const ctx = makeFakeCtx({
@@ -1477,7 +1479,7 @@ test("the status line shows the client next to the elapsed time when one resolve
 
 test("the client stays visible in the status bar while idle, and clears when no client resolves", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const statusCalls: Array<[string, string | undefined]> = [];
   const ctx = makeFakeCtx({
@@ -1512,7 +1514,7 @@ test("the client stays visible in the status bar while idle, and clears when no 
 
 test("no idle status is shown when no client resolves", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const statusCalls: Array<[string, string | undefined]> = [];
   const ctx = makeFakeCtx({
@@ -1526,7 +1528,7 @@ test("no idle status is shown when no client resolves", async () => {
 
 test("session_start notifies a hub config error exactly once, even across repeated session_start events", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const notified: Array<{ message: string; type?: string }> = [];
   const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
@@ -1549,7 +1551,7 @@ test("session_start notifies a hub config error exactly once, even across repeat
 
 test("R1: session_start notifies once (warning) when KANKAKU_ROLE=subagent was ignored for an interactive session, even across repeated session_start events", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const notified: Array<{ message: string; type?: string }> = [];
   const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
@@ -1574,7 +1576,7 @@ test("R1: session_start notifies once (warning) when KANKAKU_ROLE=subagent was i
 
 test("R1: session_start never notifies the override-ignored warning when overrideIgnoredInteractive is not set", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const notified: Array<{ message: string; type?: string }> = [];
   const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
@@ -1595,7 +1597,7 @@ test("R1: session_start never notifies the override-ignored warning when overrid
 
 test("buildRecord attaches clientId/clientName/projectId/projectName and machine when a hub target resolves for the run", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1640,7 +1642,7 @@ test("buildRecord attaches clientId/clientName/projectId/projectName and machine
 
 test("buildRecord omits every hub field for a subagent, even when a hub is configured for the process", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const ctx = makeFakeCtx();
@@ -1683,7 +1685,7 @@ test("buildRecord omits every hub field for a subagent, even when a hub is confi
 
 test("session_start shows the picker when the hub is configured and nothing resolves, and updates the idle status afterwards", async () => {
   const clock = new FakeClock(0);
-  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const statusCalls: Array<[string, string | undefined]> = [];
   const selectResponses = ["Acme", "(no project)"];
@@ -1750,7 +1752,7 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 test("auto-sync: agent_settled fires sync.run() for the orchestrator role when configured and enabled", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const ctx = makeFakeCtx();
   const sync = new FakeSync();
@@ -1773,7 +1775,7 @@ test("auto-sync: agent_settled fires sync.run() for the orchestrator role when c
 });
 
 test("auto-sync: session_start fires sync.run() after crash recovery", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const ctx = makeFakeCtx();
   const sync = new FakeSync();
@@ -1796,7 +1798,7 @@ test("auto-sync: session_start fires sync.run() after crash recovery", async () 
 });
 
 test("auto-sync: a subagent process never triggers a sync", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const ctx = makeFakeCtx();
   const sync = new FakeSync();
@@ -1819,7 +1821,7 @@ test("auto-sync: a subagent process never triggers a sync", async () => {
 });
 
 test("auto-sync: an uncertain-role orchestrator never triggers a sync (ADR 0022)", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const ctx = makeFakeCtx();
   const sync = new FakeSync();
@@ -1843,7 +1845,7 @@ test("auto-sync: an uncertain-role orchestrator never triggers a sync (ADR 0022)
 });
 
 test("auto-sync: KANKAKU_SYNC_AUTO=0 (autoSyncEnabled: false) disables both triggers", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const ctx = makeFakeCtx();
   const sync = new FakeSync();
@@ -1867,7 +1869,7 @@ test("auto-sync: KANKAKU_SYNC_AUTO=0 (autoSyncEnabled: false) disables both trig
 });
 
 test("auto-sync: without a hub configured (no sync deps), nothing is triggered and nothing throws", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const ctx = makeFakeCtx();
 
@@ -1884,7 +1886,7 @@ test("auto-sync: without a hub configured (no sync deps), nothing is triggered a
 });
 
 test("auto-sync never notifies on success", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const notified: Array<{ message: string; type?: string }> = [];
   const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
@@ -1907,7 +1909,7 @@ test("auto-sync never notifies on success", async () => {
 });
 
 test("auto-sync notifies at most once per session on failure", async () => {
-  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentTool: "subagent_run" });
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const pi = new FakePi();
   const notified: Array<{ message: string; type?: string }> = [];
   const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });

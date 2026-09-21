@@ -126,7 +126,7 @@ export default function kankaku(pi: ExtensionAPI): void {
   const tracker = new WorkTracker({
     clock: { now: () => Date.now() },
     interactiveTools: config.interactiveTools,
-    subagentTool: config.subagentTool,
+    subagentProfiles: config.subagentProfiles,
     segmentRules: config.segmentRules,
   });
 

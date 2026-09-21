@@ -3,6 +3,8 @@ import { test } from "node:test";
 import { WorkTracker } from "../src/domain/work-tracker.ts";
 import type { Clock } from "../src/ports/clock.ts";
 import type { SegmentRule } from "../src/domain/segment-rule.ts";
+import { BUILTIN_SUBAGENT_PROFILES, GENTLE_PI_PROFILE, PI_REFERENCE_PROFILE, PI_SUBAGENTS_PROFILE } from "../src/domain/subagent-profile.ts";
+import type { SubagentProfile } from "../src/domain/subagent-profile.ts";
 
 class FakeClock implements Clock {
   private current: number;
@@ -20,11 +22,11 @@ class FakeClock implements Clock {
   }
 }
 
-function makeTracker(clock: Clock, segmentRules: SegmentRule[] = []): WorkTracker {
+function makeTracker(clock: Clock, segmentRules: SegmentRule[] = [], subagentProfiles: SubagentProfile[] = BUILTIN_SUBAGENT_PROFILES as SubagentProfile[]): WorkTracker {
   return new WorkTracker({
     clock,
     interactiveTools: ["ask_user_question", "ask_user_choice"],
-    subagentTool: "subagent_run",
+    subagentProfiles,
     segmentRules,
   });
 }
@@ -132,6 +134,10 @@ test("subagent_run spans are captured with agent, mode, taskId and ms", () => {
     agent: "sdd-explore",
     mode: "task",
     taskId: "t1",
+    // SUBAGENT-REQ-005/017 (6b): the span now also carries which profile
+    // matched — "gentle-pi", unambiguously, since only that profile
+    // registers "subagent_run". Every other field/value is unchanged.
+    profile: "gentle-pi",
     ms: 9000,
   });
   // subagent spans are not counted as waiting time.
@@ -565,4 +571,126 @@ test("a run with no segment rules produces an empty segments object", () => {
   const record = tracker.onSettled();
 
   assert.deepEqual(record?.segments, {});
+});
+
+// --- 6b: multi-profile subagent span matching ---
+
+test("SUBAGENT-REQ-001: a tool name from a profile OTHER than gentle-pi (pi's reference example, tool 'subagent') opens a subagent span too, when that's the only registered profile for it", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [], [GENTLE_PI_PROFILE, PI_REFERENCE_PROFILE]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent", { agent: "researcher" });
+  clock.advanceTo(500);
+  tracker.onToolEnd("call-1", { details: { mode: "single" } });
+  const record = tracker.onSettled();
+
+  assert.equal(record?.subagents.length, 1);
+  assert.equal(record?.subagents[0]?.agent, "researcher");
+  assert.equal(record?.subagents[0]?.profile, "pi-reference");
+});
+
+test("SUBAGENT-REQ-005: when two profiles register the same tool name ('subagent'), the span still opens (best-effort agent/mode merge) but 'profile' is never guessed — left undefined", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock); // default: all 3 built-ins, including the pi-reference/pi-subagents collision on "subagent"
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent", { agent: "researcher", action: "create" });
+  clock.advanceTo(500);
+  tracker.onToolEnd("call-1", {});
+  const record = tracker.onSettled();
+
+  assert.equal(record?.subagents.length, 1);
+  assert.equal(record?.subagents[0]?.agent, "researcher");
+  assert.equal(record?.subagents[0]?.profile, undefined);
+});
+
+test("a tool name matching no profile at all never opens a subagent span", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "bash", { command: "ls" });
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", {});
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.subagents, []);
+});
+
+// --- 6c: SUBAGENT-REQ-006, usage forwarding ---
+
+test("SUBAGENT-REQ-006: a subagent tool result's usage is added to the PARENT record's usage totals exactly once", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [], [GENTLE_PI_PROFILE, PI_REFERENCE_PROFILE]);
+
+  tracker.onRunStart("prompt");
+  tracker.onTurnEnd({ input: 100, output: 50, cost: 0.01 });
+  tracker.onToolStart("call-1", "subagent", { agent: "researcher" });
+  clock.advanceTo(500);
+  tracker.onToolEnd("call-1", { usage: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.002 } });
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.usage, { input: 120, output: 60, cacheRead: 0, cacheWrite: 0, cost: 0.012 });
+});
+
+test("SUBAGENT-REQ-006: forwarded usage sets costObserved only when a finite cost figure accompanies it — matches onTurnEnd's own semantics (a forwarded usage without a cost figure is 'unknown', not 'measured')", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [], [GENTLE_PI_PROFILE, PI_REFERENCE_PROFILE]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent", {});
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", { usage: { input: 5, output: 5 } }); // no cost field
+  const record = tracker.onSettled();
+
+  assert.equal(record?.costObserved, undefined);
+  assert.equal(record?.usage.input, 5);
+});
+
+test("SUBAGENT-REQ-006/gentle-pi regression: gentle-pi's subagent_run result never carries usage, so it never contributes to the parent's totals (verified: gentle-pi 3.3.0 never sets it)", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent_run", { agent: "sdd-explore" });
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", { details: { gentleAgents: { taskId: "t1" } }, usage: { input: 999, cost: 99 } });
+  const record = tracker.onSettled();
+
+  // gentle-pi's profile never reads usage off the result at all — even a
+  // result that happens to carry one (should never occur in practice) is
+  // ignored, since the profile's own readResult simply does not look at it.
+  assert.deepEqual(record?.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  assert.equal(record?.costObserved, undefined);
+});
+
+test("a repeated onToolEnd for the same toolCallId never double-adds forwarded usage (the open-span map entry is consumed exactly once, guarding double attribution)", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [], [GENTLE_PI_PROFILE, PI_REFERENCE_PROFILE]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent", {});
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", { usage: { input: 10, cost: 0.01 } });
+  // A duplicate event for the same tool call id (should never happen from a
+  // well-behaved pi runtime, but must never be able to double-bill).
+  tracker.onToolEnd("call-1", { usage: { input: 10, cost: 0.01 } });
+  const record = tracker.onSettled();
+
+  assert.equal(record?.usage.input, 10);
+  assert.equal(record?.usage.cost, 0.01);
+});
+
+test("pi-subagents' profile never forwards usage even when its tool result happens to carry one — avoids double-counting an ancestry-joined child (see domain/subagent-profile.ts)", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [], [PI_SUBAGENTS_PROFILE]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent", { agent: "researcher", action: "create" });
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", { usage: { input: 50, cost: 0.05 } });
+  const record = tracker.onSettled();
+
+  assert.deepEqual(record?.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
 });

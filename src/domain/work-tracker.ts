@@ -4,11 +4,14 @@ import { clampIntervals, unionMs } from "./intervals.ts";
 import { emptyUsage, finiteOrZero, WORK_RECORD_SCHEMA } from "./work-record.ts";
 import type { SubagentSpan, UsageTotals, WorkRecordCore, WorkStatus } from "./work-record.ts";
 import type { SegmentRule } from "./segment-rule.ts";
+import { matchToolProfiles, readLaunchInfo, readResultInfo, resolveToolProfile } from "./subagent-profile.ts";
+import type { SubagentProfile } from "./subagent-profile.ts";
 
 export interface WorkTrackerOptions {
   clock: Clock;
   interactiveTools: string[];
-  subagentTool: string;
+  /** Every active {@link SubagentProfile} (ADR 0020); a tool call opens a subagent span when its name matches any profile's `toolNames`. See `config.ts#loadConfig`. */
+  subagentProfiles: SubagentProfile[];
   /** Rules that tag a tool execution's span under a named segment. Defaults to none. */
   segmentRules?: SegmentRule[];
 }
@@ -20,8 +23,11 @@ interface Interval {
 
 interface OpenSubagentSpan {
   toolCallId: string;
+  toolName: string;
   agent: string;
   mode: string;
+  /** The unambiguously-matched profile's id, or `undefined` when 0 or 2+ profiles registered this tool name (SUBAGENT-REQ-005 — never guessed). */
+  profile: string | undefined;
   start: number;
 }
 
@@ -65,14 +71,14 @@ interface RunEndMessage {
 export class WorkTracker {
   private readonly clock: Clock;
   private readonly interactiveTools: Set<string>;
-  private readonly subagentTool: string;
+  private readonly subagentProfiles: SubagentProfile[];
   private readonly segmentRules: SegmentRule[];
   private state: RunState | undefined;
 
   constructor(options: WorkTrackerOptions) {
     this.clock = options.clock;
     this.interactiveTools = new Set(options.interactiveTools);
-    this.subagentTool = options.subagentTool;
+    this.subagentProfiles = options.subagentProfiles;
     this.segmentRules = options.segmentRules ?? [];
   }
 
@@ -136,13 +142,24 @@ export class WorkTracker {
       return;
     }
 
-    if (toolName === this.subagentTool) {
-      const agent = typeof args?.["agent"] === "string" ? (args["agent"] as string) : "unknown";
-      const mode = typeof args?.["mode"] === "string" ? (args["mode"] as string) : "task";
+    // SUBAGENT-REQ-001/005: a tool call opens a subagent span when its name
+    // matches ANY active profile's toolNames — generalised from the single
+    // hardcoded `subagentTool` string. `resolveToolProfile` resolves which
+    // SPECIFIC profile matched (for `readLaunchInfo`/attribution) without
+    // ever guessing when 2+ profiles share the same tool name (e.g.
+    // "subagent", registered by both the pi reference example and
+    // pi-subagents): the span still opens either way (a subagent tool call
+    // genuinely happened), with a best-effort merged agent/mode read and
+    // `profile` left undefined.
+    const { profile, candidates } = resolveToolProfile(this.subagentProfiles, toolName);
+    if (candidates.length > 0) {
+      const launch = readLaunchInfo(candidates, args);
       this.state.openSubagents.set(toolCallId, {
         toolCallId,
-        agent,
-        mode,
+        toolName,
+        agent: launch.agent ?? "unknown",
+        mode: launch.mode ?? "task",
+        profile: profile?.id,
         start: this.clock.now(),
       });
     }
@@ -159,13 +176,45 @@ export class WorkTracker {
 
     const openSubagent = this.state.openSubagents.get(toolCallId);
     if (openSubagent) {
+      // Consumed exactly once: a second onToolEnd for the same toolCallId
+      // (should never happen from a well-behaved pi runtime) finds nothing
+      // here and falls through — the guard that keeps SUBAGENT-REQ-006's
+      // usage forwarding below from ever double-attributing the same call.
       this.state.openSubagents.delete(toolCallId);
-      const taskId = extractTaskId(result);
+
+      const candidates = matchToolProfiles(this.subagentProfiles, openSubagent.toolName);
+      const resultInfo = readResultInfo(candidates, result);
+
+      // SUBAGENT-REQ-006: a subagent tool result's usage, when its matched
+      // profile's readResult reports one, is added to the PARENT record's
+      // own totals here — exactly once, right where it is read, mirroring
+      // onTurnEnd's own accumulation/costObserved semantics below. Safe
+      // against double attribution across the built-in profiles by
+      // construction: gentle-pi never reports usage (verified, its result
+      // never carries one); pi-reference's children can never become a
+      // confirmed, separately-joined subagent record (it declares no
+      // child-env marker, so this is the only place their cost is ever
+      // counted); pi-subagents deliberately never forwards usage, since its
+      // marker CAN produce an ancestry-joined child with its own usage
+      // already counted through that join (see domain/subagent-profile.ts).
+      const usage = resultInfo.usage;
+      if (usage) {
+        this.state.usage.input += finiteOrZero(usage.input);
+        this.state.usage.output += finiteOrZero(usage.output);
+        this.state.usage.cacheRead += finiteOrZero(usage.cacheRead);
+        this.state.usage.cacheWrite += finiteOrZero(usage.cacheWrite);
+        this.state.usage.cost += finiteOrZero(usage.cost);
+        if (typeof usage.cost === "number" && Number.isFinite(usage.cost)) {
+          this.state.costObserved = true;
+        }
+      }
+
       this.state.subagents.push({
         toolCallId: openSubagent.toolCallId,
         agent: openSubagent.agent,
         mode: openSubagent.mode,
-        ...(taskId !== undefined ? { taskId } : {}),
+        ...(resultInfo.taskId !== undefined ? { taskId: resultInfo.taskId } : {}),
+        ...(openSubagent.profile !== undefined ? { profile: openSubagent.profile } : {}),
         // Clamped to >= 0: a backward clock jump while the subagent was
         // running must never produce a negative duration.
         ms: Math.max(0, this.clock.now() - openSubagent.start),
@@ -286,12 +335,3 @@ function segmentText(args: Record<string, unknown> | undefined): string {
   return typeof command === "string" ? command : JSON.stringify(args ?? {});
 }
 
-function extractTaskId(result: unknown): string | undefined {
-  if (!result || typeof result !== "object") return undefined;
-  const details = (result as { details?: unknown }).details;
-  if (!details || typeof details !== "object") return undefined;
-  const gentleAgents = (details as { gentleAgents?: unknown }).gentleAgents;
-  if (!gentleAgents || typeof gentleAgents !== "object") return undefined;
-  const taskId = (gentleAgents as { taskId?: unknown }).taskId;
-  return typeof taskId === "string" ? taskId : undefined;
-}
