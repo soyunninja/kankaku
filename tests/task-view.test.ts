@@ -708,3 +708,18 @@ test("rescue never anchors on an uncertain record, and never overrides a normal 
   assert.equal(byId.get("p2"), 1);
   assert.equal(byId.get("p3"), 0);
 });
+
+test("rescue: a rescued child never cancels the anchor record's own forwardedUsage — it cannot be the child of any span in it", () => {
+  // The anchor's span for profile X settled with forwarded cost 5 and no child
+  // record of its own. A LATER child of the same profile is rescued into this
+  // task: it started after the anchor settled, so it is a different launch.
+  const anchor = makeRecord({ id: "p1", pid: 100, startedAt: iso(10), settledAt: iso(20), subagents: [span({ profile: "x", forwardedUsage: { cost: 5 } })] });
+  const rescued = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, profile: "x", startedAt: iso(500), settledAt: iso(600), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 2 }, orchestratorRef: parentRef() });
+  assert.equal(buildTasks([anchor, rescued])[0]!.usage.cost, 7);
+});
+
+test("rescue: a record written on another machine is never an anchor, even with the same pid", () => {
+  const other = makeRecord({ id: "p1", pid: 100, machine: "laptop-b", startedAt: iso(10), settledAt: iso(20) });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, machine: "laptop-a", startedAt: iso(500), settledAt: iso(600), orchestratorRef: parentRef() });
+  assert.equal(buildTasks([other, child])[0]!.subagents.length, 0);
+});

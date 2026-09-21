@@ -117,8 +117,12 @@ function isConfirmedOrchestrator(record: WorkRecord): boolean {
 /**
  * Second pass, only for a child no orchestrator window contains: join it to
  * the most recent record of the very process that launched it, as PROVEN by
- * its `orchestratorRef` (written at child start from a live, start-time
- * checked registry entry — never inferred here).
+ * its `orchestratorRef` (written at child start from a live registry entry
+ * whose OS start time was checked — never inferred here). `ref.startedAt`
+ * is when that process last REGISTERED, which `/new`, `/resume`, `/fork` and
+ * `/reload` re-stamp: a parent record older than the last re-registration is
+ * therefore not eligible. That only ever misses a rescue (the child stays an
+ * orphan, as before); it can never produce a wrong join.
  *
  * Why a child can start outside every window: its parent's run was never
  * recorded (a run an extension started, before `WorkTracker.onAgentStart`
@@ -145,6 +149,9 @@ function rescueByParentIdentity(child: WorkRecord, orchestrators: WorkRecord[]):
   let bestStart = Number.NEGATIVE_INFINITY;
   for (const orchestrator of orchestrators) {
     if (orchestrator.pid !== ref.pid) continue;
+    // A pid is only unique on ONE machine: a worklog shared between two
+    // (a synced KANKAKU_DIR) must never join across them.
+    if (orchestrator.machine !== undefined && child.machine !== undefined && orchestrator.machine !== child.machine) continue;
     const start = toMs(orchestrator.startedAt);
     if (!(start >= processStart && start <= childStart)) continue;
     if (start > bestStart) {
@@ -241,7 +248,18 @@ function matchChildren(records: WorkRecord[]): {
  * function at all.
  */
 function unjoinedForwardedUsage(orchestrator: WorkRecord, subagents: WorkRecord[]): Array<Partial<UsageTotals>> {
-  const joinedProfiles = new Set(subagents.map((child) => child.profile).filter((id): id is string => id !== undefined));
+  // Only a child this record itself launched — a direct child that started
+  // inside its window — can be the process behind one of its spans. A child
+  // joined by {@link rescueByParentIdentity} started after this record
+  // settled (or is a grandchild), so it is never the one a span here
+  // forwarded usage for, and must not cancel it.
+  const parentStart = toMs(orchestrator.startedAt);
+  const parentEnd = toMs(orchestrator.settledAt);
+  const launchedHere = subagents.filter((child) => {
+    const start = toMs(child.startedAt);
+    return child.parentPid === orchestrator.pid && start >= parentStart && start <= parentEnd;
+  });
+  const joinedProfiles = new Set(launchedHere.map((child) => child.profile).filter((id): id is string => id !== undefined));
   return orchestrator.subagents
     .filter((span) => span.forwardedUsage !== undefined && !(span.profile !== undefined && joinedProfiles.has(span.profile)))
     .map((span) => span.forwardedUsage!);
