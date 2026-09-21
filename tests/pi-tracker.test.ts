@@ -2158,3 +2158,27 @@ test("agent_start of an extension run arriving BEFORE the previous run's agent_s
   assert.equal(log.records[1]!.trigger, "extension");
   assert.equal(log.records[1]!.wallMs, 58_900);
 });
+
+test("a record carries the reasoning effort pi reports when it settles; an older pi without getThinkingLevel simply omits it", async () => {
+  const run = async (pi: FakePi) => {
+    const clock = new FakeClock(0);
+    const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+    const log = new FakeWorkLog();
+    const ctx = makeFakeCtx();
+    createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+    await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+    clock.advanceTo(1000);
+    await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+    return log.records[0]!;
+  };
+
+  const withLevel = new FakePi();
+  (withLevel as unknown as { getThinkingLevel: () => string }).getThinkingLevel = () => "xhigh";
+  assert.equal((await run(withLevel)).thinkingLevel, "xhigh");
+
+  assert.equal((await run(new FakePi())).thinkingLevel, undefined);
+
+  const throwing = new FakePi();
+  (throwing as unknown as { getThinkingLevel: () => string }).getThinkingLevel = () => { throw new Error("no session yet"); };
+  assert.equal((await run(throwing)).thinkingLevel, undefined);
+});

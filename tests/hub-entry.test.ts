@@ -320,3 +320,13 @@ test("taskWorkRecords returns the orchestrator followed by every subagent", () =
     ["orch", "child"],
   );
 });
+
+test("the model's reasoning effort (thinkingLevel) travels to the hub on both payloads, and is omitted when unknown", () => {
+  const task = makeTask({}, { thinkingLevel: "high" });
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).thinking_level, "high");
+  assert.equal(buildTaskEntryUpdatePayload(task, ctx).thinking_level, "high");
+  assert.equal(buildWorkRecordPayload(makeRecord({ thinkingLevel: "low" }), "te-1", { machine: "laptop", promptMode: "none" }).thinking_level, "low");
+
+  assert.equal("thinking_level" in buildTaskEntryCreatePayload(makeTask(), ctx), false);
+  assert.equal("thinking_level" in buildWorkRecordPayload(makeRecord(), "te-1", { machine: "laptop", promptMode: "none" }), false);
+});

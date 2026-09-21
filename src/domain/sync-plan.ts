@@ -131,6 +131,9 @@ export function computeTaskContentHash(task: TaskView): string {
       costQuality: computeCostQuality(task),
       subagentLinkage: computeSubagentLinkage(task),
       sessionDir: task.sessionDir,
+      // `undefined` is dropped by the serialiser, so a task that never knew
+      // its reasoning effort keeps the hash it had before this field existed.
+      thinkingLevel: task.orchestrator.thinkingLevel,
     }),
   );
 }

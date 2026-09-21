@@ -409,3 +409,9 @@ test("pendingTotal counts deferred corrections too, so sync status never under-r
   const plan = planSync(tasks, state, { target: TARGET, windowHours: 24 });
   assert.equal(plan.toSync.length + plan.correctionsDeferred, 120);
 });
+
+test("a change of reasoning effort alone changes the content hash, so the hub row is refreshed", () => {
+  const base = makeTask("a", 0, 10);
+  const withLevel = { ...base, orchestrator: { ...base.orchestrator, thinkingLevel: "high" } };
+  assert.notEqual(computeTaskContentHash(base), computeTaskContentHash(withLevel));
+});

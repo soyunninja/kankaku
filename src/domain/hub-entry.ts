@@ -186,6 +186,8 @@ export interface TaskEntryPayload {
   session_name: string;
   machine: string;
   model: string;
+  /** The model's reasoning effort; omitted when the record does not know it. */
+  thinking_level?: string;
   prompt: string;
   legacy_client_label: string;
   repo_project: string;
@@ -231,6 +233,7 @@ export function buildTaskEntryCreatePayload(task: TaskView, ctx: HubEntryContext
     session_name: task.sessionName ?? "",
     machine: ctx.machine,
     model: task.orchestrator.model ?? "",
+    ...(task.orchestrator.thinkingLevel !== undefined ? { thinking_level: task.orchestrator.thinkingLevel } : {}),
     prompt: applyPromptPrivacy(task.prompt, ctx.promptMode),
     legacy_client_label: assignment.legacyClientLabel,
     repo_project: task.project,
@@ -274,6 +277,7 @@ export interface WorkRecordPayload {
   turns: number;
   status: WorkStatus;
   model: string;
+  thinking_level?: string;
   input: number;
   output: number;
   cache_read: number;
@@ -314,6 +318,7 @@ export function buildWorkRecordPayload(
     turns: record.turns,
     status: record.status,
     model: record.model ?? "",
+    ...(record.thinkingLevel !== undefined ? { thinking_level: record.thinkingLevel } : {}),
     input: finiteOrZero(record.usage.input),
     output: finiteOrZero(record.usage.output),
     cache_read: finiteOrZero(record.usage.cacheRead),

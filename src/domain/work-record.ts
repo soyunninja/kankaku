@@ -140,6 +140,12 @@ export interface WorkRecordMetadata {
   sessionFile?: string;
   mode?: string;
   model?: string;
+  /**
+   * The model's reasoning effort when the record settled, as pi names it
+   * (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). Optional and
+   * additive; absent on older records and on a pi too old to report it.
+   */
+  thinkingLevel?: string;
   /** Who this work is billed to. See {@link resolveClient} in `client-label.ts`. */
   client?: string;
   /** pi's session display name at the time this record settled. */
@@ -256,6 +262,7 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     (record["client"] === undefined || typeof record["client"] === "string") &&
     (record["sessionName"] === undefined || typeof record["sessionName"] === "string") &&
     (record["sessionDir"] === undefined || typeof record["sessionDir"] === "string") &&
+    (record["thinkingLevel"] === undefined || typeof record["thinkingLevel"] === "string") &&
     (record["clientId"] === undefined || typeof record["clientId"] === "string") &&
     (record["clientName"] === undefined || typeof record["clientName"] === "string") &&
     (record["projectId"] === undefined || typeof record["projectId"] === "string") &&

@@ -290,6 +290,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
   function buildRecord(core: WorkRecordCore, ctx: ExtensionContext): WorkRecord {
     const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+    const thinkingLevel = readThinkingLevel(pi);
     // Subagent children never carry their own client/target: they inherit
     // the orchestrator's at task level (see task-view.ts).
     const target = deps.sessionTarget?.runTarget();
@@ -310,6 +311,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       sessionFile: ctx.sessionManager.getSessionFile(),
       mode: ctx.mode,
       ...(model !== undefined ? { model } : {}),
+      ...(thinkingLevel !== undefined ? { thinkingLevel } : {}),
       ...(client !== undefined ? { client } : {}),
       ...(sessionName !== undefined ? { sessionName } : {}),
       ...(sessionDir !== undefined ? { sessionDir } : {}),
@@ -555,4 +557,15 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       triggerAutoSync(ctx, "session_start");
     }),
   );
+}
+
+/** pi's current reasoning effort, or `undefined` on a pi that predates `getThinkingLevel` or has no session to ask yet. Never throws. */
+function readThinkingLevel(pi: ExtensionAPI): string | undefined {
+  try {
+    const read = (pi as { getThinkingLevel?: () => unknown }).getThinkingLevel;
+    const level = typeof read === "function" ? read.call(pi) : undefined;
+    return typeof level === "string" && level.length > 0 ? level : undefined;
+  } catch {
+    return undefined;
+  }
 }
