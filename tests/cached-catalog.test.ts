@@ -226,6 +226,36 @@ test(
   },
 );
 
+test(
+  "refresh creates a brand-new cache directory 0700 when kankaku itself is the first writer (G3)",
+  { skip: !posix },
+  async () => {
+    const dir = makeDir();
+    try {
+      // Unlike the other tests, the cache directory itself does not exist
+      // yet — `makeDir()` only creates the scratch root, and `catalogDir`
+      // below is a fresh, never-created subdirectory. This is the "kankaku
+      // is the first writer" branch (R2's sibling rule): when kankaku
+      // itself creates `~/.kankaku`, it must create it owner-only (0700),
+      // not whatever the umask default happens to be.
+      const catalogDir = join(dir, "fresh-home", ".kankaku");
+      const catalog = new CachedCatalog({
+        filePath: join(catalogDir, "catalog.json"),
+        url: "https://pb.example.com",
+        clock: new FakeClock(1000),
+        fetchCatalog: async () => ({ clients: CLIENTS, projects: PROJECTS }),
+      });
+
+      await catalog.refresh();
+
+      assert.equal(statSync(catalogDir).mode & 0o777, 0o700);
+      assert.equal(statSync(join(catalogDir, "catalog.json")).mode & 0o777, 0o600);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  },
+);
+
 test("readDisk tolerates malformed JSON and a structurally invalid snapshot", () => {
   const dir = makeDir();
   try {

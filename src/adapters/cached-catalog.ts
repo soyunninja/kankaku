@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import type { Client, Project } from "../domain/work-target.ts";
 import type { Clock } from "../ports/clock.ts";
 import type { Catalog, CatalogSnapshot } from "../ports/catalog.ts";
-import { OWNER_FILE_MODE } from "./file-modes.ts";
+import { OWNER_DIR_MODE, OWNER_FILE_MODE } from "./file-modes.ts";
 
 /** Six hours in milliseconds — clients and projects change rarely. */
 const DEFAULT_TTL_MS = 6 * 60 * 60 * 1000;
@@ -104,13 +104,21 @@ export class CachedCatalog implements Catalog {
       // KANKAKU_DIR (`.kankaku`, relative) resolves to this exact same
       // path, and a project's kankaku dir must never be tightened
       // (AGENTS.md). Only what this package exclusively owns is touched:
-      // the directory is merely created if missing, never chmod'd, and the
-      // file itself is always written fresh via tmp+rename with
+      // an EXISTING directory is never chmod'd — `mkdirSync`'s own `mode`
+      // option only ever applies to a directory this call actually
+      // creates, never one that already existed (Node skips the mkdir
+      // syscall for an existing path segment entirely, mode and all), so
+      // passing `mode` here is safe even though this path may be a
+      // project's own dir (G3). When this call IS the first writer (no
+      // `~/.kankaku` yet at all, e.g. a machine with the hub configured but
+      // no project ever run from $HOME), it is created owner-only
+      // (`OWNER_DIR_MODE`, 0700) rather than left at the umask default. The
+      // cache file itself is always written fresh via tmp+rename with
       // OWNER_FILE_MODE below, which already guarantees 0600 on every
       // write regardless of whatever mode an older file at this path (or
       // an older kankaku build) left behind — a rename replaces the whole
       // inode, so a stale looser mode can never survive a write.
-      mkdirSync(dirname(this.deps.filePath), { recursive: true });
+      mkdirSync(dirname(this.deps.filePath), { recursive: true, mode: OWNER_DIR_MODE });
       const tmp = `${this.deps.filePath}.${process.pid}.${Date.now()}.tmp`;
       // Owner-only: this file names every client/project the machine's user has touched.
       writeFileSync(tmp, JSON.stringify(snapshot), { mode: OWNER_FILE_MODE });
