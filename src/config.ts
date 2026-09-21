@@ -1,13 +1,23 @@
 import type { SegmentRule } from "./domain/segment-rule.ts";
 import type { PromptPrivacyMode } from "./domain/hub-entry.ts";
+import { BUILTIN_SUBAGENT_PROFILES, buildConfiguredProfile, matchesAnyMarker } from "./domain/subagent-profile.ts";
+import type { ChildEnvMarker, SubagentProfile } from "./domain/subagent-profile.ts";
 
 export interface KankakuConfig {
   /** Directory for the work log, relative to the project cwd unless absolute. */
   dir: string;
   /** Tool names whose execution span counts as waiting time. */
   interactiveTools: string[];
-  /** Tool name used to run subagents. */
-  subagentTool: string;
+  /**
+   * Every active {@link SubagentProfile} (ADR 0020): the built-ins
+   * (gentle-pi, pi's bundled reference example, pi-subagents) plus, when
+   * `KANKAKU_SUBAGENT_TOOLS`/`KANKAKU_SUBAGENT_CHILD_ENV` are set, one
+   * additional `"configured"` profile — always additive, never replacing
+   * gentle-pi's own recognition. `SUBAGENT_TOOL` is no longer a hardcoded
+   * constant; `domain/work-tracker.ts` matches subagent tool calls against
+   * the union of every profile's `toolNames`.
+   */
+  subagentProfiles: SubagentProfile[];
   /** Rules that tag a tool execution's span under a named segment (e.g. `review`). */
   segmentRules: SegmentRule[];
   /** Default billing client for this project, from `KANKAKU_CLIENT`. See `domain/client-label.ts`. */
@@ -16,7 +26,6 @@ export interface KankakuConfig {
 
 const DEFAULT_DIR = ".kankaku";
 const DEFAULT_INTERACTIVE_TOOLS = ["ask_user_question", "ask_user_choice"];
-const SUBAGENT_TOOL = "subagent_run";
 
 /**
  * Default segment rule: with gentle-ai, the review-with-receipts step runs
@@ -70,6 +79,51 @@ function parseSegmentRules(raw: string): SegmentRule[] {
   return rules;
 }
 
+/**
+ * SUBAGENT-REQ-002: `KANKAKU_SUBAGENT_TOOLS`, a comma-separated list of
+ * additional tool names treated as subagent-launching spans, parsed with
+ * the exact same tolerant trim-and-filter-empty convention as
+ * `KANKAKU_INTERACTIVE_TOOLS` above.
+ */
+function parseSubagentTools(raw: string): string[] {
+  return raw
+    .split(",")
+    .map((tool) => tool.trim())
+    .filter((tool) => tool.length > 0);
+}
+
+/**
+ * SUBAGENT-REQ-003: `KANKAKU_SUBAGENT_CHILD_ENV`, a `;`-separated list of
+ * `NAME=VALUE` or bare `NAME` child-process env markers — mirrors
+ * `KANKAKU_SEGMENTS`'s tolerant `;`-separated convention. A bare `NAME`
+ * marks presence-only (any non-empty value matches, e.g. pi-subagents'
+ * depth counter); `NAME=VALUE` requires an exact match. An entry with no
+ * name, or a trailing `=` with nothing after it, is malformed and skipped
+ * rather than failing the whole variable.
+ */
+function parseSubagentChildEnv(raw: string): ChildEnvMarker[] {
+  const markers: ChildEnvMarker[] = [];
+
+  for (const entry of raw.split(";")) {
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+
+    const eqIndex = trimmed.indexOf("=");
+    if (eqIndex === -1) {
+      const name = trimmed;
+      if (name) markers.push({ name });
+      continue;
+    }
+
+    const name = trimmed.slice(0, eqIndex).trim();
+    const value = trimmed.slice(eqIndex + 1).trim();
+    if (!name || !value) continue;
+    markers.push({ name, value });
+  }
+
+  return markers;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): KankakuConfig {
   const dir = env["KANKAKU_DIR"]?.trim() || DEFAULT_DIR;
   const interactiveToolsRaw = env["KANKAKU_INTERACTIVE_TOOLS"]?.trim();
@@ -85,10 +139,17 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): KankakuConfig 
 
   const client = env["KANKAKU_CLIENT"]?.trim() || undefined;
 
+  const subagentToolsRaw = env["KANKAKU_SUBAGENT_TOOLS"]?.trim();
+  const configuredTools = subagentToolsRaw ? parseSubagentTools(subagentToolsRaw) : [];
+  const subagentChildEnvRaw = env["KANKAKU_SUBAGENT_CHILD_ENV"]?.trim();
+  const configuredMarkers = subagentChildEnvRaw ? parseSubagentChildEnv(subagentChildEnvRaw) : [];
+  const configuredProfile = buildConfiguredProfile(configuredTools, configuredMarkers);
+  const subagentProfiles: SubagentProfile[] = [...BUILTIN_SUBAGENT_PROFILES, ...(configuredProfile ? [configuredProfile] : [])];
+
   return {
     dir,
     interactiveTools,
-    subagentTool: SUBAGENT_TOOL,
+    subagentProfiles,
     segmentRules,
     ...(client !== undefined ? { client } : {}),
   };
@@ -223,8 +284,17 @@ export function stripRoleOverride(env: NodeJS.ProcessEnv): void {
  * elsewhere. `/kankaku doctor` is responsible for making that unavailable-
  * detection limitation visible; it is never encoded in `roleConfidence`.
  */
-export function detectRole(env: NodeJS.ProcessEnv = process.env, hasTrackedAncestor = false, isInteractive = true): RoleDetection {
-  if (env["GENTLE_PI_AGENTS_CHILD"] === "1") return { role: "subagent" };
+/** `detectRole`'s default `childMarkers` when a caller does not pass its own active profile set — identical to the single marker this function hardcoded before SUBAGENT-REQ-001/002/003, so every pre-existing 3-arg call site keeps behaving exactly as before. */
+const DEFAULT_CHILD_MARKERS: ChildEnvMarker[] = [{ name: "GENTLE_PI_AGENTS_CHILD", value: "1" }];
+
+export function detectRole(
+  env: NodeJS.ProcessEnv = process.env,
+  hasTrackedAncestor = false,
+  isInteractive = true,
+  /** SUBAGENT-REQ-002/003: the full active set's child-env markers (built-in profiles' own markers plus any `KANKAKU_SUBAGENT_CHILD_ENV`-configured one) — generalises the single hardcoded `GENTLE_PI_AGENTS_CHILD` check below without changing precedence. See `domain/subagent-profile.ts#allChildMarkers`. */
+  childMarkers: readonly ChildEnvMarker[] = DEFAULT_CHILD_MARKERS,
+): RoleDetection {
+  if (matchesAnyMarker(env, childMarkers)) return { role: "subagent" };
 
   const override = readRoleOverride(env);
 

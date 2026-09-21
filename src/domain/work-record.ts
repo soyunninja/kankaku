@@ -19,6 +19,15 @@ export interface SubagentSpan {
   mode: string;
   taskId?: string;
   ms: number;
+  /**
+   * The {@link SubagentProfile}'s `id` that matched this tool call
+   * (`domain/subagent-profile.ts`, ADR 0020), when unambiguous. Omitted
+   * when no profile's tool name matched at all, or when 2+ profiles
+   * registered the same tool name and could not be told apart
+   * (SUBAGENT-REQ-005) — `/kankaku doctor` surfaces both cases. Optional so
+   * an older-format span (written before profiles existed) still validates.
+   */
+  profile?: string;
 }
 
 /**
@@ -135,6 +144,17 @@ export interface WorkRecordMetadata {
    * machine-wide process registry. See {@link OrchestratorRef}.
    */
   orchestratorRef?: OrchestratorRef;
+  /**
+   * The {@link SubagentProfile} `id` (ADR 0020) whose child-env marker(s)
+   * confirmed THIS process's `role: "subagent"` classification — e.g.
+   * `"gentle-pi"` or `"pi-subagents"`. Set only when exactly one profile's
+   * marker matched (SUBAGENT-REQ-005 never guesses); omitted when this
+   * process's role came from ancestry alone (no known marker present, e.g.
+   * pi's bundled reference example) or from 2+ markers matching at once.
+   * `/kankaku doctor` reports which profile matched each record
+   * (SUBAGENT-REQ-017). Never set on an `orchestrator` record.
+   */
+  profile?: string;
 }
 
 export type WorkRecord = WorkRecordCore & WorkRecordMetadata;
@@ -207,6 +227,7 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     (record["machine"] === undefined || typeof record["machine"] === "string") &&
     (record["roleConfidence"] === undefined || record["roleConfidence"] === "uncertain") &&
     (record["orchestratorRef"] === undefined || isOrchestratorRef(record["orchestratorRef"])) &&
-    (record["costObserved"] === undefined || record["costObserved"] === true)
+    (record["costObserved"] === undefined || record["costObserved"] === true) &&
+    (record["profile"] === undefined || typeof record["profile"] === "string")
   );
 }

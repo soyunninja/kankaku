@@ -298,14 +298,24 @@ export function readResultInfo(candidates: readonly SubagentProfile[], result: u
   return merged;
 }
 
-/** Whether `profile`'s child-env marker(s) are present in `env`. A profile with no markers at all (e.g. `PI_REFERENCE_PROFILE`) never matches, by construction. */
-export function profileMarkerMatches(profile: SubagentProfile, env: NodeJS.ProcessEnv): boolean {
-  if (profile.childEnvMarkers.length === 0) return false;
-  return profile.childEnvMarkers.some((marker) => {
+/**
+ * Whether any of `markers` is present in `env`: an exact-value marker
+ * requires an exact match, a presence-only marker (`value: undefined`)
+ * matches any non-empty value. Shared by `profileMarkerMatches` (one
+ * profile's own markers) and `config.ts#detectRole` (the full active set,
+ * generalised beyond the single hardcoded `GENTLE_PI_AGENTS_CHILD` check).
+ */
+export function matchesAnyMarker(env: NodeJS.ProcessEnv, markers: readonly ChildEnvMarker[]): boolean {
+  return markers.some((marker) => {
     const actual = env[marker.name];
     if (actual === undefined || actual === "") return false;
     return marker.value === undefined || actual === marker.value;
   });
+}
+
+/** Whether `profile`'s child-env marker(s) are present in `env`. A profile with no markers at all (e.g. `PI_REFERENCE_PROFILE`) never matches, by construction. */
+export function profileMarkerMatches(profile: SubagentProfile, env: NodeJS.ProcessEnv): boolean {
+  return matchesAnyMarker(env, profile.childEnvMarkers);
 }
 
 export interface ChildProfileResolution {

@@ -6,12 +6,44 @@ function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return { ...overrides } as NodeJS.ProcessEnv;
 }
 
-test("loadConfig defaults dir, interactive tools and subagent tool", () => {
+test("loadConfig defaults dir, interactive tools and the built-in subagent profiles (gentle-pi, pi-reference, pi-subagents) — SUBAGENT_TOOL is no longer a hardcoded constant", () => {
   const config = loadConfig(env({}));
 
   assert.equal(config.dir, ".kankaku");
   assert.deepEqual(config.interactiveTools, ["ask_user_question", "ask_user_choice"]);
-  assert.equal(config.subagentTool, "subagent_run");
+  assert.deepEqual(
+    config.subagentProfiles.map((p) => p.id),
+    ["gentle-pi", "pi-reference", "pi-subagents"],
+  );
+  // gentle-pi's own tool name is unchanged — no regression for existing users.
+  assert.deepEqual(
+    config.subagentProfiles.find((p) => p.id === "gentle-pi")?.toolNames,
+    ["subagent_run"],
+  );
+});
+
+test("SUBAGENT-REQ-002: loadConfig parses KANKAKU_SUBAGENT_TOOLS like KANKAKU_INTERACTIVE_TOOLS, additive to the built-in profiles", () => {
+  const config = loadConfig(env({ KANKAKU_SUBAGENT_TOOLS: "my_tool, other_tool ," }));
+  assert.deepEqual(
+    config.subagentProfiles.map((p) => p.id),
+    ["gentle-pi", "pi-reference", "pi-subagents", "configured"],
+  );
+  const configured = config.subagentProfiles.find((p) => p.id === "configured");
+  assert.deepEqual(configured?.toolNames, ["my_tool", "other_tool"]);
+});
+
+test("SUBAGENT-REQ-003: loadConfig parses KANKAKU_SUBAGENT_CHILD_ENV as ';'-separated NAME[=VALUE] markers, skipping malformed entries", () => {
+  const config = loadConfig(env({ KANKAKU_SUBAGENT_CHILD_ENV: "MY_CHILD=1; PRESENCE_ONLY ; =bad; TRAILING_EQ=" }));
+  const configured = config.subagentProfiles.find((p) => p.id === "configured");
+  assert.deepEqual(configured?.childEnvMarkers, [{ name: "MY_CHILD", value: "1" }, { name: "PRESENCE_ONLY" }]);
+});
+
+test("loadConfig omits the 'configured' profile entirely when neither KANKAKU_SUBAGENT_TOOLS nor KANKAKU_SUBAGENT_CHILD_ENV is set — no inert extra profile", () => {
+  const config = loadConfig(env({}));
+  assert.equal(
+    config.subagentProfiles.some((p) => p.id === "configured"),
+    false,
+  );
 });
 
 test("loadConfig reads KANKAKU_DIR and KANKAKU_INTERACTIVE_TOOLS", () => {
@@ -148,6 +180,19 @@ test("an invalid KANKAKU_ROLE value is ignored, falling back to normal detection
   assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "bogus" })), { role: "orchestrator" });
   assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "" })), { role: "orchestrator" });
   assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "  " })), { role: "orchestrator" });
+});
+
+test("SUBAGENT-REQ-002/003/024: detectRole's 4th param generalises the confirmed-marker check beyond GENTLE_PI_AGENTS_CHILD, still taking precedence over KANKAKU_ROLE and tracked-ancestor uncertainty", () => {
+  const markers = [{ name: "GENTLE_PI_AGENTS_CHILD", value: "1" }, { name: "MY_CHILD", value: "1" }];
+  assert.deepEqual(detectRole(env({ MY_CHILD: "1" }), false, true, markers), { role: "subagent" });
+  assert.deepEqual(detectRole(env({ MY_CHILD: "1", KANKAKU_ROLE: "orchestrator" }), false, true, markers), { role: "subagent" });
+  // A marker unknown to the active profile set never confirms a subagent by itself.
+  assert.deepEqual(detectRole(env({ MY_CHILD: "1" }), false, true), { role: "orchestrator" });
+});
+
+test("detectRole's default childMarkers (no 4th arg) is unchanged: only GENTLE_PI_AGENTS_CHILD=1 confirms — every pre-existing 3-arg call site keeps behaving exactly as before", () => {
+  assert.deepEqual(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" }), false, true), { role: "subagent" });
+  assert.deepEqual(detectRole(env({ PI_SUBAGENT_DEPTH: "1" }), false, true), { role: "orchestrator" });
 });
 
 test("readRoleOverride reads and validates KANKAKU_ROLE", () => {

@@ -113,6 +113,27 @@ test("isWorkRecord rejects a record with a non-string hub metadata field", () =>
   assert.equal(isWorkRecord({ ...makeRecord(), machine: 42 }), false);
 });
 
+test("SUBAGENT-REQ-016: isWorkRecord accepts a record with a subagent-profile 'profile' field, without a schema bump", () => {
+  assert.equal(isWorkRecord(makeRecord({ profile: "gentle-pi" })), true);
+});
+
+test("isWorkRecord rejects a non-string 'profile' field", () => {
+  assert.equal(isWorkRecord(makeRecord({ profile: 42 as unknown as string })), false);
+});
+
+test("isWorkRecord accepts a record without a 'profile' field (an older record predating profiles stays valid)", () => {
+  const record = makeRecord() as unknown as Record<string, unknown>;
+  assert.equal("profile" in record, false);
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord accepts a subagent span carrying the optional 'profile' attribution", () => {
+  assert.equal(
+    isWorkRecord(makeRecord({ subagents: [{ toolCallId: "t1", agent: "reviewer", mode: "task", ms: 10, profile: "gentle-pi" }] })),
+    true,
+  );
+});
+
 test("isWorkRecord accepts a record without roleConfidence or orchestratorRef (SUBAGENT-REQ-016: an older record stays valid)", () => {
   assert.equal(isWorkRecord(makeRecord()), true);
 });
