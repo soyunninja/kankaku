@@ -384,7 +384,11 @@ export class WorkTracker {
    */
   peek(status: WorkStatus): WorkRecordCore | undefined {
     if (!this.state) return undefined;
-    return this.buildRecordFrom(this.state, status, this.clock.now());
+    // A record set aside (see `closing`) is nowhere on disk yet: fold it into
+    // the snapshot so a crash before the settle cannot lose its time and
+    // cost. The snapshot keeps the set-aside record's id.
+    const state = this.closing ? mergeRunStates(this.closing.state, this.state) : this.state;
+    return this.buildRecordFrom(state, status, this.clock.now());
   }
 
   private buildRecordFrom(state: RunState, status: WorkStatus, settledAt: number): WorkRecordCore {

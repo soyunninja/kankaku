@@ -857,3 +857,34 @@ test("shutdown while a split is pending loses neither record", () => {
   const records = tracker.shutdownAll();
   assert.deepEqual(records.map((r) => [r.prompt === "first", r.status, r.wallMs]), [[true, "completed", 1000], [false, "interrupted", 4000]]);
 });
+
+test("crash safety: while a record is set aside, the checkpoint (peek) still carries ITS cost — continuation case", () => {
+  const { clock, tracker } = splitTracker();
+  tracker.onRunStart("user prompt");
+  tracker.onAgentStart();
+  clock.advanceTo(1000);
+  tracker.onTurnEnd({ cost: 1 });
+  tracker.onRunEnd([]);
+  tracker.onAgentStart(); // pi's auto-retry
+  clock.advanceTo(2000);
+  tracker.onTurnEnd({ cost: 2 });
+
+  const checkpoint = tracker.peek("interrupted")!;
+  assert.equal(checkpoint.usage.cost, 3);
+  assert.equal(checkpoint.prompt, "user prompt");
+  assert.equal(checkpoint.wallMs, 2000);
+});
+
+test("crash safety: the checkpoint id is the set-aside record's id, so a recovered copy can be told apart from the settled one", () => {
+  const { clock, tracker } = splitTracker();
+  tracker.onRunStart("user prompt");
+  tracker.onAgentStart();
+  const firstId = tracker.peek("interrupted")!.id;
+  clock.advanceTo(1000);
+  tracker.onRunEnd([]);
+  tracker.onAgentStart();
+  assert.equal(tracker.peek("interrupted")!.id, firstId);
+  const [old] = tracker.settleAll();
+  assert.equal(old!.id, firstId);
+  assert.notEqual(tracker.peek("interrupted")!.id, firstId, "once the old record is written, the checkpoint is the new run alone");
+});

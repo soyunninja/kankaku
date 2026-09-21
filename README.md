@@ -85,6 +85,16 @@ Each line in `worklog.jsonl` is one JSON object:
 `stopReason: "aborted"`), or `interrupted` (pi shut down while still
 running).
 
+`runs` counts the agent loops inside the record: the first one plus every
+continuation pi ran before settling it (an automatic retry after a provider
+error, overflow recovery, a queued steer or follow-up). Informational only.
+
+`trigger` is optional. `"extension"` marks a record no user prompt started:
+an extension woke the agent itself — this is how gentle-pi resumes the
+orchestrator when a background subagent finishes. Its `prompt` is the fixed
+text `(no user prompt — run started by an extension)`. Without it that work
+would not be recorded at all, since pi only announces user prompts.
+
 `roleConfidence` and `orchestratorRef` are both optional and normally
 absent — see "Subagents" below. `roleConfidence` is only ever set to
 `"uncertain"`, and only on an `orchestrator`-role record kankaku could not
@@ -933,7 +943,7 @@ leaves the machine at all: `none` (default — omitted entirely), `truncated`
   window. Safe and cheap to run — the content hash still skips anything
   unchanged.
 - `/kankaku sync status` — the current watermark, a locally-computed
-  pending count (no network), how many tasks changed but fall outside the
+  pending count (no network), how many never-synced tasks fall outside the
   current revisit window (needs `sync all` — see "Limitations" below), and
   the last sync error, if any.
 - `/kankaku backfill` — a full sync, reported grouped by

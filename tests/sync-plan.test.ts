@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { computeTaskContentHash, planSync, pruneHashes } from "../src/domain/sync-plan.ts";
+import { computeTaskContentHash, MAX_CORRECTIONS_PER_RUN, planSync, pruneHashes } from "../src/domain/sync-plan.ts";
 import type { SyncState } from "../src/domain/sync-plan.ts";
 import type { TaskView } from "../src/domain/task-view.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
@@ -383,4 +383,22 @@ test("G2: state-size bound — 10,000 retained hash entries (uuid-shaped ids, 8-
   }
   const bytes = Buffer.byteLength(JSON.stringify({ target: TARGET, syncedThrough: iso(0), hashes }), "utf8");
   assert.ok(bytes < 1_000_000, `expected under 1MB for 10,000 retained hashes, measured ${bytes} bytes`);
+});
+
+test("corrections of old rows go AFTER new work, so one failing old row can never block newer rows", () => {
+  const oldTask = makeTask("old", 0, 100);
+  const newTask = makeTask("new", 400_000, 400_100);
+  const state: SyncState = { target: TARGET, syncedThrough: iso(399_000), hashes: { old: "changed-since", new: "changed-since" } };
+  const plan = planSync([oldTask, newTask], state, { target: TARGET, windowHours: 24 });
+  assert.deepEqual(plan.toSync.map((t) => t.id), ["new", "old"]);
+});
+
+test("an incremental sync never re-pushes the whole history at once: out-of-window corrections are capped per run, newest first", () => {
+  const tasks = Array.from({ length: 500 }, (_, i) => makeTask(`t${i}`, i * 10, i * 10 + 5));
+  const hashes = Object.fromEntries(tasks.map((t) => [t.id, "invalidated"]));
+  const state: SyncState = { target: TARGET, syncedThrough: iso(10_000_000), hashes };
+  const plan = planSync(tasks, state, { target: TARGET, windowHours: 24 });
+  assert.equal(plan.toSync.length, MAX_CORRECTIONS_PER_RUN);
+  assert.equal(plan.toSync[0]!.id, "t499");
+  assert.equal(plan.correctionsDeferred, 500 - MAX_CORRECTIONS_PER_RUN);
 });

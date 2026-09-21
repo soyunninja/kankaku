@@ -709,17 +709,38 @@ test("rescue never anchors on an uncertain record, and never overrides a normal 
   assert.equal(byId.get("p3"), 0);
 });
 
-test("rescue: a rescued child never cancels the anchor record's own forwardedUsage — it cannot be the child of any span in it", () => {
-  // The anchor's span for profile X settled with forwarded cost 5 and no child
-  // record of its own. A LATER child of the same profile is rescued into this
-  // task: it started after the anchor settled, so it is a different launch.
+test("rescue: a GRANDCHILD rescued onto the root never cancels the root's own forwardedUsage — it is not the process behind any of its spans", () => {
   const anchor = makeRecord({ id: "p1", pid: 100, startedAt: iso(10), settledAt: iso(20), subagents: [span({ profile: "x", forwardedUsage: { cost: 5 } })] });
-  const rescued = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, profile: "x", startedAt: iso(500), settledAt: iso(600), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 2 }, orchestratorRef: parentRef() });
-  assert.equal(buildTasks([anchor, rescued])[0]!.usage.cost, 7);
+  const grandchild = makeRecord({ id: "g1", role: "subagent", pid: 400, parentPid: 300, profile: "x", startedAt: iso(500), settledAt: iso(600), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 2 }, orchestratorRef: parentRef() });
+  assert.equal(buildTasks([anchor, grandchild])[0]!.usage.cost, 7);
 });
 
 test("rescue: a record written on another machine is never an anchor, even with the same pid", () => {
   const other = makeRecord({ id: "p1", pid: 100, machine: "laptop-b", startedAt: iso(10), settledAt: iso(20) });
   const child = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, machine: "laptop-a", startedAt: iso(500), settledAt: iso(600), orchestratorRef: parentRef() });
   assert.equal(buildTasks([other, child])[0]!.subagents.length, 0);
+});
+
+test("a record recovered from a crash checkpoint under the SAME id as an already-written one counts once: the most complete copy wins", () => {
+  const settled = makeRecord({ id: "same", startedAt: iso(0), settledAt: iso(10), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 5 } });
+  const recoveredEarlier = makeRecord({ id: "same", status: "interrupted", startedAt: iso(0), settledAt: iso(8), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 4 } });
+  const tasks = buildTasks([settled, recoveredEarlier]);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0]!.usage.cost, 5);
+  assert.equal(tasks[0]!.status, "completed");
+
+  const recoveredLater = makeRecord({ id: "same", status: "interrupted", startedAt: iso(0), settledAt: iso(30), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 9 } });
+  assert.equal(buildTasks([settled, recoveredLater])[0]!.usage.cost, 9);
+});
+
+test("forwarded usage is cancelled by the span's own child even when that child started just AFTER the parent settled (gentle-pi timing) — never billed twice", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, startedAt: iso(0), settledAt: iso(10), subagents: [span({ profile: "configured", forwardedUsage: { cost: 7 } })] });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 200, parentPid: 100, profile: "configured", startedAt: iso(11), settledAt: iso(60), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 7 }, orchestratorRef: parentRef() });
+  assert.equal(buildTasks([parent, child])[0]!.usage.cost, 7);
+});
+
+test("the primary parentPid+window join never crosses machines either", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, machine: "mac-a", startedAt: iso(0), settledAt: iso(100) });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 200, parentPid: 100, machine: "mac-b", startedAt: iso(10), settledAt: iso(20) });
+  assert.equal(buildTasks([parent, child])[0]!.subagents.length, 0);
 });

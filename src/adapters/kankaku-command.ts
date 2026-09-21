@@ -386,7 +386,7 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       const { state, pending, staleOutsideWindow } = sync.status();
       const lines = [state?.syncedThrough ? `synced through ${state.syncedThrough}` : "never synced", `pending: ${pending}`];
       if (staleOutsideWindow > 0) {
-        lines.push(`${staleOutsideWindow} task(s) changed but fall outside the sync window — run '/kankaku sync all' to include them`);
+        lines.push(`${staleOutsideWindow} task(s) never synced fall outside the sync window — run '/kankaku sync all' to upload them`);
       }
       if (state?.lastError) lines.push(`last error: ${state.lastError.message} (at ${state.lastError.at})`);
       showReport(ctx, { title: "sync status", lines });

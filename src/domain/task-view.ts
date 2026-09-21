@@ -114,6 +114,27 @@ function isConfirmedOrchestrator(record: WorkRecord): boolean {
   return record.role === "orchestrator" && record.roleConfidence !== "uncertain";
 }
 
+/** A pid means nothing across machines. Only decidable when both records name theirs (`machine` is written when a hub is configured). */
+function differentMachines(a: WorkRecord, b: WorkRecord): boolean {
+  return a.machine !== undefined && b.machine !== undefined && a.machine !== b.machine;
+}
+
+/**
+ * The same record can be in the log twice under one id: written at settle,
+ * then written again by crash recovery because the process died before its
+ * checkpoint was cleared. Count it once, keeping the most complete copy —
+ * the later `settledAt` (a checkpoint taken while a newer run was folded in
+ * is later AND larger than the settled copy; a stale one is earlier).
+ */
+function dedupeById(records: WorkRecord[]): WorkRecord[] {
+  const byId = new Map<string, WorkRecord>();
+  for (const record of records) {
+    const seen = byId.get(record.id);
+    if (!seen || toMs(record.settledAt) > toMs(seen.settledAt)) byId.set(record.id, record);
+  }
+  return byId.size === records.length ? records : records.filter((record) => byId.get(record.id) === record);
+}
+
 /**
  * Second pass, only for a child no orchestrator window contains: join it to
  * the most recent record of the very process that launched it, as PROVEN by
@@ -151,7 +172,7 @@ function rescueByParentIdentity(child: WorkRecord, orchestrators: WorkRecord[]):
     if (orchestrator.pid !== ref.pid) continue;
     // A pid is only unique on ONE machine: a worklog shared between two
     // (a synced KANKAKU_DIR) must never join across them.
-    if (orchestrator.machine !== undefined && child.machine !== undefined && orchestrator.machine !== child.machine) continue;
+    if (differentMachines(orchestrator, child)) continue;
     const start = toMs(orchestrator.startedAt);
     if (!(start >= processStart && start <= childStart)) continue;
     if (start > bestStart) {
@@ -178,10 +199,11 @@ function rescueByParentIdentity(child: WorkRecord, orchestrators: WorkRecord[]):
  * lookups and stays pure. Each child is assigned at most once; unmatched
  * children are orphans.
  */
-function matchChildren(records: WorkRecord[]): {
+function matchChildren(allRecords: WorkRecord[]): {
   childrenByOrchestratorId: Map<string, WorkRecord[]>;
   orphans: WorkRecord[];
 } {
+  const records = dedupeById(allRecords);
   const orchestrators = records.filter(isConfirmedOrchestrator);
   const subagents = records.filter((record) => record.role === "subagent");
 
@@ -200,6 +222,7 @@ function matchChildren(records: WorkRecord[]): {
 
     for (const orchestrator of orchestrators) {
       if (orchestrator.pid !== child.parentPid) continue;
+      if (differentMachines(orchestrator, child)) continue;
 
       const parentStart = toMs(orchestrator.startedAt);
       const parentEnd = toMs(orchestrator.settledAt);
@@ -248,17 +271,15 @@ function matchChildren(records: WorkRecord[]): {
  * function at all.
  */
 function unjoinedForwardedUsage(orchestrator: WorkRecord, subagents: WorkRecord[]): Array<Partial<UsageTotals>> {
-  // Only a child this record itself launched — a direct child that started
-  // inside its window — can be the process behind one of its spans. A child
-  // joined by {@link rescueByParentIdentity} started after this record
-  // settled (or is a grandchild), so it is never the one a span here
-  // forwarded usage for, and must not cancel it.
-  const parentStart = toMs(orchestrator.startedAt);
-  const parentEnd = toMs(orchestrator.settledAt);
-  const launchedHere = subagents.filter((child) => {
-    const start = toMs(child.startedAt);
-    return child.parentPid === orchestrator.pid && start >= parentStart && start <= parentEnd;
-  });
+  // Only a DIRECT child can be the process behind one of this record's
+  // spans; a grandchild joined by {@link rescueByParentIdentity} never is.
+  // Deliberately NOT narrowed to children that started inside the window:
+  // gentle-pi's child process starts ~90 ms after `subagent_run` returns,
+  // often after this record settled, and it IS that span's child — narrowing
+  // billed it twice. The other error (a later, unrelated launch of the same
+  // profile cancelling this span's forwarded usage) under-bills instead,
+  // which is the safer side to be wrong on.
+  const launchedHere = subagents.filter((child) => child.parentPid === orchestrator.pid);
   const joinedProfiles = new Set(launchedHere.map((child) => child.profile).filter((id): id is string => id !== undefined));
   return orchestrator.subagents
     .filter((span) => span.forwardedUsage !== undefined && !(span.profile !== undefined && joinedProfiles.has(span.profile)))
@@ -312,7 +333,8 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
  * "uncertain"` (ADR 0022) never anchors a task here — see
  * {@link isConfirmedOrchestrator} and {@link uncertainRecords}.
  */
-export function buildTasks(records: WorkRecord[]): TaskView[] {
+export function buildTasks(allRecords: WorkRecord[]): TaskView[] {
+  const records = dedupeById(allRecords);
   const orchestrators = records.filter(isConfirmedOrchestrator).sort((a, b) => toMs(a.startedAt) - toMs(b.startedAt));
 
   const { childrenByOrchestratorId } = matchChildren(records);

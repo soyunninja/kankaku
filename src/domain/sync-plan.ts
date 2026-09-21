@@ -58,23 +58,21 @@ export interface SyncPlan {
   /** `true` when this run evaluated every task rather than only the revisit window. */
   isFullSync: boolean;
   /**
-   * Tasks whose content changed since they were last synced (like `toSync`)
-   * but whose `endedAt` falls behind this run's revisit window — so an
-   * ordinary incremental sync does not re-evaluate them (R3): a background
-   * subagent that settles long after its orchestrator bumps the task's
-   * `endedAt` (see `task-view.ts`) forward, which keeps it inside the
-   * window as long as `syncedThrough` itself has not since advanced past
-   * it — but once *other* activity in the same directory pushes the
-   * watermark far enough ahead, the late join falls out of range and only
-   * `sync all` (or `backfill`) picks it up. Always empty for a full sync,
-   * since nothing is excluded by the window there. Cheap to compute (no
-   * extra I/O) and surfaced by `/kankaku sync status` — see README "Hub
-   * (PocketBase)" > "Sync" > "Limitations".
+   * Tasks outside this run's revisit window that were NEVER synced to this
+   * hub: an ordinary incremental sync does not look that far back for new
+   * work, so only `sync all` (or `backfill`) uploads them. A task the hub
+   * already holds never appears here — if it changed it is in `toSync`.
+   * Always empty for a full sync. Surfaced by `/kankaku sync status`.
    */
   staleOutsideWindow: TaskView[];
+  /** Already-synced rows that changed but were left for a later run by {@link MAX_CORRECTIONS_PER_RUN}. */
+  correctionsDeferred: number;
 }
 
 const DEFAULT_WINDOW_HOURS = 24;
+
+/** How many already-synced, out-of-window rows one incremental run corrects at most; the rest wait for the next run (or `sync all`). */
+export const MAX_CORRECTIONS_PER_RUN = 50;
 
 function windowMs(hours: number): number {
   return hours * 60 * 60 * 1000;
@@ -174,15 +172,23 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
   // join, or a crash-recovered parent appearing later), so a task can
   // SHRINK — skipping it would leave its old, larger cost on the hub next
   // to the row the money moved to.
-  const knownAndChanged = outsideWindow.filter((task) => hashes[task.id] !== undefined && changed(task));
-  const toSync = [...eligible.filter(changed), ...knownAndChanged].sort((a, b) => Date.parse(a.endedAt) - Date.parse(b.endedAt));
+  // Newest first and capped: anything that invalidates many stored hashes at
+  // once (a new field in the content hash, a damaged state file) must drain
+  // over several runs, never as one burst from an automatic sync. New work
+  // goes FIRST and corrections last, so a correction the hub keeps failing
+  // (the runner stops at the first transport error) can never hold newer
+  // rows back; the runner's watermark is a max, so the order is safe for it.
+  const allCorrections = outsideWindow.filter((task) => hashes[task.id] !== undefined && changed(task)).reverse();
+  const knownAndChanged = isFullSync ? allCorrections : allCorrections.slice(0, MAX_CORRECTIONS_PER_RUN);
+  const correctionsDeferred = allCorrections.length - knownAndChanged.length;
+  const toSync = [...eligible.filter(changed), ...knownAndChanged];
   // R3: cheap, pure visibility into a task that changed but that this
   // incremental run's window will not re-evaluate — see SyncPlan's doc
   // comment. No extra work: `outsideWindow` is already computed above,
   // this just re-applies the same hash-mismatch check to it.
   const staleOutsideWindow = outsideWindow.filter((task) => hashes[task.id] === undefined);
 
-  return { toSync, unchangedCount: eligible.length - eligible.filter(changed).length, isFullSync, staleOutsideWindow };
+  return { toSync, unchangedCount: eligible.length - eligible.filter(changed).length, isFullSync, staleOutsideWindow, correctionsDeferred };
 }
 
 /**
