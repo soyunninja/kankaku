@@ -111,9 +111,26 @@ export interface KankakuCommandDeps {
   /**
    * `KANKAKU_ROLE`, when it held a recognised value for this process (F3's
    * explicit escape hatch) — reported by doctor as the deciding signal for
-   * this process's role, since it overrides every other detection signal.
+   * this process's role, UNLESS `childMarkerPresent` or
+   * `overrideIgnoredInteractive` below says otherwise (R1): the override no
+   * longer beats every other detection signal unconditionally.
    */
   roleOverride?: "orchestrator" | "subagent";
+  /**
+   * Whether `GENTLE_PI_AGENTS_CHILD=1` (the confirmed child marker) was
+   * also present on this process (R1) — when both it and `roleOverride`
+   * are set, the marker always wins (`config.ts#detectRole`'s precedence),
+   * so doctor flags the contradiction with the resolved outcome instead of
+   * claiming the override decided anything.
+   */
+  childMarkerPresent?: boolean;
+  /**
+   * Set when `KANKAKU_ROLE=subagent` was present, with no confirmed child
+   * marker, but was ignored because this process looked interactive (R1) —
+   * doctor reports the resolved outcome (orchestrator) instead of claiming
+   * the override decided this process's role.
+   */
+  overrideIgnoredInteractive?: boolean;
   /**
    * Set only when this process is itself a subagent whose work log/inflight
    * checkpoints were routed to its orchestrator's kankaku directory (F1, ADR
@@ -405,7 +422,20 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     }
 
     if (deps.roleOverride) {
-      lines.push(`role override: KANKAKU_ROLE=${deps.roleOverride} (deciding signal for this process's role)`);
+      if (deps.childMarkerPresent) {
+        // R1: both signals present — the confirmed child marker always
+        // wins (config.ts#detectRole), so the override did not decide
+        // anything, whatever it said.
+        lines.push(
+          `role override: KANKAKU_ROLE=${deps.roleOverride} was present, but the confirmed child marker (GENTLE_PI_AGENTS_CHILD=1) takes precedence — resolved role: subagent`,
+        );
+      } else if (deps.overrideIgnoredInteractive) {
+        lines.push(
+          "role override: KANKAKU_ROLE=subagent was ignored for this interactive session (likely a leaked shell export) — resolved role: orchestrator",
+        );
+      } else {
+        lines.push(`role override: KANKAKU_ROLE=${deps.roleOverride} (deciding signal for this process's role)`);
+      }
     }
 
     if (deps.workLogRouting?.usedFallback) {

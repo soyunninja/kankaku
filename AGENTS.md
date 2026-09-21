@@ -69,16 +69,34 @@ Read `README.md` for behaviour and the record schema before changing code.
   never demoted to `uncertain` regardless of its ancestry, since every
   subagent mechanism kankaku recognises launches its child
   non-interactively; see README "Subagents" > "Interactive sessions").
-  `KANKAKU_ROLE=orchestrator|subagent` (`config.ts#readRoleOverride`)
-  overrides every other signal outright, including the env marker. An
-  **uncertain** record never defaults to `"orchestrator"`, is never counted
-  as a new task locally, and is never synced to the hub as one (ADR 0022) —
-  see README "Subagents". `WorkRecord.roleConfidence` (optional, only ever
-  `"uncertain"`) carries this; adding it did not bump
-  `WORK_RECORD_SCHEMA`. `role` itself is decided once, at factory time
-  (`config.ts#detectRole`, env-only — never depends on ancestry or
-  interactivity); `roleConfidence` is deferred and resolved exactly once,
-  at `session_start` (`pi-tracker.ts`'s `resolveRoleConfidence`), since
+  `KANKAKU_ROLE=orchestrator|subagent` (`config.ts#readRoleOverride`) is an
+  explicit escape hatch, but — since R1 — it never beats a *confirmed*
+  signal and is never inherited: `GENTLE_PI_AGENTS_CHILD=1` (the automatic
+  child marker) always wins over `KANKAKU_ROLE=orchestrator`, so a
+  `KANKAKU_ROLE=orchestrator` leaked into the environment (a shell rc,
+  tmux, CI) can never turn a genuine subagent into a confirmed,
+  independently-billed orchestrator; and `KANKAKU_ROLE=subagent` with no
+  confirmed marker is ignored for an interactive (`ctx.mode === "tui"`)
+  process — no subagent mechanism kankaku recognises ever launches its
+  child interactively, so this is almost always the mirror leak (a genuine
+  top-level session about to be silently dropped), and is treated as
+  `orchestrator` instead, flagged via `ctx.ui.notify` at `session_start`
+  and in `/kankaku doctor` rather than resolved silently. `extension.ts`
+  also strips `KANKAKU_ROLE` from its own `process.env` right after reading
+  it (`config.ts#stripRoleOverride`), so no child this process spawns ever
+  inherits it — see the full precedence table in `config.ts#detectRole`'s
+  doc comment and README "Subagents" > "Interactive sessions and
+  `KANKAKU_ROLE`". An **uncertain** record never defaults to
+  `"orchestrator"`, is never counted as a new task locally, and is never
+  synced to the hub as one (ADR 0022) — see README "Subagents".
+  `WorkRecord.roleConfidence` (optional, only ever `"uncertain"`) carries
+  this; adding it did not bump `WORK_RECORD_SCHEMA`. `role` itself is
+  decided once, at factory time (`config.ts#detectRole`, env-only, plus a
+  cheap synchronous TTY-based interactivity guess feeding only the
+  `KANKAKU_ROLE=subagent`-in-an-interactive-session exception above — never
+  ancestry, and never pi's own authoritative `ctx.mode`); `roleConfidence`
+  is (separately) deferred and resolved exactly once, at `session_start`
+  (`pi-tracker.ts`'s `resolveRoleConfidence`), since
   interactivity is only knowable once pi's own `ExtensionContext` exists —
   and then stays stable for the rest of the process's life.
 - A registry match is by **identity, not just pid**: pids are reused by the

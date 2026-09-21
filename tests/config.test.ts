@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectRole, loadConfig, loadHubEnvCredentials, loadMachine, loadSyncConfig, readRoleOverride, validateHubUrl } from "../src/config.ts";
+import { detectRole, loadConfig, loadHubEnvCredentials, loadMachine, loadSyncConfig, readRoleOverride, stripRoleOverride, validateHubUrl } from "../src/config.ts";
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return { ...overrides } as NodeJS.ProcessEnv;
@@ -119,17 +119,29 @@ test("detectRole never classifies an interactive (TUI) process as uncertain, eve
   assert.deepEqual(detectRole(env({}), true), { role: "orchestrator" });
 });
 
-test("KANKAKU_ROLE=subagent overrides detection outright, even with no tracked ancestor and no GENTLE_PI_AGENTS_CHILD marker", () => {
-  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" })), { role: "subagent" });
-  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" }), true, true), { role: "subagent" });
+test("KANKAKU_ROLE=subagent overrides detection outright for a non-interactive process, even with no tracked ancestor and no GENTLE_PI_AGENTS_CHILD marker", () => {
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" }), false, false), { role: "subagent" });
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" }), true, false), { role: "subagent" });
 });
 
 test("KANKAKU_ROLE=orchestrator overrides detection outright, forcing a confirmed orchestrator even with a tracked, non-interactive ancestor", () => {
   assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "orchestrator" }), true, false), { role: "orchestrator" });
 });
 
-test("KANKAKU_ROLE takes precedence over GENTLE_PI_AGENTS_CHILD", () => {
-  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "orchestrator", GENTLE_PI_AGENTS_CHILD: "1" })), { role: "orchestrator" });
+test("R1 (BLOCKER): a confirmed child marker (GENTLE_PI_AGENTS_CHILD=1) always takes precedence over KANKAKU_ROLE=orchestrator — a leaked shell export must never turn a real subagent into a confirmed, independently-billed orchestrator", () => {
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "orchestrator", GENTLE_PI_AGENTS_CHILD: "1" })), { role: "subagent" });
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "orchestrator", GENTLE_PI_AGENTS_CHILD: "1" }), true, false), { role: "subagent" });
+});
+
+test("R1: a confirmed child marker and a consistent KANKAKU_ROLE=subagent agree — role is subagent regardless of interactivity", () => {
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent", GENTLE_PI_AGENTS_CHILD: "1" }), false, true), { role: "subagent" });
+});
+
+test("R1: KANKAKU_ROLE=subagent with no confirmed marker is IGNORED for an interactive (TUI) session — almost certainly a leaked shell export, so it is treated as the orchestrator it structurally must be, and flagged", () => {
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" }), false, true), { role: "orchestrator", overrideIgnoredInteractive: true });
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" })), { role: "orchestrator", overrideIgnoredInteractive: true }); // isInteractive defaults to true
+  // A tracked ancestor does not change this — the interactivity contradiction is decided first.
+  assert.deepEqual(detectRole(env({ KANKAKU_ROLE: "subagent" }), true, true), { role: "orchestrator", overrideIgnoredInteractive: true });
 });
 
 test("an invalid KANKAKU_ROLE value is ignored, falling back to normal detection", () => {
@@ -144,6 +156,68 @@ test("readRoleOverride reads and validates KANKAKU_ROLE", () => {
   assert.equal(readRoleOverride(env({ KANKAKU_ROLE: "nope" })), undefined);
   assert.equal(readRoleOverride(env({})), undefined);
 });
+
+test("stripRoleOverride removes KANKAKU_ROLE from the given env object in place, never touching real process.env (R1, layer 2)", () => {
+  const fakeEnv = env({ KANKAKU_ROLE: "orchestrator", OTHER: "kept" });
+  stripRoleOverride(fakeEnv);
+  assert.equal(fakeEnv["KANKAKU_ROLE"], undefined);
+  assert.equal(fakeEnv["OTHER"], "kept");
+  // The real process.env is never touched by this test — stripRoleOverride
+  // only ever acts on the object it is given.
+  assert.notEqual(process.env, fakeEnv);
+});
+
+test("stripRoleOverride is a harmless no-op when KANKAKU_ROLE was never set", () => {
+  const fakeEnv = env({ OTHER: "kept" });
+  assert.doesNotThrow(() => stripRoleOverride(fakeEnv));
+  assert.equal(fakeEnv["OTHER"], "kept");
+});
+
+// R1: the full precedence table, every combination of marker × override ×
+// tracked-ancestor × interactive. ("detection-unavailable" — an ancestor
+// search that could not run at all — is indistinguishable from "no
+// ancestor found" at this pure layer: both are simply hasTrackedAncestor
+// = false, already covered below; the distinction only matters for
+// `/kankaku doctor`'s own separate `ancestorDetectionAvailable` report.)
+const PRECEDENCE_MATRIX: Array<{
+  marker: boolean;
+  override: "orchestrator" | "subagent" | undefined;
+  hasTrackedAncestor: boolean;
+  isInteractive: boolean;
+  expected: ReturnType<typeof detectRole>;
+}> = [];
+
+for (const marker of [true, false]) {
+  for (const override of ["orchestrator", "subagent", undefined] as const) {
+    for (const hasTrackedAncestor of [true, false]) {
+      for (const isInteractive of [true, false]) {
+        let expected: ReturnType<typeof detectRole>;
+        if (marker) {
+          // A confirmed child marker always wins — nothing else matters.
+          expected = { role: "subagent" };
+        } else if (override === "orchestrator") {
+          expected = { role: "orchestrator" };
+        } else if (override === "subagent") {
+          expected = isInteractive ? { role: "orchestrator", overrideIgnoredInteractive: true } : { role: "subagent" };
+        } else if (hasTrackedAncestor && !isInteractive) {
+          expected = { role: "orchestrator", roleConfidence: "uncertain" };
+        } else {
+          expected = { role: "orchestrator" };
+        }
+        PRECEDENCE_MATRIX.push({ marker, override, hasTrackedAncestor, isInteractive, expected });
+      }
+    }
+  }
+}
+
+for (const { marker, override, hasTrackedAncestor, isInteractive, expected } of PRECEDENCE_MATRIX) {
+  test(`R1 precedence matrix: marker=${marker} override=${override ?? "none"} hasTrackedAncestor=${hasTrackedAncestor} isInteractive=${isInteractive} -> ${JSON.stringify(expected)}`, () => {
+    const overrides: Record<string, string | undefined> = {};
+    if (marker) overrides["GENTLE_PI_AGENTS_CHILD"] = "1";
+    if (override) overrides["KANKAKU_ROLE"] = override;
+    assert.deepEqual(detectRole(env(overrides), hasTrackedAncestor, isInteractive), expected);
+  });
+}
 
 test("loadHubEnvCredentials reads KANKAKU_PB_URL/EMAIL/PASSWORD", () => {
   const creds = loadHubEnvCredentials(

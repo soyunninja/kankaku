@@ -106,20 +106,30 @@ export interface RoleDetection {
    * `roleConfidence` handling.
    */
   roleConfidence?: "uncertain";
+  /**
+   * Set when `KANKAKU_ROLE=subagent` was present, with no confirmed child
+   * marker, but was ignored because this process looked interactive (see
+   * this function's precedence doc — R1). The caller (`extension.ts`) is
+   * expected to surface this once via `ctx.ui.notify` at `session_start`
+   * and report it in `/kankaku doctor`, so the contradiction is never
+   * silent.
+   */
+  overrideIgnoredInteractive?: true;
 }
 
 export type RoleOverride = "orchestrator" | "subagent";
 
 /**
- * `KANKAKU_ROLE`: an explicit escape hatch that overrides every other
- * signal `detectRole` would otherwise use (env marker, tracked ancestor,
- * interactivity) — for a genuine session `detectRole` gets wrong (no
- * reliable automatic signal exists for it), and for a legacy/JSONL record
- * already written `uncertain`, which can never be rewritten after the fact
- * (the log is append-only) but whose *next* run can be told the truth
- * directly. An unrecognised value (anything other than exactly
- * `"orchestrator"` or `"subagent"`) is ignored, falling back to normal
- * detection, rather than failing the process or guessing.
+ * `KANKAKU_ROLE`: an explicit escape hatch for a genuine session
+ * `detectRole` gets wrong (no reliable automatic signal exists for it),
+ * and for a legacy/JSONL record already written `uncertain`, which can
+ * never be rewritten after the fact (the log is append-only) but whose
+ * *next* run can be told the truth directly. It does **not** override
+ * every other signal unconditionally any more — see `detectRole`'s
+ * precedence doc (R1) for the confirmed-child-marker and interactive-
+ * session exceptions this now has. An unrecognised value (anything other
+ * than exactly `"orchestrator"` or `"subagent"`) is ignored, falling back
+ * to normal detection, rather than failing the process or guessing.
  */
 export function readRoleOverride(env: NodeJS.ProcessEnv = process.env): RoleOverride | undefined {
   const raw = env["KANKAKU_ROLE"]?.trim();
@@ -127,19 +137,65 @@ export function readRoleOverride(env: NodeJS.ProcessEnv = process.env): RoleOver
 }
 
 /**
- * Classify this process's role, strictly in this order:
+ * Remove `KANKAKU_ROLE` from `env` in place (R1, layer 2 — non-
+ * propagation). `KANKAKU_ROLE` decides only THIS process's role; a child
+ * this process spawns (a subagent runner, a tool shell) must never inherit
+ * it, since `process.env` is inherited by every OS child by default. Left
+ * unstripped, a user who once hit a false `uncertain` and exported
+ * `KANKAKU_ROLE=orchestrator` in a shell rc/tmux/CI environment would have
+ * every subsequent subagent see it too — layer 1's precedence fix
+ * (a confirmed child marker always wins) already neutralises that specific
+ * leak for a *recognised* subagent mechanism, but this strips it outright
+ * so it can never reach an unrecognised one, or reach an unrelated child
+ * process this one spawns for some other reason. Takes the env object as
+ * a parameter, rather than reaching for `process.env` itself, so this
+ * stays a pure function tests can exercise against a plain object without
+ * ever mutating the real environment — `extension.ts` is the one caller
+ * that passes the real `process.env`, right after reading the override.
+ */
+export function stripRoleOverride(env: NodeJS.ProcessEnv): void {
+  delete env["KANKAKU_ROLE"];
+}
+
+/**
+ * Classify this process's role, strictly in this order (R1 rewrote this
+ * precedence — a leaked `KANKAKU_ROLE` must never out-rank a *confirmed*
+ * signal, and must never silently drop a genuine interactive session):
  *
- * 1. `KANKAKU_ROLE` (F3's explicit escape hatch), when set to a recognised
- *    value — overrides every other signal outright, including the env
- *    marker below.
- * 2. `GENTLE_PI_AGENTS_CHILD=1` — the automatic confirmed-subagent marker
- *    (unchanged from before ADR 0022).
+ * 1. `GENTLE_PI_AGENTS_CHILD=1` — the automatic confirmed-subagent marker,
+ *    set only by the subagent runner itself, never something a shell
+ *    rc/tmux/CI environment would export. **Always wins**, even over an
+ *    explicit `KANKAKU_ROLE=orchestrator` — without this, a leaked
+ *    `KANKAKU_ROLE=orchestrator` export would turn every one of this
+ *    process's genuine subagent invocations into a confirmed,
+ *    independently-billed orchestrator too (the bug this fixes).
+ * 2. `KANKAKU_ROLE` (F3's explicit escape hatch), when set to a recognised
+ *    value and no confirmed marker matched above — with one exception:
+ *    `KANKAKU_ROLE=subagent` in an **interactive** session (`isInteractive`
+ *    — see below) is ignored. No subagent mechanism kankaku recognises
+ *    ever launches its child interactively; an interactive session with
+ *    this override set and no marker to back it up is therefore almost
+ *    certainly a leaked shell export, not a real subagent. Honouring it
+ *    would silently drop this session's own work from every report and
+ *    the hub (an orphaned subagent record that never anchors a task) with
+ *    no way to recover it later, since `worklog.jsonl` is append-only.
+ *    Between the package's two guiding rules — "undercount is recoverable,
+ *    overcount is not" (which governs the *opposite* risk, inventing extra
+ *    billing, and does not apply here) and "never silently drop genuine
+ *    work" — this is governed by the second: the override is ignored, this
+ *    process is classified `orchestrator` (what it structurally must be),
+ *    and `overrideIgnoredInteractive` is set so the caller can surface the
+ *    contradiction instead of resolving it silently. A non-interactive
+ *    process gets exactly what it asked for. `KANKAKU_ROLE=orchestrator`
+ *    has no such exception — forcing a session `orchestrator` can never
+ *    drop work, only (rarely) invent a task that should not exist, a risk
+ *    the user accepted by setting it explicitly.
  * 3. `hasTrackedAncestor` — whether this process's own OS ancestor chain
  *    contains a live, identity-verified entry in the machine-wide process
  *    registry (computed by the caller, e.g. `adapters/subagent-startup.ts`,
  *    via `adapters/ancestry.ts` + `domain/ancestry-match.ts`; see
- *    `ports/process-registry.ts`) — combined with `isInteractive` (F3):
- *    only a *non-interactive* process with a tracked ancestor is demoted to
+ *    `ports/process-registry.ts`) — combined with `isInteractive`: only a
+ *    *non-interactive* process with a tracked ancestor is demoted to
  *    `uncertain` (ADR 0022's safe default, inverted). An interactive TUI
  *    session on a real terminal is a human's own session even when some
  *    ancestor happens to be a tracked pi process (e.g. pi launched from
@@ -147,11 +203,14 @@ export function readRoleOverride(env: NodeJS.ProcessEnv = process.env): RoleOver
  *    recognises launches its child non-interactively over pipes, so
  *    `isInteractive` alone already tells a genuine top-level session apart
  *    from one that could plausibly be someone's silent child.
- *    `isInteractive` defaults to `true` (never uncertain) so a caller that
- *    does not yet know it (interactivity is often only knowable once pi's
- *    own `ExtensionContext` is available, later than this process's role
- *    must otherwise be decided) never wrongly demotes a session before it
- *    can find out.
+ *
+ * `isInteractive` defaults to `true` — the same conservative default used
+ * for both the interactive-override exception above and the `uncertain`
+ * fallback below, since a caller that does not yet know it (see
+ * `extension.ts`'s factory-time synchronous TTY proxy, and F3's later,
+ * authoritative `ctx.mode === "tui"` refinement of `roleConfidence` only —
+ * never of `role` itself) should never wrongly honour a `subagent` override
+ * or demote a session to `uncertain` before it can find out.
  *
  * A process that cannot be shown to be top-level by any of the above must
  * never default to `"orchestrator"` outright — but see F2: when ancestor
@@ -165,9 +224,16 @@ export function readRoleOverride(env: NodeJS.ProcessEnv = process.env): RoleOver
  * detection limitation visible; it is never encoded in `roleConfidence`.
  */
 export function detectRole(env: NodeJS.ProcessEnv = process.env, hasTrackedAncestor = false, isInteractive = true): RoleDetection {
-  const override = readRoleOverride(env);
-  if (override !== undefined) return { role: override };
   if (env["GENTLE_PI_AGENTS_CHILD"] === "1") return { role: "subagent" };
+
+  const override = readRoleOverride(env);
+
+  if (override === "orchestrator") return { role: "orchestrator" };
+
+  if (override === "subagent") {
+    return isInteractive ? { role: "orchestrator", overrideIgnoredInteractive: true } : { role: "subagent" };
+  }
+
   if (hasTrackedAncestor && !isInteractive) return { role: "orchestrator", roleConfidence: "uncertain" };
   return { role: "orchestrator" };
 }

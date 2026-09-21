@@ -1547,6 +1547,52 @@ test("session_start notifies a hub config error exactly once, even across repeat
   assert.equal(notified.filter((n) => n.message.includes("refusing non-HTTPS")).length, 1);
 });
 
+test("R1: session_start notifies once (warning) when KANKAKU_ROLE=subagent was ignored for an interactive session, even across repeated session_start events", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    overrideIgnoredInteractive: true,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("session_start", { type: "session_start", reason: "reload" }, ctx);
+
+  const matches = notified.filter((n) => n.message.includes("KANKAKU_ROLE=subagent") && n.message.includes("ignoring"));
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0]?.type, "warning");
+});
+
+test("R1: session_start never notifies the override-ignored warning when overrideIgnoredInteractive is not set", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+
+  assert.equal(notified.length, 0);
+});
+
 test("buildRecord attaches clientId/clientName/projectId/projectName and machine when a hub target resolves for the run", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentTool: "subagent_run" });

@@ -400,7 +400,10 @@ subagent system that needs marking explicitly on such a platform — see
   system on this platform/environment may be counted twice, with
   `KANKAKU_ROLE` named as the fix.
 - `KANKAKU_ROLE`, when it decided this process's role, as the deciding
-  signal.
+  signal — or, when it did not (a confirmed child marker took precedence,
+  or an interactive session's `subagent` override was ignored — see
+  "Interactive sessions and `KANKAKU_ROLE`" below), the contradiction and
+  the resolved outcome instead.
 - Whether this process is a subagent that could not write to its
   orchestrator's directory and fell back to its own local one (see
   "Cross-worktree write routing" above) — a hint to go reunite that record
@@ -429,15 +432,75 @@ this process's binary `role` (orchestrator vs. subagent) is decided, but
 stable for the rest of the process's life.
 
 **`KANKAKU_ROLE=orchestrator` or `KANKAKU_ROLE=subagent`** is an explicit
-escape hatch that overrides every other signal outright (including the
-env marker) — validated; any other value is ignored, falling back to
+escape hatch — validated; any other value is ignored, falling back to
 normal detection. Use it to force a session kankaku still gets wrong: mark
 a genuine subagent system it does not recognise as `subagent` (this is
 also the remedy `/kankaku doctor` names when ancestor-chain detection is
 unavailable on the current platform), or force a session `orchestrator`
-regardless of what its ancestry looks like. `/kankaku doctor` reports
-`KANKAKU_ROLE` as the deciding signal whenever it is set. It has no effect
-on a record already written — see "The role/state model" above.
+regardless of what its ancestry looks like. It has no effect on a record
+already written — see "The role/state model" above.
+
+**Scope it to one invocation. Never export it in a shell rc, tmux config,
+or CI environment file.** `process.env` is inherited by every OS child by
+default: an exported `KANKAKU_ROLE` reaches every `pi` invocation that
+shell/session ever starts, subagents included. Set it only on the one
+command it is meant for:
+
+```
+KANKAKU_ROLE=orchestrator pi ...
+```
+
+**Precedence (rewritten for a real bug — a BLOCKER fix).** `KANKAKU_ROLE`
+no longer overrides every other signal unconditionally:
+
+1. A **confirmed child marker** (`GENTLE_PI_AGENTS_CHILD=1`, set only by
+   the subagent runner itself, never something a shell rc/tmux/CI
+   environment would export) **always wins**, even over an explicit
+   `KANKAKU_ROLE=orchestrator`. Without this, a `KANKAKU_ROLE=orchestrator`
+   export that leaked into a shell rc — the natural thing to do after
+   hitting a false `uncertain` once — would turn every one of that shell's
+   later subagent invocations into a confirmed, independently-billed
+   orchestrator: systematic multi-counting, invisible until someone
+   compares the hub totals against what actually happened.
+2. `KANKAKU_ROLE=subagent`, with no confirmed marker, is **ignored for an
+   interactive session** (`ctx.mode === "tui"`). No subagent mechanism
+   kankaku recognises ever launches its child interactively, so this is
+   almost always the *mirror* leak — a globally exported
+   `KANKAKU_ROLE=subagent` reaching a genuine top-level terminal session —
+   and honouring it would silently drop that session's own work from every
+   report and the hub (an orphaned subagent record that never anchors a
+   task), with no way to recover it later, since `worklog.jsonl` is
+   append-only. Between kankaku's two guiding rules — "undercount is
+   recoverable, overcount is not" (which governs the *opposite* risk,
+   inventing extra billing, and does not apply to this contradiction) and
+   "never silently drop genuine work" — this one is governed by the
+   second: the override is ignored, the session is classified
+   `orchestrator` (what it structurally must be), and the contradiction is
+   surfaced once via `ctx.ui.notify` (a warning) at `session_start` and in
+   `/kankaku doctor` — never resolved silently. `KANKAKU_ROLE=orchestrator`
+   has no such exception: forcing a session `orchestrator` can never drop
+   work, only (rarely) invent a task that should not exist, a risk the
+   user accepted by setting it explicitly.
+3. Otherwise `KANKAKU_ROLE`, when set to a recognised value, decides — as
+   before.
+
+`/kankaku doctor` reports `KANKAKU_ROLE` as the deciding signal only when
+it actually decided anything: it flags "override present AND child marker
+present" with the resolved outcome (`subagent`, per rule 1) when both are
+set, and reports the resolved `orchestrator` outcome (per rule 2) when a
+`subagent` override was ignored for an interactive session — in neither
+case does it claim the override was the deciding signal.
+
+**Non-propagation.** `KANKAKU_ROLE` decides only the process that reads
+it. kankaku strips it from its own `process.env` right after reading it
+(before spawning anything), so a child it spawns — a subagent runner, a
+tool shell — never inherits it, even when this process's own copy came
+from something outside kankaku's control (a shell rc, tmux, CI). This is
+a second, independent layer on top of rule 1 above: rule 1 already
+neutralises a leaked `KANKAKU_ROLE=orchestrator` for any *recognised*
+subagent mechanism (its confirmed marker always wins regardless), but
+stripping means the leak can never reach an *unrecognised* one, or any
+other child process, either.
 
 ### Limitations, honestly
 
@@ -860,9 +923,15 @@ Columns (in this order for CSV; the same fields for JSON):
 - `KANKAKU_SEGMENTS`: `;`-separated `tag=tool:regex` rules for tagged
   segments (see above). Defaults to the single `review` rule.
 - `KANKAKU_ROLE`: `orchestrator` or `subagent` — an explicit escape hatch
-  that overrides all role detection (env marker, ancestry, interactivity)
-  for this process. Any other value is ignored. See "Subagents" >
-  "Interactive sessions and `KANKAKU_ROLE`".
+  for this process. Any other value is ignored. Scope it to one
+  invocation (`KANKAKU_ROLE=orchestrator pi ...`) — **never export it in
+  a shell rc, tmux config, or CI environment file**: a confirmed child
+  marker always wins over `KANKAKU_ROLE=orchestrator`, `KANKAKU_ROLE=
+  subagent` is ignored for an interactive session, and kankaku strips it
+  from the environment it passes to any child it spawns, but none of that
+  helps if it reaches a session it was never meant for in the first
+  place. See "Subagents" > "Interactive sessions and `KANKAKU_ROLE`" for
+  the full precedence.
 - `KANKAKU_CLIENT`: default billing client for this project (see "Billing
   labels" above). Lower precedence than the session-level
   `/kankaku client` override, higher than `<KANKAKU_DIR>/config.json`.

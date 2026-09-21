@@ -2,7 +2,7 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { detectRole, loadConfig, loadMachine, loadSyncConfig, readRoleOverride } from "./config.ts";
+import { detectRole, loadConfig, loadMachine, loadSyncConfig, readRoleOverride, stripRoleOverride } from "./config.ts";
 import { WorkTracker } from "./domain/work-tracker.ts";
 import { resolveOrchestratorRef } from "./domain/ancestry-match.ts";
 import { LazyJsonlWorkLog } from "./adapters/lazy-jsonl-work-log.ts";
@@ -59,13 +59,37 @@ export default function kankaku(pi: ExtensionAPI): void {
   const hasTrackedAncestor = ancestorEntry !== undefined;
 
   // `role` itself only ever depends on the env marker/override — never on
-  // ancestry or interactivity — so it is safe, and correct, to decide it
-  // once, right here, and never revisit it (F3: only `roleConfidence`, for
-  // an `"orchestrator"` record, is deferred — see `resolveRoleConfidence`
-  // below). `hasTrackedAncestor`/`isInteractive` are irrelevant to `role`
-  // itself, so `false`/`true` are passed here purely to obtain it cheaply.
-  const { role } = detectRole(process.env, false, true);
+  // ancestry, and (with one R1 exception below) never on interactivity
+  // either — so it is safe, and correct, to decide it once, right here,
+  // and never revisit it (F3: only `roleConfidence`, for an
+  // `"orchestrator"` record, is deferred — see `resolveRoleConfidence`
+  // below). `hasTrackedAncestor` is irrelevant to `role` itself, so `false`
+  // is passed here purely to obtain it cheaply.
+  //
+  // R1 (BLOCKER): read KANKAKU_ROLE, and whether the confirmed child marker
+  // is present, exactly once here — then strip the override from this
+  // process's own env (config.ts#stripRoleOverride) so a child this
+  // process spawns (a subagent runner, a tool shell) never inherits it.
+  // Everything below (the registry entry, orchestratorRef, write routing,
+  // session-target/client wiring) already uses the corrected `role`.
+  const childMarkerPresent = process.env["GENTLE_PI_AGENTS_CHILD"] === "1";
   const roleOverride = readRoleOverride(process.env);
+  // A cheap, synchronous interactivity proxy, available before pi's own
+  // ExtensionContext exists (unlike the authoritative `ctx.mode === "tui"`,
+  // only known later, at `session_start` — too late here, since several
+  // decisions below already depend on the corrected `role`). Every
+  // subagent mechanism kankaku recognises launches its child with piped,
+  // non-TTY stdio, so this reliably tells a real subagent apart from a
+  // leaked `KANKAKU_ROLE=subagent` shell export reaching a genuine
+  // interactive terminal session — see `detectRole`'s doc comment for the
+  // precedence this feeds into, and its trade-off: an unusual, unrecognised
+  // subagent mechanism that happens to preserve a TTY would have its own
+  // explicit `KANKAKU_ROLE=subagent` overridden by this same guess.
+  const isInteractiveGuess = Boolean(process.stdout.isTTY);
+  const detection = detectRole(process.env, false, isInteractiveGuess);
+  const { role } = detection;
+  const overrideIgnoredInteractive = detection.overrideIgnoredInteractive === true;
+  stripRoleOverride(process.env);
 
   // F4: resolves through a subagent-of-subagent chain to the real top-level
   // orchestrator (never a middle hop), carrying that orchestrator's `dir`
@@ -250,7 +274,17 @@ export default function kankaku(pi: ExtensionAPI): void {
     // ExtensionContext is available, at session_start — later than role
     // itself must be decided above. `hasTrackedAncestor` is already final
     // here; only isInteractive is supplied later, by pi-tracker.ts.
-    resolveRoleConfidence: (isInteractive) => (role === "orchestrator" ? detectRole(process.env, hasTrackedAncestor, isInteractive).roleConfidence : undefined),
+    //
+    // R1: gated on `roleOverride === undefined` — once KANKAKU_ROLE decided
+    // (or, for a `subagent` value ignored via the interactive contradiction
+    // above, resolved) this process's role at factory time, that decision
+    // stays final and is never later demoted to `uncertain`; this
+    // refinement only ever applies to the genuine no-override path (and
+    // `process.env` is safe to re-read here despite the strip below, since
+    // this branch is only reached when there was nothing to strip that
+    // would have mattered to it).
+    resolveRoleConfidence: (isInteractive) =>
+      role === "orchestrator" && roleOverride === undefined ? detectRole(process.env, hasTrackedAncestor, isInteractive).roleConfidence : undefined,
     ...(orchestratorRef !== undefined ? { orchestratorRef } : {}),
     pid: process.pid,
     parentPid: process.ppid,
@@ -264,6 +298,8 @@ export default function kankaku(pi: ExtensionAPI): void {
     ...(sync !== undefined ? { sync } : {}),
     ...(autoSyncEnabled !== undefined ? { autoSyncEnabled } : {}),
     ...(roleOverride !== undefined ? { roleOverride } : {}),
+    ...(childMarkerPresent ? { childMarkerPresent } : {}),
+    ...(overrideIgnoredInteractive ? { overrideIgnoredInteractive } : {}),
     ...(workLogRouting !== undefined ? { workLogRouting } : {}),
     // Fresh ancestry snapshot on demand, only when `/kankaku doctor` is
     // actually invoked (never on a hot path): a stale snapshot from

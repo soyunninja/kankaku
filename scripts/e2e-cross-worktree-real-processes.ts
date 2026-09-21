@@ -46,7 +46,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 
-import { detectRole } from "../src/config.ts";
+import { detectRole, readRoleOverride, stripRoleOverride } from "../src/config.ts";
 import { resolveOrchestratorRef, START_ID_TOLERANCE_MS } from "../src/domain/ancestry-match.ts";
 import type { OrchestratorRef, WorkRecord } from "../src/domain/work-record.ts";
 import { MachineProcessRegistry } from "../src/adapters/machine-process-registry.ts";
@@ -93,7 +93,12 @@ function runStartup(homeDir: string, cwd: string): { registry: MachineProcessReg
     now: () => Date.now(),
     uptimeSeconds: () => process.uptime(),
   });
-  const { role } = detectRole(process.env, false, true);
+  // Mirrors extension.ts's real R1 fix exactly: a synchronous TTY-based
+  // interactivity guess, then strip KANKAKU_ROLE from this process's own
+  // env right after reading it, so a real child this process spawns below
+  // never inherits it.
+  const { role } = detectRole(process.env, false, Boolean(process.stdout.isTTY));
+  stripRoleOverride(process.env);
   const orchestratorRef = role === "subagent" ? resolveOrchestratorRef(startup.ancestorEntry) : undefined;
   const resolvedDir = resolveKankakuDir(".kankaku", cwd);
 
@@ -340,16 +345,86 @@ async function runConcurrencyStress(): Promise<void> {
   }
 }
 
-const mode = process.argv.includes("--child") ? "child" : process.argv.includes("--concurrent-writer") ? "concurrent-writer" : "parent";
+/**
+ * R1 (BLOCKER): a real child process spawned by a parent that was itself
+ * started with `KANKAKU_ROLE=orchestrator` (simulating a leaked shell rc/
+ * tmux/CI export) must NEVER see that variable — proving `stripRoleOverride`
+ * actually removes it from `process.env` before the parent spawns anything,
+ * not just that the pure precedence function would handle it correctly in
+ * isolation. The child also carries the real confirmed child marker
+ * (`GENTLE_PI_AGENTS_CHILD=1`), so it must still classify as `subagent` via
+ * its own marker, with nothing left over to contradict it.
+ */
+function runRoleOverrideChild(): void {
+  assert.equal(process.env["KANKAKU_ROLE"], undefined, "a real child process must never inherit its parent's KANKAKU_ROLE override (R1, non-propagation)");
+
+  const { role } = detectRole(process.env, false, true);
+  assert.equal(role, "subagent", "GENTLE_PI_AGENTS_CHILD=1 must still classify this real child as subagent, with no leaked override to contradict it");
+
+  console.log("[role-override-child] confirmed: KANKAKU_ROLE was not inherited, and this process still classifies as subagent via its own marker.");
+  process.exit(0);
+}
+
+/** The "parent" half of the R1 non-propagation proof: a real process started WITH `KANKAKU_ROLE=orchestrator` in its own env. */
+function runRoleOverrideParent(): void {
+  assert.equal(readRoleOverride(process.env), "orchestrator", "this process must actually have started with KANKAKU_ROLE=orchestrator, or the scenario proves nothing");
+
+  // Mirrors extension.ts's factory-time read-then-strip sequence exactly
+  // (R1, layer 2): read it once, then remove it from this process's own
+  // env so a child it spawns below never inherits it.
+  const { role } = detectRole(process.env, false, true);
+  assert.equal(role, "orchestrator", "with no confirmed child marker of its own, this process is a genuine orchestrator despite the leaked override");
+  stripRoleOverride(process.env);
+  assert.equal(process.env["KANKAKU_ROLE"], undefined, "stripRoleOverride must have removed KANKAKU_ROLE from this process's own env");
+
+  console.log("[role-override-parent] spawning a REAL child with GENTLE_PI_AGENTS_CHILD=1, inheriting this process's (now-stripped) env...");
+  const result = spawnSync(process.execPath, [THIS_SCRIPT, "--role-override-child"], {
+    env: { ...process.env, GENTLE_PI_AGENTS_CHILD: "1" },
+    encoding: "utf8",
+  });
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  assert.equal(result.status, 0, `the real child must confirm it never saw KANKAKU_ROLE and still classified as subagent (status=${result.status}, error=${result.error})`);
+
+  console.log("[role-override-parent] confirmed: KANKAKU_ROLE stripped from this process's own env before spawning; real child confirmed non-inheritance and correct marker-based classification.");
+  process.exit(0);
+}
+
+async function runRoleOverrideNonPropagation(): Promise<void> {
+  console.log("[role-override] spawning a REAL 'parent' process started with KANKAKU_ROLE=orchestrator (simulating a leaked shell export)...");
+  const result = spawnSync(process.execPath, [THIS_SCRIPT, "--role-override-parent"], {
+    env: { ...process.env, KANKAKU_ROLE: "orchestrator" },
+    encoding: "utf8",
+  });
+  process.stdout.write(result.stdout ?? "");
+  process.stderr.write(result.stderr ?? "");
+  assert.equal(result.status, 0, `the role-override parent (and its own spawned real child) must both succeed (status=${result.status}, error=${result.error})`);
+  console.log("[role-override] ALL ASSERTIONS PASSED — KANKAKU_ROLE never propagates to a real spawned child, whose own marker still decides its role (R1).");
+}
+
+const mode = process.argv.includes("--child")
+  ? "child"
+  : process.argv.includes("--concurrent-writer")
+    ? "concurrent-writer"
+    : process.argv.includes("--role-override-parent")
+      ? "role-override-parent"
+      : process.argv.includes("--role-override-child")
+        ? "role-override-child"
+        : "parent";
 
 if (mode === "child") {
   runChild();
 } else if (mode === "concurrent-writer") {
   runConcurrentWriter();
+} else if (mode === "role-override-parent") {
+  runRoleOverrideParent();
+} else if (mode === "role-override-child") {
+  runRoleOverrideChild();
 } else {
   (async () => {
     await runParent();
     await runConcurrencyStress();
+    await runRoleOverrideNonPropagation();
   })().catch((error) => {
     console.error("REAL-PROCESS E2E FAILED:", error);
     process.exitCode = 1;

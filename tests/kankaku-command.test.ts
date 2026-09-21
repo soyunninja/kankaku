@@ -292,6 +292,48 @@ test("'doctor' omits the role-override line when KANKAKU_ROLE was not set", asyn
   assert.ok(!entry.data.lines.some((line) => line.includes("deciding signal")));
 });
 
+test("R1: 'doctor' flags 'override present AND child marker present' with the resolved outcome (marker wins)", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    roleOverride: "orchestrator",
+    childMarkerPresent: true,
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  const line = entry.data.lines.find((l) => l.startsWith("role override:"));
+  assert.ok(line, "expected a role override line");
+  assert.ok(line!.includes("GENTLE_PI_AGENTS_CHILD=1"));
+  assert.ok(line!.includes("takes precedence"));
+  assert.ok(line!.includes("resolved role: subagent"));
+  assert.ok(!line!.includes("deciding signal"));
+});
+
+test("R1: 'doctor' reports the resolved orchestrator outcome when KANKAKU_ROLE=subagent was ignored for an interactive session", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    roleOverride: "subagent",
+    overrideIgnoredInteractive: true,
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  const line = entry.data.lines.find((l) => l.startsWith("role override:"));
+  assert.ok(line, "expected a role override line");
+  assert.ok(line!.includes("ignored"));
+  assert.ok(line!.includes("interactive"));
+  assert.ok(line!.includes("resolved role: orchestrator"));
+  assert.ok(!line!.includes("deciding signal"));
+});
+
 test("'doctor' reports when this subagent could not write to its orchestrator's directory and fell back locally (F1)", async () => {
   const pi = new FakePi();
   registerKankakuCommand(pi as unknown as ExtensionAPI, {

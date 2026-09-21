@@ -104,6 +104,20 @@ export interface PiTrackerDeps {
   ancestorDetectionAvailable?: () => boolean;
   /** Forwarded to `/kankaku doctor` (F3); see `kankaku-command.ts#KankakuCommandDeps.roleOverride`. */
   roleOverride?: "orchestrator" | "subagent";
+  /**
+   * Whether `GENTLE_PI_AGENTS_CHILD=1` (the confirmed child marker) was
+   * also present on this process (R1); forwarded to `/kankaku doctor` so it
+   * can flag "override present AND child marker present" with the resolved
+   * outcome — see `kankaku-command.ts#KankakuCommandDeps.childMarkerPresent`.
+   */
+  childMarkerPresent?: boolean;
+  /**
+   * Set when `KANKAKU_ROLE=subagent` was present, with no confirmed child
+   * marker, but was ignored because this process looked interactive (R1 —
+   * see `config.ts#detectRole`'s precedence doc). Surfaced once via
+   * `ctx.ui.notify` at `session_start` and forwarded to `/kankaku doctor`.
+   */
+  overrideIgnoredInteractive?: boolean;
   /** Forwarded to `/kankaku doctor` (F1); see `kankaku-command.ts#KankakuCommandDeps.workLogRouting`. */
   workLogRouting?: { usedFallback: boolean; parentDir: string };
   /**
@@ -203,6 +217,8 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     registryHealth: deps.registryHealth,
     ancestorDetectionAvailable: deps.ancestorDetectionAvailable,
     roleOverride: deps.roleOverride,
+    childMarkerPresent: deps.childMarkerPresent,
+    overrideIgnoredInteractive: deps.overrideIgnoredInteractive,
     workLogRouting: deps.workLogRouting,
   });
 
@@ -393,6 +409,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   );
 
   let hubConfigErrorNotified = false;
+  let overrideIgnoredInteractiveNotified = false;
 
   pi.on(
     "session_start",
@@ -408,6 +425,20 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       if (deps.hubConfigError && !hubConfigErrorNotified) {
         hubConfigErrorNotified = true;
         if (ctx.hasUI) ctx.ui.notify(deps.hubConfigError, "error");
+      }
+
+      // R1: KANKAKU_ROLE=subagent was ignored at factory time (no confirmed
+      // child marker, and this process looked interactive) — this is
+      // almost always a leaked shell export, and honouring it would have
+      // silently dropped this session's own work. Never silent: warn once.
+      if (deps.overrideIgnoredInteractive && !overrideIgnoredInteractiveNotified) {
+        overrideIgnoredInteractiveNotified = true;
+        if (ctx.hasUI) {
+          ctx.ui.notify(
+            "kankaku: ignoring KANKAKU_ROLE=subagent for this interactive session (likely a leaked shell export) — treating it as orchestrator; see /kankaku doctor",
+            "warning",
+          );
+        }
       }
 
       sessionClient.restore(ctx);
