@@ -77,6 +77,18 @@ export class WorkTracker {
   private state: RunState | undefined;
   /** Set by {@link onRunStart}, consumed by {@link onAgentStart}: tells a user-announced run from one an extension started. */
   private runAnnounced = false;
+  /** `true` between an agent loop's start and its `agent_end`. */
+  private loopActive = false;
+  /**
+   * The previous record, set aside because a new run began after its last
+   * loop ended but BEFORE its `agent_settled` reached us. pi clears its
+   * "run active" flag and only then awaits the `agent_settled` handlers, in
+   * extension load order; an extension loaded earlier (gentle-pi) can start
+   * the next run from its own handler. Whether that `agent_start` was a new
+   * run or an `agent.continue()` of the same one is only knowable at settle
+   * time — see {@link settleAll}.
+   */
+  private closing: { state: RunState; at: number } | undefined;
 
   constructor(options: WorkTrackerOptions) {
     this.clock = options.clock;
@@ -96,37 +108,55 @@ export class WorkTracker {
    */
   onAgentStart(): void {
     if (this.runAnnounced) {
+      // The loop of the user prompt onRunStart just opened.
       this.runAnnounced = false;
+      this.loopActive = true;
       return;
     }
-    this.onRunStart(EXTENSION_RUN_PROMPT, "extension");
+    if (this.loopActive) return;
+    this.openRun(EXTENSION_RUN_PROMPT, "extension");
     this.runAnnounced = false;
   }
 
   onRunStart(prompt: string, trigger?: RunTrigger): void {
+    this.openRun(prompt, trigger);
     this.runAnnounced = true;
-    if (!this.state) {
-      this.state = {
-        id: randomUUID(),
-        startedAt: this.clock.now(),
-        prompt,
-        ...(trigger !== undefined ? { trigger } : {}),
-        runs: 1,
-        turns: 0,
-        tools: {},
-        usage: emptyUsage(),
-        costObserved: false,
-        status: "completed",
-        waitingSpans: [],
-        openToolWaits: new Map(),
-        subagents: [],
-        openSubagents: new Map(),
-        segmentSpans: new Map(),
-        openSegments: new Map(),
-      };
+  }
+
+  private openRun(prompt: string, trigger: RunTrigger | undefined): void {
+    if (this.state && this.loopActive) {
+      this.state.runs++;
       return;
     }
-    this.state.runs++;
+    if (this.state && !this.closing) {
+      // A record is open but its last loop already ended: set it aside and
+      // start a fresh one now. settleAll() decides whether that was right.
+      this.closing = { state: this.state, at: this.clock.now() };
+      this.state = undefined;
+    }
+    this.loopActive = true;
+    if (this.state) {
+      this.state.runs++;
+      return;
+    }
+    this.state = {
+      id: randomUUID(),
+      startedAt: this.clock.now(),
+      prompt,
+      ...(trigger !== undefined ? { trigger } : {}),
+      runs: 1,
+      turns: 0,
+      tools: {},
+      usage: emptyUsage(),
+      costObserved: false,
+      status: "completed",
+      waitingSpans: [],
+      openToolWaits: new Map(),
+      subagents: [],
+      openSubagents: new Map(),
+      segmentSpans: new Map(),
+      openSegments: new Map(),
+    };
   }
 
   onTurnEnd(usage: Partial<UsageTotals> | undefined): void {
@@ -274,6 +304,7 @@ export class WorkTracker {
   }
 
   onRunEnd(messages: RunEndMessage[]): void {
+    this.loopActive = false;
     if (!this.state) return;
     const lastAssistant = [...messages].reverse().find((message) => message.role === "assistant");
     if (lastAssistant?.stopReason === "aborted") {
@@ -281,20 +312,65 @@ export class WorkTracker {
     }
   }
 
+  /** Single-record convenience over {@link settleAll}; production code uses `settleAll`. */
   onSettled(): WorkRecordCore | undefined {
-    if (!this.state) return undefined;
-    const record = this.buildRecord(this.state.status, this.clock.now());
-    this.state = undefined;
-    this.runAnnounced = false;
-    return record;
+    return this.settleAll()[0];
   }
 
-  onShutdown(): WorkRecordCore | undefined {
-    if (!this.state) return undefined;
-    const record = this.buildRecord("interrupted", this.clock.now());
+  /**
+   * `agent_settled` arrived. Normally closes the one open record. When a
+   * record was set aside (see {@link closing}):
+   * - a loop is still running → the `agent_start` was a genuinely NEW run
+   *   that overtook this settle: close only the old record, at the instant
+   *   the new run began, and leave the new one open;
+   * - no loop is running → it was an `agent.continue()` of the same run
+   *   (retry, overflow recovery, queued message): fold it back, one record.
+   *   A user-announced prompt is never folded — it keeps its own record.
+   */
+  settleAll(): WorkRecordCore[] {
+    const now = this.clock.now();
+    const closing = this.closing;
+    this.closing = undefined;
+    if (closing) {
+      if (this.loopActive && this.state) {
+        return [this.buildRecordFrom(closing.state, closing.state.status, closing.at)];
+      }
+      const fresh = this.state;
+      this.state = undefined;
+      this.runAnnounced = false;
+      this.loopActive = false;
+      if (!fresh) return [this.buildRecordFrom(closing.state, closing.state.status, now)];
+      if (fresh.trigger === "extension") {
+        return [this.buildRecordFrom(mergeRunStates(closing.state, fresh), fresh.status !== "completed" ? fresh.status : closing.state.status, now)];
+      }
+      return [this.buildRecordFrom(closing.state, closing.state.status, closing.at), this.buildRecordFrom(fresh, fresh.status, now)];
+    }
+    // Settled with nothing set aside: whatever loop we believed active is over.
+    this.loopActive = false;
+    if (!this.state) return [];
+    const record = this.buildRecordFrom(this.state, this.state.status, now);
     this.state = undefined;
     this.runAnnounced = false;
-    return record;
+    return [record];
+  }
+
+  /** Single-record convenience over {@link shutdownAll}. */
+  onShutdown(): WorkRecordCore | undefined {
+    const all = this.shutdownAll();
+    return all[all.length - 1];
+  }
+
+  /** The session is going away: every open record is written, the running one as `interrupted`. */
+  shutdownAll(): WorkRecordCore[] {
+    const now = this.clock.now();
+    const records: WorkRecordCore[] = [];
+    if (this.closing) records.push(this.buildRecordFrom(this.closing.state, this.closing.state.status, this.closing.at));
+    if (this.state) records.push(this.buildRecordFrom(this.state, "interrupted", now));
+    this.closing = undefined;
+    this.state = undefined;
+    this.runAnnounced = false;
+    this.loopActive = false;
+    return records;
   }
 
   /**
@@ -308,14 +384,10 @@ export class WorkTracker {
    */
   peek(status: WorkStatus): WorkRecordCore | undefined {
     if (!this.state) return undefined;
-    return this.buildRecord(status, this.clock.now());
+    return this.buildRecordFrom(this.state, status, this.clock.now());
   }
 
-  private buildRecord(status: WorkStatus, settledAt: number): WorkRecordCore {
-    const state = this.state;
-    if (!state) {
-      throw new Error("buildRecord called without an open run");
-    }
+  private buildRecordFrom(state: RunState, status: WorkStatus, settledAt: number): WorkRecordCore {
     // Clamped to >= 0: a backward clock jump (system clock adjustment, NTP
     // correction) must never produce a negative duration.
     const wallMs = Math.max(0, settledAt - state.startedAt);
@@ -365,3 +437,35 @@ function segmentText(args: Record<string, unknown> | undefined): string {
   return typeof command === "string" ? command : JSON.stringify(args ?? {});
 }
 
+
+/** Fold a continuation's counters back into the record it continued. Additive only: nothing is ever dropped. */
+function mergeRunStates(base: RunState, continuation: RunState): RunState {
+  const tools: Record<string, number> = { ...base.tools };
+  for (const [name, count] of Object.entries(continuation.tools)) {
+    tools[name] = (tools[name] ?? 0) + count;
+  }
+  const segmentSpans = new Map(base.segmentSpans);
+  for (const [tag, spans] of continuation.segmentSpans) {
+    segmentSpans.set(tag, [...(segmentSpans.get(tag) ?? []), ...spans]);
+  }
+  return {
+    ...base,
+    runs: base.runs + continuation.runs,
+    turns: base.turns + continuation.turns,
+    tools,
+    usage: {
+      input: base.usage.input + continuation.usage.input,
+      output: base.usage.output + continuation.usage.output,
+      cacheRead: base.usage.cacheRead + continuation.usage.cacheRead,
+      cacheWrite: base.usage.cacheWrite + continuation.usage.cacheWrite,
+      cost: base.usage.cost + continuation.usage.cost,
+    },
+    costObserved: base.costObserved || continuation.costObserved,
+    waitingSpans: [...base.waitingSpans, ...continuation.waitingSpans],
+    openToolWaits: new Map([...base.openToolWaits, ...continuation.openToolWaits]),
+    subagents: [...base.subagents, ...continuation.subagents],
+    openSubagents: new Map([...base.openSubagents, ...continuation.openSubagents]),
+    segmentSpans,
+    openSegments: new Map([...base.openSegments, ...continuation.openSegments]),
+  };
+}

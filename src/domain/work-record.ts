@@ -98,6 +98,12 @@ export interface WorkRecordCore {
   wallMs: number;
   waitingMs: number;
   workMs: number;
+  /**
+   * Agent loops inside this record: the first one plus every
+   * `agent.continue()` pi ran before settling it (auto-retry after a provider
+   * error, overflow recovery, a queued steer/follow-up). Informational only —
+   * never used for time or cost.
+   */
   runs: number;
   turns: number;
   tools: Record<string, number>;

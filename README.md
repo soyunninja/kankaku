@@ -985,35 +985,19 @@ single run — but is retried automatically the moment its content changes.
   "Cross-worktree write routing"), but nothing *syncs* it until that
   directory is next visited: pi opened there again (`session_start`'s
   auto-sync), or `/kankaku sync`/`sync all` run there manually. Subagents
-  themselves never sync (see "Automatic sync" above). Whether an ordinary
-  incremental sync, whenever it next runs, actually picks the late child
-  up depends on the watermark, not on how much wall-clock time has passed:
-  the child's own record bumps the task's `endedAt` forward (the task view
-  recomputes it as the max of the orchestrator's and every joined child's
-  settle time), which keeps the task inside the revisit window
-  (`syncedThrough - windowHours`) for as long as `syncedThrough` itself has
-  not advanced past it — even if that next sync happens days later, as
-  long as nothing else in that same directory synced in between. If,
-  meanwhile, *other* tasks in the same directory kept syncing and pushed
-  `syncedThrough` far enough ahead, the late join falls outside the window
-  and an ordinary sync silently skips it. `/kankaku sync status` makes
-  this visible rather than silent — it reports how many tasks changed but
-  currently fall outside the window — and the remedy is always the same:
-  run `/kankaku sync all` (or `backfill`), which evaluates every task
-  regardless of the window.
+  themselves never sync (see "Automatic sync" above). An ordinary
+  incremental sync then picks the late child up wherever the task sits: a
+  task the hub **already holds** is re-synced whenever its content changed,
+  inside the revisit window or not, so a row on the hub never goes stale —
+  including a task that *shrank* because a child moved to another task. The
+  window (`syncedThrough - windowHours`) only bounds how far back work that
+  was **never synced** is looked for; `/kankaku sync status` reports how
+  many such tasks there are, and `/kankaku sync all` (or `backfill`)
+  uploads them.
 
-  **What the stale count means.** This number is a real, actionable
-  signal, not a permanent watermark of every old task: a task's content
-  hash is kept for as long as the task itself exists, so an old,
-  outside-the-window task that genuinely has not changed since its last
-  sync is never counted here, no matter how long ago that sync was or how
-  many later syncs have moved the watermark past it. Only a task whose
-  content actually changed since it was last synced (almost always: a late
-  child, as above) is ever counted. If you upgraded from a kankaku build
-  older than this fix, you may see this count once for tasks that build
-  had already forgotten the hash of — a one-time correction, not a
-  recurring one: run `sync all` (or wait for those tasks to be revisited
-  normally) and the count will not reappear for them.
+  **What the stale count means.** Only tasks outside the window that were
+  never synced to this hub. A task the hub already holds never appears
+  here: if it changed it is simply re-synced.
 
 ## Tagged segments
 

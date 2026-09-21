@@ -2125,3 +2125,36 @@ test("an extension-started run inside an already open record counts as one more 
   assert.equal(log.records[0]!.runs, 2);
   assert.equal(log.records[0]!.prompt, "hello");
 });
+
+test("agent_start of an extension run arriving BEFORE the previous run's agent_settled: two records, and the status clock keeps running", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const ctx = makeFakeCtx({ ui: { notify: () => {}, setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]) } });
+  const inflight = new FakeInflightStore();
+  createPiTracker(pi as never, { tracker, log, inflight, role: "orchestrator", pid: 4242, parentPid: 4000 });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "go", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_start", { type: "agent_start" }, ctx);
+  clock.advanceTo(1000);
+  await pi.fire("agent_end", { type: "agent_end", messages: [] }, ctx);
+  clock.advanceTo(1100);
+  await pi.fire("agent_start", { type: "agent_start" }, ctx); // gentle-pi's wake-up, ahead of our settle
+  statusCalls.length = 0;
+  const savedBefore = inflight.saved.length;
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx); // the OLD run's
+
+  assert.deepEqual(log.records.map((r) => r.prompt), ["go"]);
+  assert.equal(statusCalls.some(([, value]) => value === undefined), false, "the status clock must not be cleared while the new run is open");
+  assert.equal(inflight.saved.length > savedBefore && inflight.saved.at(-1)!.trigger === "extension", true, "the open run must be re-checkpointed after the old one's checkpoint is cleared");
+
+  clock.advanceTo(60_000);
+  await pi.fire("agent_end", { type: "agent_end", messages: [] }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 2);
+  assert.equal(log.records[1]!.trigger, "extension");
+  assert.equal(log.records[1]!.wallMs, 58_900);
+});

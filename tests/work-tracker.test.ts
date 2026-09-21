@@ -757,3 +757,103 @@ test("a user prompt announced but never run does not swallow the next extension-
   assert.equal(record?.trigger, "extension");
   assert.equal(record?.wallMs, 3000);
 });
+
+// --- A new run that starts BEFORE the previous one is settled ----------------
+// pi clears its "run active" flag and only then awaits the agent_settled
+// handlers, in extension load order. gentle-pi, loaded before kankaku, wakes
+// the orchestrator from its own agent_settled handler — so the NEW run's
+// agent_start reaches kankaku before kankaku has seen the OLD run's
+// agent_settled. Found by independent review, 2026-09-21.
+
+function splitTracker() {
+  const clock = new FakeClock(0);
+  return { clock, tracker: new WorkTracker({ clock, interactiveTools: [], subagentProfiles: [] }) };
+}
+
+test("a run that starts before the previous one settles becomes its OWN record; the old one ends where the new one began", () => {
+  const { clock, tracker } = splitTracker();
+  tracker.onRunStart("user prompt");
+  tracker.onAgentStart();
+  clock.advanceTo(1000);
+  tracker.onTurnEnd({ cost: 1 });
+  tracker.onRunEnd([]);
+
+  clock.advanceTo(1200);
+  tracker.onAgentStart(); // the extension-started run, ahead of the settle
+  clock.advanceTo(1300);
+  const first = tracker.settleAll(); // the OLD run's agent_settled finally arrives
+
+  assert.equal(first.length, 1);
+  assert.equal(first[0]!.prompt, "user prompt");
+  assert.equal(first[0]!.runs, 1);
+  assert.equal(first[0]!.wallMs, 1200);
+  assert.equal(first[0]!.usage.cost, 1);
+  assert.notEqual(tracker.peek("interrupted"), undefined, "the new run must still be open");
+
+  clock.advanceTo(9000);
+  tracker.onTurnEnd({ cost: 4 });
+  tracker.onRunEnd([]);
+  clock.advanceTo(9100);
+  const second = tracker.settleAll();
+
+  assert.equal(second.length, 1);
+  assert.equal(second[0]!.trigger, "extension");
+  assert.equal(second[0]!.wallMs, 7900); // 1200 → 9100
+  assert.equal(second[0]!.usage.cost, 4);
+  assert.notEqual(second[0]!.id, first[0]!.id);
+});
+
+test("an agent.continue() retry inside the same run (agent_end, agent_start, agent_end, THEN settled) stays ONE record with everything in it", () => {
+  const { clock, tracker } = splitTracker();
+  tracker.onRunStart("user prompt");
+  tracker.onAgentStart();
+  clock.advanceTo(1000);
+  tracker.onTurnEnd({ cost: 1 });
+  tracker.onRunEnd([]);
+  tracker.onAgentStart(); // continuation: retry / queued follow-up
+  clock.advanceTo(3000);
+  tracker.onTurnEnd({ cost: 2 });
+  tracker.onToolStart("t1", "read", {});
+  tracker.onToolEnd("t1", {});
+  tracker.onRunEnd([]);
+  clock.advanceTo(3100);
+  const records = tracker.settleAll();
+
+  assert.equal(records.length, 1);
+  assert.equal(records[0]!.prompt, "user prompt");
+  assert.equal(records[0]!.trigger, undefined);
+  assert.equal(records[0]!.wallMs, 3100);
+  assert.equal(records[0]!.usage.cost, 3);
+  assert.equal(records[0]!.turns, 2);
+  assert.equal(records[0]!.runs, 2);
+  assert.deepEqual(records[0]!.tools, { read: 1 });
+});
+
+test("a USER prompt that races ahead of the previous settle keeps its own prompt text in its own record", () => {
+  const { clock, tracker } = splitTracker();
+  tracker.onRunStart("first");
+  tracker.onAgentStart();
+  clock.advanceTo(1000);
+  tracker.onRunEnd([]);
+  clock.advanceTo(1100);
+  tracker.onRunStart("second");
+  tracker.onAgentStart();
+  const first = tracker.settleAll();
+  assert.deepEqual(first.map((r) => r.prompt), ["first"]);
+  clock.advanceTo(2000);
+  tracker.onRunEnd([]);
+  const second = tracker.settleAll();
+  assert.deepEqual(second.map((r) => [r.prompt, r.trigger, r.wallMs]), [["second", undefined, 900]]);
+});
+
+test("shutdown while a split is pending loses neither record", () => {
+  const { clock, tracker } = splitTracker();
+  tracker.onRunStart("first");
+  tracker.onAgentStart();
+  clock.advanceTo(1000);
+  tracker.onRunEnd([]);
+  tracker.onAgentStart();
+  clock.advanceTo(5000);
+  const records = tracker.shutdownAll();
+  assert.deepEqual(records.map((r) => [r.prompt === "first", r.status, r.wallMs]), [[true, "completed", 1000], [false, "interrupted", 4000]]);
+});

@@ -427,18 +427,25 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   pi.on(
     "agent_settled",
     guarded((_event, ctx) => {
-      const core = tracker.onSettled();
+      const cores = tracker.settleAll();
       try {
-        if (core) {
+        for (const core of cores) {
           appendRecord(buildRecord(core, ctx));
         }
       } finally {
         // Always clean up, even when appendRecord above threw: an unpersisted
         // checkpoint must not linger, and the status timer must not leak.
         inflight.clear();
-        statusBar.stop(ctx);
-        sessionClient.endRun();
-        deps.sessionTarget?.endRun();
+        if (tracker.peek("interrupted") !== undefined) {
+          // A new run overtook this settle (see WorkTracker.settleAll): it is
+          // still open, so its clock keeps running and it gets its own
+          // checkpoint back — the clear above only dropped the old record's.
+          checkpoint(ctx);
+        } else {
+          statusBar.stop(ctx);
+          sessionClient.endRun();
+          deps.sessionTarget?.endRun();
+        }
         triggerAutoSync(ctx, "agent_settled");
       }
     }),
@@ -447,9 +454,9 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   pi.on(
     "session_shutdown",
     guarded((_event, ctx) => {
-      const core = tracker.onShutdown();
+      const cores = tracker.shutdownAll();
       try {
-        if (core) {
+        for (const core of cores) {
           appendRecord(buildRecord(core, ctx));
         }
       } finally {
