@@ -1036,7 +1036,7 @@ test("'sync status' reports staleOutsideWindow tasks and points at 'sync all' (R
   await pi.commands.get("kankaku")!.handler("sync status", makeCtx());
 
   const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
-  assert.match(data.lines.join("\n"), /2 task\(s\) changed.*outside the sync window/);
+  assert.match(data.lines.join("\n"), /2 task\(s\) never synced.*outside the sync window/);
   assert.match(data.lines.join("\n"), /sync all/);
 });
 
