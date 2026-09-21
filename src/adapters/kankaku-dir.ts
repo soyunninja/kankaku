@@ -1,4 +1,4 @@
-import { mkdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 /**
@@ -26,9 +26,49 @@ export interface ResolveWritableTargetDeps {
   probe?: (dir: string) => void;
 }
 
-/** `mkdirSync` + a temp marker file write/unlink: proves both creatability and write permission, not just existence (a read-only *existing* directory would otherwise pass a bare `mkdirSync` check silently, since recursive mkdir on an existing dir never fails). */
+/** Matches this probe's own marker filename: `.kankaku-write-probe.<pid>.<timestamp>.tmp`. */
+const PROBE_NAME_PATTERN = /^\.kankaku-write-probe\.\d+\.(\d+)\.tmp$/;
+/** A marker older than this is assumed abandoned (its writer was SIGKILLed between the write and its own unlink) — R4. */
+const PROBE_STALE_MS = 60_000;
+
+/**
+ * Best-effort removal of a stale writability-probe marker (R4): a probe
+ * that gets SIGKILLed between its `writeFileSync` and its own `unlinkSync`
+ * leaves `.kankaku-write-probe.<pid>.<timestamp>.tmp` behind forever —
+ * nothing else in `dir` ever looks at it again otherwise. Runs
+ * opportunistically every time the probe itself runs (mirrors
+ * `machine-process-registry.ts`'s own-write-time sweep pattern), so no
+ * separate cleanup process is needed. Only removes a marker whose
+ * filename-embedded timestamp (not the file's mtime, so this stays
+ * deterministic and easy to test) is older than a minute — never a fresh
+ * one, including this call's own marker (written after this sweep runs) or
+ * a concurrent process's own in-flight probe.
+ */
+function sweepStaleWriteProbes(dir: string, now: number): void {
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return; // dir just created and already empty, or unreadable — nothing to sweep.
+  }
+
+  for (const name of names) {
+    const match = PROBE_NAME_PATTERN.exec(name);
+    if (!match) continue;
+    const timestamp = Number(match[1]);
+    if (!Number.isFinite(timestamp) || now - timestamp <= PROBE_STALE_MS) continue;
+    try {
+      unlinkSync(join(dir, name));
+    } catch {
+      // Best effort: already gone, or a concurrent sweep got there first.
+    }
+  }
+}
+
+/** `mkdirSync` + a temp marker file write/unlink: proves both creatability and write permission, not just existence (a read-only *existing* directory would otherwise pass a bare `mkdirSync` check silently, since recursive mkdir on an existing dir never fails). Also sweeps any stale marker left behind by an earlier, SIGKILLed probe (R4) before writing its own. */
 function defaultWritabilityProbe(dir: string): void {
   mkdirSync(dir, { recursive: true });
+  sweepStaleWriteProbes(dir, Date.now());
   const marker = join(dir, `.kankaku-write-probe.${process.pid}.${Date.now()}.tmp`);
   writeFileSync(marker, "");
   unlinkSync(marker);

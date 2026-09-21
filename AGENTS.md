@@ -38,7 +38,10 @@ Read `README.md` for behaviour and the record schema before changing code.
   `WorkLog`/`InflightStore` straight into its orchestrator's directory
   instead of its own (F1, ADR 0023's rewrite — there is no longer a
   `WorkLog` decorator that reunites a child at read time; write-side
-  routing makes that redundant); `file-modes.ts`, the owner-only
+  routing makes that redundant), and whose writability probe sweeps its own
+  stale marker files (`.kankaku-write-probe.*.tmp` older than a minute,
+  R4) opportunistically on every run, so a probe SIGKILLed between its
+  write and its own unlink never leaves one behind forever; `file-modes.ts`, the owner-only
   dir/file-mode helpers shared by every adapter writing under `~/.kankaku`;
   `domain/ancestry-match.ts` and `domain/registry-health.ts`, the pure
   identity-matching/sweep-classification logic — see README "Subagents").
