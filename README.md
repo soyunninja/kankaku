@@ -502,6 +502,22 @@ subagent mechanism (its confirmed marker always wins regardless), but
 stripping means the leak can never reach an *unrecognised* one, or any
 other child process, either.
 
+**Captured once per process, survives `/new`/`/resume`/`/fork`/`/reload`.**
+pi re-invokes an extension's factory function in the SAME OS process for
+each of those (it "reloads and rebinds extensions" for the new session);
+kankaku reads `KANKAKU_ROLE` and decides `role` from the very first
+invocation and reuses that exact result for every later one in the same
+process, so a `KANKAKU_ROLE=orchestrator` you set for one `pi` command
+stays honoured across every `/new`/`/resume`/`/fork`/`/reload` you run
+inside that same session, not just the first. This does **not** widen the
+"scope it to one invocation" rule above — it still applies only to the one
+`pi` process you set it on, and is still stripped from that process's own
+`process.env` right after the first read, so it is still never inherited
+by anything that process spawns. It only means "one invocation" is
+honoured for as long as that OS process stays alive, across every reload,
+rather than being silently forgotten the moment pi reloads extensions
+internally.
+
 ### Limitations, honestly
 
 - **In-process subagents are not handled yet.** A subagent mechanism that
@@ -684,7 +700,12 @@ the background; when there is no cache at all, one refresh is awaited
 falling back. If the hub is unreachable and there is no cache, kankaku
 notifies once (`kankaku: hub unreachable, using local labels`) and
 continues exactly as it would without a hub configured. `/kankaku catalog
-refresh` forces a refresh on demand.
+refresh` forces a refresh on demand. The cache file is always written
+owner-only (`0600`); if kankaku is the first thing to ever create
+`~/.kankaku` itself (no project has put its own `.kankaku` there), the
+directory is created owner-only (`0700`) too — but an already-existing
+`~/.kankaku` is never chmod'd, since it may be a project's own kankaku
+directory (see "The registry" below for the same rule applied to `run/`).
 
 ### Privacy (catalog)
 
@@ -859,6 +880,19 @@ single run — but is retried automatically the moment its content changes.
   currently fall outside the window — and the remedy is always the same:
   run `/kankaku sync all` (or `backfill`), which evaluates every task
   regardless of the window.
+
+  **What the stale count means.** This number is a real, actionable
+  signal, not a permanent watermark of every old task: a task's content
+  hash is kept for as long as the task itself exists, so an old,
+  outside-the-window task that genuinely has not changed since its last
+  sync is never counted here, no matter how long ago that sync was or how
+  many later syncs have moved the watermark past it. Only a task whose
+  content actually changed since it was last synced (almost always: a late
+  child, as above) is ever counted. If you upgraded from a kankaku build
+  older than this fix, you may see this count once for tasks that build
+  had already forgotten the hash of — a one-time correction, not a
+  recurring one: run `sync all` (or wait for those tasks to be revisited
+  normally) and the count will not reappear for them.
 
 ## Tagged segments
 

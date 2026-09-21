@@ -31,9 +31,16 @@ Read `README.md` for behaviour and the record schema before changing code.
   pid's approximate OS start-time identity (`startIdByPid`) and the
   spawn-free `ownStartIdFromUptime` own-identity shortcut;
   `machine-process-registry.ts`, the `ProcessRegistry`; `subagent-startup.ts`,
-  the one composition point `extension.ts` calls at factory time to read the
-  registry, take an ancestry snapshot only when it could find something
-  (F5), and resolve this process's tracked ancestor; `kankaku-dir.ts`'s
+  the one composition point that reads the registry, takes an ancestry
+  snapshot only when it could find something (F5), and resolves this
+  process's tracked ancestor; `process-identity.ts`'s
+  `resolveProcessIdentity`, which composes `subagent-startup.ts` with
+  `config.ts#detectRole`/`readRoleOverride`/`stripRoleOverride` and
+  `domain/ancestry-match.ts#resolveOrchestratorRef` into one process's full
+  role/ancestry identity, and `process-identity-memo.ts`, which freezes
+  that identity for the life of the OS process (G1 — see README "Subagents"
+  > "Interactive sessions and `KANKAKU_ROLE`" and "`/new`/`/resume`/`/fork`/
+  `/reload` reuse the same OS process"); `kankaku-dir.ts`'s
   `resolveWritableTarget`, which a verified subagent uses to route its
   `WorkLog`/`InflightStore` straight into its orchestrator's directory
   instead of its own (F1, ADR 0023's rewrite — there is no longer a
@@ -94,7 +101,7 @@ Read `README.md` for behaviour and the record schema before changing code.
   synced to the hub as one (ADR 0022) — see README "Subagents".
   `WorkRecord.roleConfidence` (optional, only ever `"uncertain"`) carries
   this; adding it did not bump `WORK_RECORD_SCHEMA`. `role` itself is
-  decided once, at factory time (`config.ts#detectRole`, env-only, plus a
+  decided once, **per OS process** (`config.ts#detectRole`, env-only, plus a
   cheap synchronous TTY-based interactivity guess feeding only the
   `KANKAKU_ROLE=subagent`-in-an-interactive-session exception above — never
   ancestry, and never pi's own authoritative `ctx.mode`); `roleConfidence`
@@ -102,6 +109,29 @@ Read `README.md` for behaviour and the record schema before changing code.
   (`pi-tracker.ts`'s `resolveRoleConfidence`), since
   interactivity is only knowable once pi's own `ExtensionContext` exists —
   and then stays stable for the rest of the process's life.
+  **G1**: pi re-invokes the extension factory in the SAME OS process on
+  `/new`, `/resume`, `/fork` and `/reload` ("reloads and rebinds
+  extensions" — see `node_modules/@earendil-works/pi-coding-agent/docs/extensions.md`).
+  `role`, `roleOverride` (as read before `stripRoleOverride` removes it —
+  a second read would see it already gone), `childMarkerPresent`,
+  `hasTrackedAncestor`/the verified ancestor entry, `orchestratorRef`
+  (F4), and this process's own F5 start identity are all facts about the
+  OS PROCESS, not the pi session running inside it — `extension.ts` reads
+  them all through `adapters/process-identity-memo.ts`, which computes
+  them once (`adapters/process-identity.ts#resolveProcessIdentity`) and
+  freezes the result for every later factory invocation in this process,
+  so a second/third/fourth invocation never re-derives (and potentially
+  disagrees with) the first, and a confirmed `KANKAKU_ROLE` force is never
+  silently lost on `/resume` (the exact bug this fixes). Only what
+  genuinely varies per session — interactivity from `ctx.mode`, and this
+  session's project/write target (`resolveKankakuDir(config.dir,
+  process.cwd())`, since pi can enter a different cwd across a session
+  switch in the same process) — is still re-evaluated every invocation.
+  The one real per-process singleton this touches, `process.on("exit",
+  ...)` for this process's own registry-entry cleanup, is also registered
+  at most once across every invocation (`registerExitCleanupOnce`) — never
+  once per `/new`/`/resume`/`/fork`/`/reload`, which would otherwise pile
+  up one listener per reload for the life of the process.
 - A registry match is by **identity, not just pid**: pids are reused by the
   OS, so `domain/ancestry-match.ts#findAncestorEntry` only trusts a
   candidate whose registry-recorded `RegistryEntry.processStartId` agrees
@@ -161,6 +191,13 @@ Read `README.md` for behaviour and the record schema before changing code.
   `run/` subdirectory (`MachineProcessRegistry`) and the catalog cache
   *file* (`CachedCatalog`, always written 0600 via its own tmp+rename, so
   it needs no separate chmod either) — never the shared parent directory.
+  **G3**: this rule cuts both ways — `~/.kankaku` is never chmod'd when it
+  already exists, but when `CachedCatalog` is the first writer to create it
+  at all (no project has ever put its own `.kankaku` there), it is created
+  owner-only (`0700`), not left at the umask default. `mkdirSync`'s `mode`
+  option only ever applies to a directory a call actually creates, never
+  one that already existed, so passing it unconditionally is safe for both
+  cases with no `existsSync` check needed.
 - Bump `WORK_RECORD_SCHEMA` when a persisted field changes meaning or is
   removed. Adding optional fields does not require a bump.
 - Tagged tool segments (`segments`) are the union of milliseconds per tag
@@ -205,8 +242,23 @@ Read `README.md` for behaviour and the record schema before changing code.
   directory then goes unsynced, as long as no *other* task's sync has since
   advanced the watermark past it; once it has, only `sync all` picks the
   late join back up — `planSync`'s `staleOutsideWindow` (surfaced by
-  `/kankaku sync status`) makes that case visible instead of silent. Nothing
-  in a pi
+  `/kankaku sync status` as "N task(s) changed but fall outside the sync
+  window") makes that case visible instead of silent, and ONLY when the
+  task's content genuinely changed since it was last synced (G2): a task's
+  content hash (`computeTaskContentHash`) is kept in `sync-state.json`'s
+  `hashes` **for as long as the task itself exists**, never pruned just
+  because it fell outside the revisit window
+  (`domain/sync-plan.ts#pruneHashes`) — pruning by window used to mean a
+  task's hash, once dropped, could never be told apart from "never synced",
+  so every task older than the window reported changed forever, training
+  users to ignore the count. `hashes` therefore grows with the total number
+  of distinct tasks a directory has ever synced, not with time (~50 bytes
+  per entry; 10,000 retained hashes serialize to well under 1MB — see
+  `tests/sync-plan.test.ts`'s state-size-bound test), which stays small
+  even for years of real history. An existing `sync-state.json` needs no
+  migration; a task whose hash a pre-fix build already pruned is reported
+  stale exactly once more (an unavoidable one-time correction, not a
+  recurring flood) and then never again. Nothing in a pi
   event handler awaits the network: sync is a separate, later step
   (`/kankaku sync`, or fire-and-forget on `session_start`/`agent_settled`),
   and `worklog.jsonl` is still never rewritten by it — sync only reads.
