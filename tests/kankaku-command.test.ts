@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { registerKankakuCommand } from "../src/adapters/kankaku-command.ts";
 import type { SyncCommandDeps } from "../src/adapters/kankaku-command.ts";
+import { BUILTIN_SUBAGENT_PROFILES, buildConfiguredProfile } from "../src/domain/subagent-profile.ts";
+import type { SubagentProfile } from "../src/domain/subagent-profile.ts";
 import type { SyncState } from "../src/domain/sync-plan.ts";
 import type { SyncSummary } from "../src/adapters/sync-runner.ts";
 import type { SessionClient } from "../src/adapters/session-client.ts";
@@ -187,6 +189,102 @@ test("'doctor' reports orphan/uncertain counts and ancestor-detection availabili
   assert.ok(entry.data.lines.some((line) => line.startsWith("ancestor-chain detection:")));
   // No registryHealth dep was provided: doctor must not fabricate a registry section.
   assert.ok(!entry.data.lines.some((line) => line.startsWith("registry (")));
+});
+
+test("SUBAGENT-REQ-017: 'doctor' reports the active subagent profiles and which profile matched each subagent record", async () => {
+  const pi = new FakePi();
+  const log = new FakeWorkLog();
+  log.append(makeRecord({ id: "p1", pid: 1 }));
+  log.append(makeRecord({ id: "c1", role: "subagent", pid: 2, parentPid: 1, profile: "gentle-pi" }));
+  log.append(makeRecord({ id: "c2", role: "subagent", pid: 3, parentPid: 1 })); // no profile: ancestry-only/no marker matched
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log,
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[],
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line.includes("subagent profiles active: gentle-pi, pi-reference, pi-subagents")));
+  assert.ok(entry.data.lines.some((line) => line.includes("profile matches: gentle-pi: 1, unmatched: 1")));
+});
+
+test("'doctor' reports the configured profile's tools/markers when KANKAKU_SUBAGENT_TOOLS/KANKAKU_SUBAGENT_CHILD_ENV are set", async () => {
+  const pi = new FakePi();
+  const configured = buildConfiguredProfile(["my_tool"], [{ name: "MY_CHILD", value: "1" }])!;
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    subagentProfiles: [...BUILTIN_SUBAGENT_PROFILES, configured] as SubagentProfile[],
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line.includes("configured subagent tools: my_tool")));
+  assert.ok(entry.data.lines.some((line) => line.includes("configured child-env markers: MY_CHILD=1")));
+});
+
+test("SUBAGENT-REQ-005: 'doctor' flags the 'subagent' tool-name ambiguity between pi-reference and pi-subagents", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[],
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line.includes("ambiguous tool name") && line.includes("\"subagent\"") && line.includes("pi-reference, pi-subagents")));
+});
+
+test("'doctor' omits the profile section entirely when subagentProfiles was not provided (back-compat)", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, { log: new FakeWorkLog(), sessionClient: new FakeSessionClient(), refreshIdleStatus: () => {} });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(!entry.data.lines.some((line) => line.startsWith("subagent profiles active:")));
+});
+
+test("SUBAGENT-REQ-015: 'doctor' flags same-pid overlapping orchestrator records as likely in-process nesting", async () => {
+  const pi = new FakePi();
+  const log = new FakeWorkLog();
+  const now = Date.now();
+  log.append(
+    makeRecord({ id: "a", pid: 777, startedAt: new Date(now).toISOString(), settledAt: new Date(now + 30_000).toISOString() }),
+  );
+  log.append(
+    makeRecord({ id: "b", pid: 777, startedAt: new Date(now + 10_000).toISOString(), settledAt: new Date(now + 50_000).toISOString() }),
+  );
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, { log, sessionClient: new FakeSessionClient(), refreshIdleStatus: () => {} });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(entry.data.lines.some((line) => line.includes("likely in-process nesting") && line.includes("pid 777")));
+});
+
+test("'doctor' reports no same-pid overlaps for a plain run (regression safety: nothing flagged when there is nothing to flag)", async () => {
+  const pi = new FakePi();
+  const log = new FakeWorkLog();
+  log.append(makeRecord({ id: "p1", pid: 1 }));
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, { log, sessionClient: new FakeSessionClient(), refreshIdleStatus: () => {} });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.ok(!entry.data.lines.some((line) => line.includes("likely in-process nesting")));
 });
 
 test("'doctor' reports registry health (kept/discarded counts and reasons) when registryHealth is provided", async () => {

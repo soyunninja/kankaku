@@ -301,6 +301,7 @@ export default function kankaku(pi: ExtensionAPI): void {
     ...(roleOverride !== undefined ? { roleOverride } : {}),
     ...(childMarkerPresent ? { childMarkerPresent } : {}),
     ...(profile !== undefined ? { profile } : {}),
+    subagentProfiles: config.subagentProfiles,
     ...(overrideIgnoredInteractive ? { overrideIgnoredInteractive } : {}),
     ...(workLogRouting !== undefined ? { workLogRouting } : {}),
     // Fresh ancestry snapshot on demand, only when `/kankaku doctor` is

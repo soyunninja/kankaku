@@ -3,8 +3,10 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Box, Text } from "@earendil-works/pi-tui";
 import { isValidClient } from "../domain/client-label.ts";
 import { exportRows, toCsv, toJson } from "../domain/export.ts";
-import { buildSessions, buildTasks, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
+import { buildSessions, buildTasks, detectSameProcessOverlaps, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
+import { findAmbiguousToolNames } from "../domain/subagent-profile.ts";
+import type { SubagentProfile } from "../domain/subagent-profile.ts";
 import type { SyncState } from "../domain/sync-plan.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { Catalog } from "../ports/catalog.ts";
@@ -145,6 +147,15 @@ export interface KankakuCommandDeps {
    * append-only log can never be rewritten to fix it after the fact.
    */
   workLogRouting?: { usedFallback: boolean; parentDir: string };
+  /**
+   * The full active {@link SubagentProfile} set (`config.ts#loadConfig`'s
+   * `subagentProfiles`), for `/kankaku doctor` (SUBAGENT-REQ-001/002/003/005/017):
+   * which profiles are active, any configured tool names/child-env markers,
+   * which profile matched each subagent record, and any tool-name ambiguity
+   * among the active set. Omitted entirely (no profile section at all) when
+   * a caller has not wired this — back-compat with an older embedder.
+   */
+  subagentProfiles?: SubagentProfile[];
 }
 
 export interface KankakuCommand {
@@ -443,6 +454,53 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       } else {
         lines.push(`role override: KANKAKU_ROLE=${deps.roleOverride} (deciding signal for this process's role)`);
       }
+    }
+
+    // SUBAGENT-REQ-001/002/003/005/017 (6b): active profiles, any configured
+    // tool names/markers, which profile matched each subagent record, and
+    // any tool-name ambiguity among the active set. Omitted entirely when
+    // deps.subagentProfiles was not wired (back-compat).
+    if (deps.subagentProfiles) {
+      const profiles = deps.subagentProfiles;
+      lines.push(`subagent profiles active: ${profiles.map((p) => p.id).join(", ")}`);
+
+      const configured = profiles.find((p) => p.id === "configured");
+      if (configured) {
+        if (configured.toolNames.length > 0) lines.push(`configured subagent tools: ${configured.toolNames.join(", ")}`);
+        if (configured.childEnvMarkers.length > 0) {
+          lines.push(`configured child-env markers: ${configured.childEnvMarkers.map((m) => (m.value !== undefined ? `${m.name}=${m.value}` : m.name)).join(", ")}`);
+        }
+      }
+
+      const subagentRecords = records.filter((record) => record.role === "subagent");
+      if (subagentRecords.length > 0) {
+        const counts = new Map<string, number>();
+        let unmatched = 0;
+        for (const record of subagentRecords) {
+          if (record.profile) {
+            counts.set(record.profile, (counts.get(record.profile) ?? 0) + 1);
+          } else {
+            unmatched++;
+          }
+        }
+        const parts = profiles.filter((p) => counts.has(p.id)).map((p) => `${p.id}: ${counts.get(p.id)}`);
+        if (unmatched > 0) parts.push(`unmatched: ${unmatched}`);
+        lines.push(`profile matches: ${parts.join(", ")}`);
+      }
+
+      for (const { toolName, profileIds } of findAmbiguousToolNames(profiles)) {
+        lines.push(`ambiguous tool name "${toolName}": registered by ${profileIds.join(", ")} — never guessed, resolved by child-env marker or left uncertain`);
+      }
+    }
+
+    // SUBAGENT-REQ-015 (6c): same-pid overlapping orchestrator records —
+    // never observed from any real subagent mechanism today, but flagged
+    // here (informational only, never changing buildTasks' own numbers) as
+    // the observable signature an in-process nested session would leave.
+    for (const overlap of detectSameProcessOverlaps(records)) {
+      lines.push(
+        `likely in-process nesting: pid ${overlap.pid} has ${overlap.recordIds.length} overlapping orchestrator records (${overlap.recordIds.join(", ")}) — union of their wall time is ${overlap.unionedWallMs}ms`,
+      );
     }
 
     if (deps.workLogRouting?.usedFallback) {

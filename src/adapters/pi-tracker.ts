@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { isValidClient } from "../domain/client-label.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
+import type { SubagentProfile } from "../domain/subagent-profile.ts";
 import type { OrchestratorRef, WorkRecord, WorkRecordCore, WorkRole } from "../domain/work-record.ts";
 import type { WorkTracker } from "../domain/work-tracker.ts";
 import type { Catalog } from "../ports/catalog.ts";
@@ -69,6 +70,8 @@ export interface PiTrackerDeps {
    * profile matched each record. Never set for an `orchestrator` record.
    */
   profile?: string;
+  /** The full active subagent-profile set, forwarded to `/kankaku doctor` — see `kankaku-command.ts#KankakuCommandDeps.subagentProfiles`. */
+  subagentProfiles?: SubagentProfile[];
   pid: number;
   parentPid: number;
   /** Status line refresh interval in ms. Defaults to 1000. */
@@ -228,6 +231,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     childMarkerPresent: deps.childMarkerPresent,
     overrideIgnoredInteractive: deps.overrideIgnoredInteractive,
     workLogRouting: deps.workLogRouting,
+    subagentProfiles: deps.subagentProfiles,
   });
 
   /** At most one quiet auto-sync failure notification per session; never notified on success. */
