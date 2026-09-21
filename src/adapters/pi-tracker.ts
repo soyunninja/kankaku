@@ -3,6 +3,7 @@ import { isValidClient } from "../domain/client-label.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { SubagentProfile } from "../domain/subagent-profile.ts";
+import type { RejectedChildEnvMarker } from "../config.ts";
 import type { OrchestratorRef, WorkRecord, WorkRecordCore, WorkRole } from "../domain/work-record.ts";
 import type { WorkTracker } from "../domain/work-tracker.ts";
 import type { Catalog } from "../ports/catalog.ts";
@@ -129,6 +130,27 @@ export interface PiTrackerDeps {
    * `ctx.ui.notify` at `session_start` and forwarded to `/kankaku doctor`.
    */
   overrideIgnoredInteractive?: boolean;
+  /**
+   * C2 (CRITICAL fix): set when a USER-CONFIGURED child-env marker
+   * (`KANKAKU_SUBAGENT_CHILD_ENV`) was present, but was ignored because
+   * this process looked interactive — a configured marker never demotes an
+   * interactive session (see `config.ts#detectRole`'s precedence doc).
+   * Surfaced once via `ctx.ui.notify` at `session_start` and forwarded to
+   * `/kankaku doctor`; escalated there (C2 item 3's self-check) when this
+   * process also has no tracked ancestor at all — the strongest signal the
+   * marker is genuinely ambient.
+   */
+  configuredMarkerIgnoredInteractive?: boolean;
+  /** C2 item 3: whether a live tracked ancestor was found for this process (`adapters/process-identity.ts#ProcessIdentity.hasTrackedAncestor`) — combined with `configuredMarkerIgnoredInteractive` above to decide the doctor self-check's wording. */
+  hasTrackedAncestor?: boolean;
+  /**
+   * C2 (CRITICAL fix, item 1): every `KANKAKU_SUBAGENT_CHILD_ENV` marker
+   * `config.ts#validateSubagentChildEnvMarkers` rejected as looking
+   * pi/shell/OS/npm-owned rather than genuinely child-only. Surfaced once
+   * via `ctx.ui.notify` at `session_start` and forwarded to `/kankaku
+   * doctor`. Absent (never an empty array) when nothing was rejected.
+   */
+  rejectedSubagentChildEnvMarkers?: RejectedChildEnvMarker[];
   /** Forwarded to `/kankaku doctor` (F1); see `kankaku-command.ts#KankakuCommandDeps.workLogRouting`. */
   workLogRouting?: { usedFallback: boolean; parentDir: string };
   /**
@@ -230,6 +252,9 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     roleOverride: deps.roleOverride,
     childMarkerPresent: deps.childMarkerPresent,
     overrideIgnoredInteractive: deps.overrideIgnoredInteractive,
+    configuredMarkerIgnoredInteractive: deps.configuredMarkerIgnoredInteractive,
+    hasTrackedAncestor: deps.hasTrackedAncestor,
+    rejectedSubagentChildEnvMarkers: deps.rejectedSubagentChildEnvMarkers,
     workLogRouting: deps.workLogRouting,
     subagentProfiles: deps.subagentProfiles,
   });
@@ -423,6 +448,8 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
   let hubConfigErrorNotified = false;
   let overrideIgnoredInteractiveNotified = false;
+  let configuredMarkerIgnoredInteractiveNotified = false;
+  let rejectedSubagentChildEnvMarkersNotified = false;
 
   pi.on(
     "session_start",
@@ -451,6 +478,33 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
             "kankaku: ignoring KANKAKU_ROLE=subagent for this interactive session (likely a leaked shell export) — treating it as orchestrator; see /kankaku doctor",
             "warning",
           );
+        }
+      }
+
+      // C2 item 2/3: a KANKAKU_SUBAGENT_CHILD_ENV marker matched, but was
+      // ignored because this process looked interactive — a configured
+      // marker never demotes an interactive session. Escalate the wording
+      // when this process ALSO has no tracked ancestor at all (the
+      // strongest signal the marker is genuinely ambient, not a real
+      // subagent mechanism — C2 item 3's self-check).
+      if (deps.configuredMarkerIgnoredInteractive && !configuredMarkerIgnoredInteractiveNotified) {
+        configuredMarkerIgnoredInteractiveNotified = true;
+        if (ctx.hasUI) {
+          const message = deps.hasTrackedAncestor
+            ? "kankaku: ignoring a KANKAKU_SUBAGENT_CHILD_ENV marker for this interactive session — treating it as orchestrator; see /kankaku doctor"
+            : "kankaku: a KANKAKU_SUBAGENT_CHILD_ENV marker matched this interactive, top-level session (no tracked ancestor) — the marker is likely ambient, not a real subagent mechanism; treating it as orchestrator; see /kankaku doctor";
+          ctx.ui.notify(message, "warning");
+        }
+      }
+
+      // C2 item 1: one or more KANKAKU_SUBAGENT_CHILD_ENV entries were
+      // rejected at config load time (looked pi/shell/OS/npm-owned, not
+      // genuinely child-only) — never silent.
+      if (deps.rejectedSubagentChildEnvMarkers?.length && !rejectedSubagentChildEnvMarkersNotified) {
+        rejectedSubagentChildEnvMarkersNotified = true;
+        if (ctx.hasUI) {
+          const names = deps.rejectedSubagentChildEnvMarkers.map((rejected) => rejected.name).join(", ");
+          ctx.ui.notify(`kankaku: ignoring KANKAKU_SUBAGENT_CHILD_ENV marker(s) that look ambient, not child-only: ${names}; see /kankaku doctor`, "warning");
         }
       }
 

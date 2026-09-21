@@ -1631,6 +1631,82 @@ test("R1: session_start never notifies the override-ignored warning when overrid
   assert.equal(notified.length, 0);
 });
 
+test("C2: session_start notifies once (warning) when a configured marker was ignored for an interactive, top-level session (no tracked ancestor) — the self-check wording", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    configuredMarkerIgnoredInteractive: true,
+    hasTrackedAncestor: false,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("session_start", { type: "session_start", reason: "reload" }, ctx);
+
+  const matches = notified.filter((n) => n.message.includes("KANKAKU_SUBAGENT_CHILD_ENV") && n.message.includes("top-level"));
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0]?.type, "warning");
+});
+
+test("C2: session_start notifies once with the plainer wording when a configured marker was ignored but a tracked ancestor WAS found", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    configuredMarkerIgnoredInteractive: true,
+    hasTrackedAncestor: true,
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+
+  const matches = notified.filter((n) => n.message.includes("KANKAKU_SUBAGENT_CHILD_ENV"));
+  assert.equal(matches.length, 1);
+  assert.ok(!matches[0]!.message.includes("top-level"));
+});
+
+test("C2: session_start notifies once (warning) listing every rejected KANKAKU_SUBAGENT_CHILD_ENV marker", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    rejectedSubagentChildEnvMarkers: [{ name: "PI_CODING_AGENT", reason: "ambient" }],
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("session_start", { type: "session_start", reason: "reload" }, ctx);
+
+  const matches = notified.filter((n) => n.message.includes("PI_CODING_AGENT"));
+  assert.equal(matches.length, 1);
+  assert.equal(matches[0]?.type, "warning");
+});
+
 test("buildRecord attaches clientId/clientName/projectId/projectName and machine when a hub target resolves for the run", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });

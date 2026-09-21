@@ -4,7 +4,7 @@ import { resolveProcessIdentity } from "../src/adapters/process-identity.ts";
 import type { RegistryEntry } from "../src/ports/process-registry.ts";
 import type { ProcessRegistry } from "../src/ports/process-registry.ts";
 import type { AncestrySnapshot } from "../src/adapters/ancestry.ts";
-import { BUILTIN_SUBAGENT_PROFILES } from "../src/domain/subagent-profile.ts";
+import { BUILTIN_SUBAGENT_PROFILES, buildConfiguredProfile } from "../src/domain/subagent-profile.ts";
 
 function entry(overrides: Partial<RegistryEntry> = {}): RegistryEntry {
   return {
@@ -143,4 +143,51 @@ test("liveStartId is threaded through from resolveSubagentStartup for the regist
 
   assert.equal(identity.liveStartId(50), parent.processStartId);
   assert.equal(identity.liveStartId(12345), undefined);
+});
+
+// --- C2 (CRITICAL fix): a configured marker never demotes an interactive
+// session, and `profile` is only ever attributed when role actually ended
+// up "subagent" — a configured marker present-but-ignored must never
+// leave an orchestrator record carrying `profile: "configured"`. ---
+
+test("C2: a configured marker confirms subagent for a NON-interactive process, with profile attribution", () => {
+  const configured = buildConfiguredProfile([], [{ name: "MY_CHILD", value: "1" }])!;
+  const identity = resolveProcessIdentity(
+    baseDeps({ env: { MY_CHILD: "1" }, isInteractiveGuess: false, subagentProfiles: [...BUILTIN_SUBAGENT_PROFILES, configured] }),
+  );
+
+  assert.equal(identity.role, "subagent");
+  assert.equal(identity.profile, "configured");
+  assert.equal(identity.configuredMarkerIgnoredInteractive, undefined);
+});
+
+test("C2: a configured marker is ignored for an INTERACTIVE process — role stays orchestrator, profile is undefined (never a contradictory orchestrator-with-profile record), and configuredMarkerIgnoredInteractive is surfaced", () => {
+  const configured = buildConfiguredProfile([], [{ name: "MY_CHILD", value: "1" }])!;
+  const identity = resolveProcessIdentity(
+    baseDeps({ env: { MY_CHILD: "1" }, isInteractiveGuess: true, subagentProfiles: [...BUILTIN_SUBAGENT_PROFILES, configured] }),
+  );
+
+  assert.equal(identity.role, "orchestrator");
+  assert.equal(identity.profile, undefined);
+  assert.equal(identity.configuredMarkerIgnoredInteractive, true);
+  // The built-in "confirmed child marker" signal stays false — it never
+  // matched here, only the (ignored) configured one did.
+  assert.equal(identity.childMarkerPresent, false);
+});
+
+test("C2: a BUILT-IN marker (GENTLE_PI_AGENTS_CHILD) still wins outright, even interactively, when a configured profile is ALSO active", () => {
+  const configured = buildConfiguredProfile([], [{ name: "MY_CHILD", value: "1" }])!;
+  const identity = resolveProcessIdentity(
+    baseDeps({ env: { GENTLE_PI_AGENTS_CHILD: "1" }, isInteractiveGuess: true, subagentProfiles: [...BUILTIN_SUBAGENT_PROFILES, configured] }),
+  );
+
+  assert.equal(identity.role, "subagent");
+  assert.equal(identity.profile, "gentle-pi");
+  assert.equal(identity.childMarkerPresent, true);
+  assert.equal(identity.configuredMarkerIgnoredInteractive, undefined);
+});
+
+test("C2: no configured profile active at all — configuredMarkerIgnoredInteractive stays undefined regardless of interactivity", () => {
+  const identity = resolveProcessIdentity(baseDeps({ env: {}, isInteractiveGuess: true, subagentProfiles: BUILTIN_SUBAGENT_PROFILES }));
+  assert.equal(identity.configuredMarkerIgnoredInteractive, undefined);
 });

@@ -78,8 +78,18 @@ export default function kankaku(pi: ExtensionAPI): void {
     // one) — generalises child-marker recognition beyond gentle-pi's own.
     subagentProfiles: config.subagentProfiles,
   });
-  const { role, roleOverride, childMarkerPresent, overrideIgnoredInteractive, hasTrackedAncestor, orchestratorRef, ownProcessStartId, liveStartId, profile } =
-    identity;
+  const {
+    role,
+    roleOverride,
+    childMarkerPresent,
+    overrideIgnoredInteractive,
+    configuredMarkerIgnoredInteractive,
+    hasTrackedAncestor,
+    orchestratorRef,
+    ownProcessStartId,
+    liveStartId,
+    profile,
+  } = identity;
 
   // `resolvedDir` (this session's project/write target) is deliberately
   // NOT part of the frozen process identity above: pi can enter a
@@ -303,6 +313,9 @@ export default function kankaku(pi: ExtensionAPI): void {
     ...(profile !== undefined ? { profile } : {}),
     subagentProfiles: config.subagentProfiles,
     ...(overrideIgnoredInteractive ? { overrideIgnoredInteractive } : {}),
+    ...(configuredMarkerIgnoredInteractive ? { configuredMarkerIgnoredInteractive } : {}),
+    ...(hasTrackedAncestor ? { hasTrackedAncestor } : {}),
+    ...(config.rejectedSubagentChildEnvMarkers.length > 0 ? { rejectedSubagentChildEnvMarkers: config.rejectedSubagentChildEnvMarkers } : {}),
     ...(workLogRouting !== undefined ? { workLogRouting } : {}),
     // Fresh ancestry snapshot on demand, only when `/kankaku doctor` is
     // actually invoked (never on a hot path): a stale snapshot from

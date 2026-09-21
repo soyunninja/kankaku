@@ -432,6 +432,84 @@ test("R1: 'doctor' reports the resolved orchestrator outcome when KANKAKU_ROLE=s
   assert.ok(!line!.includes("deciding signal"));
 });
 
+test("C2: 'doctor' reports a configured marker ignored for interactivity, with the strongest wording when there is also no tracked ancestor (item 3's self-check)", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    configuredMarkerIgnoredInteractive: true,
+    hasTrackedAncestor: false,
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  const line = entry.data.lines.find((l) => l.startsWith("configured marker:"));
+  assert.ok(line, "expected a configured marker line");
+  assert.ok(line!.includes("TOP-LEVEL"));
+  assert.ok(line!.includes("ambient"));
+  assert.ok(line!.includes("resolved role: orchestrator"));
+});
+
+test("C2: 'doctor' reports a configured marker ignored for interactivity with the plainer wording when a tracked ancestor WAS found", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    configuredMarkerIgnoredInteractive: true,
+    hasTrackedAncestor: true,
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  const line = entry.data.lines.find((l) => l.startsWith("configured marker:"));
+  assert.ok(line, "expected a configured marker line");
+  assert.ok(!line!.includes("TOP-LEVEL"));
+  assert.ok(line!.includes("resolved role: orchestrator"));
+});
+
+test("C2: 'doctor' omits the configured-marker line entirely when configuredMarkerIgnoredInteractive was not set", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  assert.equal(
+    entry.data.lines.find((l) => l.startsWith("configured marker:")),
+    undefined,
+  );
+});
+
+test("C2: 'doctor' reports every rejected KANKAKU_SUBAGENT_CHILD_ENV marker with its reason", async () => {
+  const pi = new FakePi();
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    rejectedSubagentChildEnvMarkers: [
+      { name: "PI_CODING_AGENT", reason: "ambient" },
+      { name: "CI", reason: "shell/OS variable" },
+    ],
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+  const lines = entry.data.lines.filter((l) => l.startsWith("rejected KANKAKU_SUBAGENT_CHILD_ENV marker"));
+  assert.equal(lines.length, 2);
+  assert.ok(lines[0]!.includes("PI_CODING_AGENT"));
+  assert.ok(lines[0]!.includes("ambient"));
+  assert.ok(lines[1]!.includes("CI"));
+});
+
 test("'doctor' reports when this subagent could not write to its orchestrator's directory and fell back locally (F1)", async () => {
   const pi = new FakePi();
   registerKankakuCommand(pi as unknown as ExtensionAPI, {

@@ -2,7 +2,7 @@ import { detectRole, readRoleOverride, stripRoleOverride } from "../config.ts";
 import type { RoleOverride } from "../config.ts";
 import { resolveOrchestratorRef } from "../domain/ancestry-match.ts";
 import type { OrchestratorRef } from "../domain/work-record.ts";
-import { GENTLE_PI_PROFILE, allChildMarkers, matchesAnyMarker, resolveChildProfile } from "../domain/subagent-profile.ts";
+import { GENTLE_PI_PROFILE, builtinChildMarkers, configuredChildMarkers, matchesAnyMarker, resolveChildProfile } from "../domain/subagent-profile.ts";
 import type { SubagentProfile } from "../domain/subagent-profile.ts";
 import type { ProcessRegistry, RegistryEntry } from "../ports/process-registry.ts";
 import { resolveSubagentStartup } from "./subagent-startup.ts";
@@ -26,6 +26,8 @@ export interface ProcessIdentity {
   childMarkerPresent: boolean;
   /** See `config.ts#RoleDetection.overrideIgnoredInteractive`. */
   overrideIgnoredInteractive: true | undefined;
+  /** C2: see `config.ts#RoleDetection.configuredMarkerIgnoredInteractive`. */
+  configuredMarkerIgnoredInteractive: true | undefined;
   /** Whether a live, identity-verified tracked ancestor was found via the machine-wide registry (F2/F3's `hasTrackedAncestor`). */
   hasTrackedAncestor: boolean;
   /** The nearest verified tracked ancestor's own registry entry, if any. */
@@ -104,26 +106,40 @@ export function resolveProcessIdentity(deps: ResolveProcessIdentityDeps): Proces
   // SUBAGENT-REQ-001/002/003/005: the full active profile set's markers,
   // generalising the single hardcoded GENTLE_PI_AGENTS_CHILD check this
   // module used before — see DEFAULT_SUBAGENT_PROFILES for why an omitted
-  // `deps.subagentProfiles` is a complete no-op.
+  // `deps.subagentProfiles` is a complete no-op. C2: split into two tiers —
+  // built-in markers always win; the user-configured one never demotes an
+  // interactive session (see `config.ts#detectRole`'s doc comment).
   const profiles = deps.subagentProfiles ?? DEFAULT_SUBAGENT_PROFILES;
-  const childMarkers = allChildMarkers(profiles);
+  const builtinMarkers = builtinChildMarkers(profiles);
+  const userConfiguredMarkers = configuredChildMarkers(profiles);
 
-  // R1 (BLOCKER): read KANKAKU_ROLE, and whether A confirmed child marker
-  // (from any recognised profile) is present, exactly once here — then
-  // strip the override from this process's own env so a child this process
-  // spawns never inherits it.
-  const childMarkerPresent = matchesAnyMarker(deps.env, childMarkers);
-  // SUBAGENT-REQ-005/017: WHICH profile's marker confirmed this process, if
-  // exactly one did (never guessed — see resolveChildProfile).
-  const profile = resolveChildProfile(profiles, deps.env).profile?.id;
+  // R1 (BLOCKER): read KANKAKU_ROLE, and whether A confirmed BUILT-IN child
+  // marker (from any recognised profile) is present, exactly once here —
+  // then strip the override from this process's own env so a child this
+  // process spawns never inherits it. `childMarkerPresent` deliberately
+  // reflects the built-in tier only — it backs the doctor's "the confirmed
+  // child marker takes precedence" message (`kankaku-command.ts`), which is
+  // only true for this tier (C2).
+  const childMarkerPresent = matchesAnyMarker(deps.env, builtinMarkers);
   const roleOverride = readRoleOverride(deps.env);
   // `hasTrackedAncestor` is irrelevant to `role` itself (only to the
   // separately-deferred `roleConfidence`, resolved later by the caller),
   // so `false` is passed here purely to obtain `role`/`overrideIgnoredInteractive` cheaply.
-  const detection = detectRole(deps.env, false, deps.isInteractiveGuess, childMarkers);
+  const detection = detectRole(deps.env, false, deps.isInteractiveGuess, builtinMarkers, userConfiguredMarkers);
   const { role } = detection;
   const overrideIgnoredInteractive = detection.overrideIgnoredInteractive === true ? true : undefined;
+  const configuredMarkerIgnoredInteractive = detection.configuredMarkerIgnoredInteractive === true ? true : undefined;
   stripRoleOverride(deps.env);
+
+  // SUBAGENT-REQ-005/017 + C2 item 3: WHICH profile's marker confirmed this
+  // process, if exactly one did (never guessed — see resolveChildProfile) —
+  // but only ever attributed when this process actually ended up
+  // classified `subagent`. A configured marker present but ignored for
+  // interactivity (role stays `orchestrator`) must never carry a
+  // `profile`: an orchestrator record with `profile: "configured"` would
+  // be a self-contradictory pair no doctor/report reader could make sense
+  // of.
+  const profile = role === "subagent" ? resolveChildProfile(profiles, deps.env).profile?.id : undefined;
 
   // F4: resolves through a subagent-of-subagent chain to the real top-level
   // orchestrator (never a middle hop), carrying that orchestrator's `dir`
@@ -135,6 +151,7 @@ export function resolveProcessIdentity(deps: ResolveProcessIdentityDeps): Proces
     roleOverride,
     childMarkerPresent,
     overrideIgnoredInteractive,
+    configuredMarkerIgnoredInteractive,
     hasTrackedAncestor,
     ancestorEntry: startup.ancestorEntry,
     orchestratorRef,
