@@ -167,14 +167,22 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
   }
 
   const hashes = state?.hashes ?? {};
-  const toSync = eligible.filter((task) => hashes[task.id] !== computeTaskContentHash(task));
+  const changed = (task: TaskView): boolean => hashes[task.id] !== computeTaskContentHash(task);
+  // A row the hub ALREADY holds is corrected wherever it sits: the window
+  // bounds how far back NEW work is looked for, never whether a known row
+  // may go stale. A child can move between tasks (task-view.ts's rescue
+  // join, or a crash-recovered parent appearing later), so a task can
+  // SHRINK — skipping it would leave its old, larger cost on the hub next
+  // to the row the money moved to.
+  const knownAndChanged = outsideWindow.filter((task) => hashes[task.id] !== undefined && changed(task));
+  const toSync = [...eligible.filter(changed), ...knownAndChanged].sort((a, b) => Date.parse(a.endedAt) - Date.parse(b.endedAt));
   // R3: cheap, pure visibility into a task that changed but that this
   // incremental run's window will not re-evaluate — see SyncPlan's doc
   // comment. No extra work: `outsideWindow` is already computed above,
   // this just re-applies the same hash-mismatch check to it.
-  const staleOutsideWindow = outsideWindow.filter((task) => hashes[task.id] !== computeTaskContentHash(task));
+  const staleOutsideWindow = outsideWindow.filter((task) => hashes[task.id] === undefined);
 
-  return { toSync, unchangedCount: eligible.length - toSync.length, isFullSync, staleOutsideWindow };
+  return { toSync, unchangedCount: eligible.length - eligible.filter(changed).length, isFullSync, staleOutsideWindow };
 }
 
 /**

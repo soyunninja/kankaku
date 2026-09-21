@@ -598,8 +598,8 @@ test("computeSyncStatus (R3): reports staleOutsideWindow — tasks changed since
     stateStore.write({ target: TARGET, syncedThrough: iso(100_000_000), hashes: { "late-join-task": "stale-hash-from-before-the-child-joined" } });
 
     const status = computeSyncStatus(log, stateStore, TARGET);
-    assert.equal(status.pending, 0, "an ordinary incremental sync must not re-evaluate it");
-    assert.equal(status.staleOutsideWindow, 1);
+    assert.equal(status.pending, 1, "a row the hub already holds is corrected even outside the window");
+    assert.equal(status.staleOutsideWindow, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

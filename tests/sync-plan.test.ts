@@ -157,21 +157,43 @@ test("R3: a late-arriving subagent that bumps a task's endedAt stays inside the 
   assert.deepEqual(plan.staleOutsideWindow, []);
 });
 
-test("R3: a late-arriving subagent's task falls outside the revisit window (needs `sync all`) once OTHER activity in the same directory has advanced syncedThrough far enough past it", () => {
-  // Same scenario as above, but this time other, unrelated tasks kept
-  // syncing in the meantime and pushed the watermark to t=200000s — now
-  // more than windowHours behind the late child's own settle time (t=100000s).
+test("a task ALREADY on the hub whose content changed is re-synced even outside the revisit window — the hub must never keep a stale row", () => {
+  // The window bounds how far back NEW work is looked for. A row the hub
+  // already holds is different: if its content changed (a late child joined,
+  // or a child MOVED to another task so this one shrank) and it is skipped,
+  // the hub keeps money that may since have been billed to another row.
   const task = makeTask("a", 0, 100_000);
-  const state: SyncState = { target: TARGET, syncedThrough: iso(200_000), hashes: { a: "stale-hash-from-before-the-child-joined" } };
+  const state: SyncState = { target: TARGET, syncedThrough: iso(200_000), hashes: { a: "hash-from-before-the-change" } };
 
   const plan = planSync([task], state, { target: TARGET, windowHours: 24 });
 
-  assert.deepEqual(plan.toSync, [], "outside the window, an ordinary incremental sync must not re-evaluate the task");
-  assert.deepEqual(
-    plan.staleOutsideWindow.map((t) => t.id),
-    ["a"],
-    "but it must be visible as changed-and-outside-the-window, so /kankaku sync status can point at `sync all`",
-  );
+  assert.deepEqual(plan.toSync.map((t) => t.id), ["a"]);
+  assert.deepEqual(plan.staleOutsideWindow, []);
+});
+
+test("a child moving between two tasks re-syncs BOTH rows, so the hub total never double counts", () => {
+  const before = [makeTask("old", 0, 1000, { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 7 } })];
+  const hashes = { old: computeTaskContentHash(before[0]!) };
+  // Later: the child that had been attached to "old" now belongs to "new".
+  const after = [
+    makeTask("old", 0, 200, { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 } }),
+    makeTask("new", 300_000, 300_500, { usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 7 } }),
+  ];
+  const state: SyncState = { target: TARGET, syncedThrough: iso(299_000), hashes };
+
+  const plan = planSync(after, state, { target: TARGET, windowHours: 24 });
+
+  assert.deepEqual(plan.toSync.map((t) => t.id).sort(), ["new", "old"]);
+});
+
+test("a task outside the window that was NEVER synced is still left to `sync all` and reported, not pushed", () => {
+  const task = makeTask("ancient", 0, 100);
+  const state: SyncState = { target: TARGET, syncedThrough: iso(200_000), hashes: {} };
+
+  const plan = planSync([task], state, { target: TARGET, windowHours: 24 });
+
+  assert.deepEqual(plan.toSync, []);
+  assert.deepEqual(plan.staleOutsideWindow.map((t) => t.id), ["ancient"]);
 });
 
 test("R3: staleOutsideWindow never includes a task whose content is actually unchanged, even outside the window", () => {
@@ -307,7 +329,7 @@ test("G2: a synced-then-pruned-then-retained old task is never reported stale ac
   }
 });
 
-test("G2: a genuinely changed old task (a late subagent settling long after its orchestrator) is still reported stale outside the window, hash retention notwithstanding", () => {
+test("G2: a genuinely changed old task (a late subagent settling long after its orchestrator) is re-synced even outside the window, thanks to hash retention", () => {
   const oldTaskBefore = makeTask("old", 0, 10);
   const hashes = { old: computeTaskContentHash(oldTaskBefore) };
   const prunedHashes = pruneHashes(hashes, [oldTaskBefore]);
@@ -318,10 +340,11 @@ test("G2: a genuinely changed old task (a late subagent settling long after its 
   const plan = planSync([oldTaskAfter], state, { target: TARGET, windowHours: 1 });
 
   assert.deepEqual(
-    plan.staleOutsideWindow.map((t) => t.id),
+    plan.toSync.map((t) => t.id),
     ["old"],
-    "a real content change on an old task must still surface as stale-outside-window even though its hash was retained",
+    "a real content change on a task the hub already holds is pushed, window or not — the retained hash is what makes that detectable",
   );
+  assert.deepEqual(plan.staleOutsideWindow, []);
 });
 
 test("G2: first sync after upgrading from a version that pruned hashes by window — a task already stripped of its hash by the OLD bug is reported stale exactly once, then never again", () => {
