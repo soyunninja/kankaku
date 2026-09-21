@@ -243,16 +243,23 @@ export function pendingCount(tasks: TaskView[], state: ReturnType<SyncStateStore
   return planSync(tasks, state, { target, ...(windowHours !== undefined ? { windowHours } : {}) }).toSync.length;
 }
 
-/** `/kankaku sync status`: the persisted state plus a locally-computed pending count. No network. */
+/**
+ * `/kankaku sync status`: the persisted state, a locally-computed pending
+ * count, and (R3) how many tasks changed since their last sync but fall
+ * outside this run's revisit window — a `sync all` needed to pick them up
+ * (see `domain/sync-plan.ts#SyncPlan.staleOutsideWindow`, and README "Hub
+ * (PocketBase)" > "Sync" > "Limitations"). No network.
+ */
 export function computeSyncStatus(
   log: WorkLog,
   stateStore: SyncStateStore,
   target: string,
   windowHours?: number,
-): { state: ReturnType<SyncStateStore["read"]>; pending: number } {
+): { state: ReturnType<SyncStateStore["read"]>; pending: number; staleOutsideWindow: number } {
   const state = stateStore.read();
   const tasks = buildTasks(log.readAll());
-  return { state, pending: pendingCount(tasks, state, target, windowHours) };
+  const plan = planSync(tasks, state, { target, ...(windowHours !== undefined ? { windowHours } : {}) });
+  return { state, pending: plan.toSync.length, staleOutsideWindow: plan.staleOutsideWindow.length };
 }
 
 /**

@@ -754,7 +754,7 @@ function emptySyncSummary(overrides: Partial<SyncSummary> = {}): SyncSummary {
 class FakeSync implements SyncCommandDeps {
   runCalls: Array<{ full?: boolean } | undefined> = [];
   runResult: SyncSummary = emptySyncSummary();
-  statusResult: { state: SyncState | undefined; pending: number } = { state: undefined, pending: 0 };
+  statusResult: { state: SyncState | undefined; pending: number; staleOutsideWindow: number } = { state: undefined, pending: 0, staleOutsideWindow: 0 };
 
   run(options?: { full?: boolean }): Promise<SyncSummary> {
     this.runCalls.push(options);
@@ -825,6 +825,7 @@ test("'sync status' reports the watermark, pending count and last error without 
   sync.statusResult = {
     state: { target: "https://pb.example.com", syncedThrough: "2026-09-20T00:00:00.000Z", hashes: {}, lastError: { message: "boom", at: "2026-09-20T01:00:00.000Z" } },
     pending: 4,
+    staleOutsideWindow: 0,
   };
 
   registerKankakuCommand(pi as unknown as ExtensionAPI, {
@@ -842,6 +843,43 @@ test("'sync status' reports the watermark, pending count and last error without 
   assert.match(data.lines.join("\n"), /synced through 2026-09-20T00:00:00\.000Z/);
   assert.match(data.lines.join("\n"), /pending: 4/);
   assert.match(data.lines.join("\n"), /last error: boom/);
+});
+
+test("'sync status' reports staleOutsideWindow tasks and points at 'sync all' (R3)", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+  sync.statusResult = { state: undefined, pending: 0, staleOutsideWindow: 2 };
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync,
+  });
+
+  await pi.commands.get("kankaku")!.handler("sync status", makeCtx());
+
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.match(data.lines.join("\n"), /2 task\(s\) changed.*outside the sync window/);
+  assert.match(data.lines.join("\n"), /sync all/);
+});
+
+test("'sync status' omits the staleOutsideWindow line when there are none", async () => {
+  const pi = new FakePi();
+  const sync = new FakeSync();
+  sync.statusResult = { state: undefined, pending: 0, staleOutsideWindow: 0 };
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sync,
+  });
+
+  await pi.commands.get("kankaku")!.handler("sync status", makeCtx());
+
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.ok(!data.lines.join("\n").includes("outside the sync window"));
 });
 
 test("'sync' reports a stopped-early error and does not crash the command", async () => {

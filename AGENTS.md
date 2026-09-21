@@ -196,7 +196,17 @@ Read `README.md` for behaviour and the record schema before changing code.
 - Hub sync (phase 2, `domain/hub-entry.ts`, `domain/sync-plan.ts`,
   `adapters/sync-runner.ts`) uploads `buildTasks` output — the aggregation
   rule (D6 in `kankaku-pocketbase-proposal.md`) is never re-implemented
-  against raw records on the server or in any sync adapter. Nothing in a pi
+  against raw records on the server or in any sync adapter. The revisit
+  window (`domain/sync-plan.ts#planSync`) is anchored to the *watermark*
+  (`syncedThrough - windowHours`), not to wall-clock time (R3): a task
+  whose `endedAt` a late-settling background subagent bumps forward (see
+  `task-view.ts`'s `Math.max(parentEnd, ...subagentSettledAt)`) stays
+  eligible for an ordinary incremental sync no matter how long the
+  directory then goes unsynced, as long as no *other* task's sync has since
+  advanced the watermark past it; once it has, only `sync all` picks the
+  late join back up — `planSync`'s `staleOutsideWindow` (surfaced by
+  `/kankaku sync status`) makes that case visible instead of silent. Nothing
+  in a pi
   event handler awaits the network: sync is a separate, later step
   (`/kankaku sync`, or fire-and-forget on `session_start`/`agent_settled`),
   and `worklog.jsonl` is still never rewritten by it — sync only reads.

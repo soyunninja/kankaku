@@ -57,6 +57,21 @@ export interface SyncPlan {
   unchangedCount: number;
   /** `true` when this run evaluated every task rather than only the revisit window. */
   isFullSync: boolean;
+  /**
+   * Tasks whose content changed since they were last synced (like `toSync`)
+   * but whose `endedAt` falls behind this run's revisit window — so an
+   * ordinary incremental sync does not re-evaluate them (R3): a background
+   * subagent that settles long after its orchestrator bumps the task's
+   * `endedAt` (see `task-view.ts`) forward, which keeps it inside the
+   * window as long as `syncedThrough` itself has not since advanced past
+   * it — but once *other* activity in the same directory pushes the
+   * watermark far enough ahead, the late join falls out of range and only
+   * `sync all` (or `backfill`) picks it up. Always empty for a full sync,
+   * since nothing is excluded by the window there. Cheap to compute (no
+   * extra I/O) and surfaced by `/kankaku sync status` — see README "Hub
+   * (PocketBase)" > "Sync" > "Limitations".
+   */
+  staleOutsideWindow: TaskView[];
 }
 
 const DEFAULT_WINDOW_HOURS = 24;
@@ -140,18 +155,26 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
   const sorted = [...tasks].sort((a, b) => Date.parse(a.endedAt) - Date.parse(b.endedAt));
 
   let eligible: TaskView[];
+  let outsideWindow: TaskView[];
   if (isFullSync) {
     eligible = sorted;
+    outsideWindow = [];
   } else {
     const syncedThroughMs = state.syncedThrough ? Date.parse(state.syncedThrough) : Number.NEGATIVE_INFINITY;
     const cutoff = syncedThroughMs - windowMs(windowHours);
     eligible = sorted.filter((task) => Date.parse(task.endedAt) > cutoff);
+    outsideWindow = sorted.filter((task) => Date.parse(task.endedAt) <= cutoff);
   }
 
   const hashes = state?.hashes ?? {};
   const toSync = eligible.filter((task) => hashes[task.id] !== computeTaskContentHash(task));
+  // R3: cheap, pure visibility into a task that changed but that this
+  // incremental run's window will not re-evaluate — see SyncPlan's doc
+  // comment. No extra work: `outsideWindow` is already computed above,
+  // this just re-applies the same hash-mismatch check to it.
+  const staleOutsideWindow = outsideWindow.filter((task) => hashes[task.id] !== computeTaskContentHash(task));
 
-  return { toSync, unchangedCount: eligible.length - toSync.length, isFullSync };
+  return { toSync, unchangedCount: eligible.length - toSync.length, isFullSync, staleOutsideWindow };
 }
 
 /**

@@ -136,6 +136,69 @@ test("a task never synced before (no hash entry) is always in toSync even inside
   );
 });
 
+test("R3: a late-arriving subagent that bumps a task's endedAt stays inside the revisit window as long as syncedThrough has not advanced past it, however long ago in wall-clock time that was", () => {
+  // The orchestrator settled at t=10s and was synced back then (syncedThrough=10s).
+  // Its background subagent only settles much later — but nothing else in
+  // this directory has synced since, so the watermark never moved. Task
+  // views recompute `endedAt` as the max of orchestrator/child settledAt
+  // (see task-view.ts), so once the late child is in the log, this task's
+  // endedAt jumps forward to the child's settle time.
+  const task = makeTask("a", 0, 100_000); // endedAt bumped to the late child's settle time (t=100000s)
+  const beforeJoinHash = "stale-hash-from-before-the-child-joined";
+  const state: SyncState = { target: TARGET, syncedThrough: iso(10), hashes: { a: beforeJoinHash } };
+
+  const plan = planSync([task], state, { target: TARGET, windowHours: 24 });
+
+  assert.deepEqual(
+    plan.toSync.map((t) => t.id),
+    ["a"],
+    "the task must still be picked up on an ordinary incremental sync — the window is anchored to syncedThrough, not to current wall-clock time",
+  );
+  assert.deepEqual(plan.staleOutsideWindow, []);
+});
+
+test("R3: a late-arriving subagent's task falls outside the revisit window (needs `sync all`) once OTHER activity in the same directory has advanced syncedThrough far enough past it", () => {
+  // Same scenario as above, but this time other, unrelated tasks kept
+  // syncing in the meantime and pushed the watermark to t=200000s — now
+  // more than windowHours behind the late child's own settle time (t=100000s).
+  const task = makeTask("a", 0, 100_000);
+  const state: SyncState = { target: TARGET, syncedThrough: iso(200_000), hashes: { a: "stale-hash-from-before-the-child-joined" } };
+
+  const plan = planSync([task], state, { target: TARGET, windowHours: 24 });
+
+  assert.deepEqual(plan.toSync, [], "outside the window, an ordinary incremental sync must not re-evaluate the task");
+  assert.deepEqual(
+    plan.staleOutsideWindow.map((t) => t.id),
+    ["a"],
+    "but it must be visible as changed-and-outside-the-window, so /kankaku sync status can point at `sync all`",
+  );
+});
+
+test("R3: staleOutsideWindow never includes a task whose content is actually unchanged, even outside the window", () => {
+  const task = makeTask("a", 0, 100_000);
+  const hash = computeTaskContentHash(task);
+  const state: SyncState = { target: TARGET, syncedThrough: iso(200_000), hashes: { a: hash } };
+
+  const plan = planSync([task], state, { target: TARGET, windowHours: 24 });
+
+  assert.deepEqual(plan.toSync, []);
+  assert.deepEqual(plan.staleOutsideWindow, []);
+});
+
+test("R3: staleOutsideWindow is always empty on a full sync — nothing is excluded by the window there", () => {
+  const task = makeTask("a", 0, 100_000);
+  const state: SyncState = { target: TARGET, syncedThrough: iso(200_000), hashes: { a: "stale-hash" } };
+
+  const plan = planSync([task], state, { target: TARGET, windowHours: 24, full: true });
+
+  assert.equal(plan.isFullSync, true);
+  assert.deepEqual(
+    plan.toSync.map((t) => t.id),
+    ["a"],
+  );
+  assert.deepEqual(plan.staleOutsideWindow, []);
+});
+
 test("toSync is sorted chronologically by endedAt", () => {
   const tasks = [makeTask("late", 100, 110), makeTask("early", 0, 10), makeTask("mid", 50, 60)];
   const plan = planSync(tasks, undefined, { target: TARGET });

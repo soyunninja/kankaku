@@ -722,6 +722,11 @@ every task whose `endedAt` falls inside it. A cheap content hash per task
 (`<KANKAKU_DIR>/sync-state.json`) means an unchanged task inside the window
 costs nothing: running `/kankaku sync` twice in a row performs zero writes.
 
+The window is anchored to `syncedThrough` (the watermark), never to
+current wall-clock time — see "Limitations" below for what that means for
+a background subagent that settles long after its orchestrator, and after
+the directory has otherwise gone quiet.
+
 **Assignment is create-only.** You (or whoever reassigns work in the hub's
 web app) can move a task from one client/project to another directly in
 PocketBase — for example, moving a "Sin determinar" row to its real
@@ -786,7 +791,9 @@ leaves the machine at all: `none` (default — omitted entirely), `truncated`
   window. Safe and cheap to run — the content hash still skips anything
   unchanged.
 - `/kankaku sync status` — the current watermark, a locally-computed
-  pending count (no network), and the last sync error, if any.
+  pending count (no network), how many tasks changed but fall outside the
+  current revisit window (needs `sync all` — see "Limitations" below), and
+  the last sync error, if any.
 - `/kankaku backfill` — a full sync, reported grouped by
   `legacy_client_label`: how many tasks went to "Sin determinar" and under
   which old label, so you know what to reassign in the web app's
@@ -824,9 +831,34 @@ exactly there. A task that fails **validation** (e.g. a genuinely malformed
 payload) is recorded with its reason and skipped — not retried on every
 single run — but is retried automatically the moment its content changes.
 
-**Limitations:** sync state (`sync-state.json`) is per repository/machine,
-not centralized; there is no standalone CLI entry point yet (`npx kankaku
-sync` outside of pi) — see "Roadmap".
+**Limitations:**
+
+- Sync state (`sync-state.json`) is per repository/machine, not
+  centralized; there is no standalone CLI entry point yet (`npx kankaku
+  sync` outside of pi) — see "Roadmap".
+- **A late background child, and the revisit window (R3).** A background
+  subagent can settle well after its (possibly cross-worktree)
+  orchestrator process has already exited — its record still writes
+  correctly into the orchestrator's `worklog.jsonl` (see "Subagents" >
+  "Cross-worktree write routing"), but nothing *syncs* it until that
+  directory is next visited: pi opened there again (`session_start`'s
+  auto-sync), or `/kankaku sync`/`sync all` run there manually. Subagents
+  themselves never sync (see "Automatic sync" above). Whether an ordinary
+  incremental sync, whenever it next runs, actually picks the late child
+  up depends on the watermark, not on how much wall-clock time has passed:
+  the child's own record bumps the task's `endedAt` forward (the task view
+  recomputes it as the max of the orchestrator's and every joined child's
+  settle time), which keeps the task inside the revisit window
+  (`syncedThrough - windowHours`) for as long as `syncedThrough` itself has
+  not advanced past it — even if that next sync happens days later, as
+  long as nothing else in that same directory synced in between. If,
+  meanwhile, *other* tasks in the same directory kept syncing and pushed
+  `syncedThrough` far enough ahead, the late join falls outside the window
+  and an ordinary sync silently skips it. `/kankaku sync status` makes
+  this visible rather than silent — it reports how many tasks changed but
+  currently fall outside the window — and the remedy is always the same:
+  run `/kankaku sync all` (or `backfill`), which evaluates every task
+  regardless of the window.
 
 ## Tagged segments
 

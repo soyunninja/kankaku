@@ -541,10 +541,32 @@ test("computeSyncStatus reports the persisted state and a locally-computed pendi
   const before = computeSyncStatus(log, stateStore, TARGET);
   assert.equal(before.state, undefined);
   assert.equal(before.pending, 1);
+  assert.equal(before.staleOutsideWindow, 0);
 
   stateStore.write({ target: TARGET, syncedThrough: iso(10), hashes: {} });
   const after = computeSyncStatus(log, stateStore, TARGET);
   assert.equal(after.state?.syncedThrough, iso(10));
+});
+
+test("computeSyncStatus (R3): reports staleOutsideWindow — tasks changed since their last sync but outside this run's revisit window", () => {
+  const dir = mkdtempSync(join(tmpdir(), "kankaku-sync-status-stale-"));
+  try {
+    const stateStore = new SyncStateStore({ dir, pid: 1 });
+    // A task that ended long ago (outside the 24h default window behind a
+    // watermark far in the future) with a hash that no longer matches its
+    // current content — as if a background subagent joined it after the
+    // watermark had already advanced well past it (R3).
+    const task = makeRecord({ id: "late-join-task", startedAt: iso(0), settledAt: iso(10) });
+    const log = fakeLog([task]);
+
+    stateStore.write({ target: TARGET, syncedThrough: iso(100_000_000), hashes: { "late-join-task": "stale-hash-from-before-the-child-joined" } });
+
+    const status = computeSyncStatus(log, stateStore, TARGET);
+    assert.equal(status.pending, 0, "an ordinary incremental sync must not re-evaluate it");
+    assert.equal(status.staleOutsideWindow, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("singleFlight: concurrent calls while one is in flight join the same result instead of starting a new run", async () => {

@@ -58,8 +58,12 @@ export interface SyncCommandDeps {
    * apply to a manual sync. Never throws.
    */
   run: (options?: { full?: boolean; trigger?: SyncTrigger }) => Promise<SyncSummary>;
-  /** `/kankaku sync status`: the persisted state plus a locally-computed pending count. No network. */
-  status: () => { state: SyncState | undefined; pending: number };
+  /**
+   * `/kankaku sync status`: the persisted state, a locally-computed pending
+   * count, and (R3) how many tasks changed since their last sync but fall
+   * outside this run's revisit window — needs `sync all`. No network.
+   */
+  status: () => { state: SyncState | undefined; pending: number; staleOutsideWindow: number };
 }
 
 export interface KankakuCommandDeps {
@@ -350,8 +354,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     }
 
     if (rest.length === 1 && rest[0] === "status") {
-      const { state, pending } = sync.status();
+      const { state, pending, staleOutsideWindow } = sync.status();
       const lines = [state?.syncedThrough ? `synced through ${state.syncedThrough}` : "never synced", `pending: ${pending}`];
+      if (staleOutsideWindow > 0) {
+        lines.push(`${staleOutsideWindow} task(s) changed but fall outside the sync window — run '/kankaku sync all' to include them`);
+      }
       if (state?.lastError) lines.push(`last error: ${state.lastError.message} (at ${state.lastError.at})`);
       showReport(ctx, { title: "sync status", lines });
       return;

@@ -1738,7 +1738,7 @@ class FakeSync implements SyncCommandDeps {
     return Promise.resolve(this.runResult);
   }
   status() {
-    return { state: undefined, pending: 0 };
+    return { state: undefined, pending: 0, staleOutsideWindow: 0 };
   }
 }
 
