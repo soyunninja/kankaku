@@ -639,3 +639,72 @@ test("C1: a joined child of a DIFFERENT profile does not suppress an unrelated s
 
   assert.deepEqual(tasks[0]!.usage, { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.01 });
 });
+
+// --- Rescue by confirmed parent process identity -----------------------------
+// A child that started AFTER every record of its parent settled (its parent's
+// run was never recorded, or the parent crashed) used to be an orphan: never
+// a task, never synced. Its `orchestratorRef` proves WHICH live process
+// launched it, so it can still join that process's most recent earlier
+// record. This is identity, never time containment alone (SUBAGENT-REQ-007).
+
+const PROC_START = iso(0);
+function parentRef(overrides: Partial<{ pid: number; project: string; startedAt: string }> = {}) {
+  return { pid: 100, project: "/proj", startedAt: PROC_START, ...overrides };
+}
+
+test("rescue: a child that started after its parent's last record settled joins that record through orchestratorRef", () => {
+  const first = makeRecord({ id: "p1", pid: 100, startedAt: iso(10), settledAt: iso(20) });
+  const last = makeRecord({ id: "p2", pid: 100, startedAt: iso(100), settledAt: iso(130) });
+  const late = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, startedAt: iso(500), settledAt: iso(900), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 4 }, orchestratorRef: parentRef() });
+
+  const tasks = buildTasks([first, last, late]);
+
+  assert.deepEqual(tasks.map((task) => task.subagents.length), [0, 1]);
+  assert.equal(tasks[1]!.usage.cost, 4);
+  assert.equal(tasks[1]!.wallMs, 30000 + 400000); // union of two disjoint intervals, never the gap between them
+  assert.equal(tasks[1]!.endedAt, iso(900));
+  assert.equal(orphanSubagents([first, last, late]).length, 0);
+});
+
+test("rescue: a nested grandchild joins the ROOT process named by orchestratorRef, not its immediate parent pid", () => {
+  const root = makeRecord({ id: "p1", pid: 100, startedAt: iso(10), settledAt: iso(20) });
+  const grandchild = makeRecord({ id: "g1", role: "subagent", pid: 400, parentPid: 300, startedAt: iso(50), settledAt: iso(60), orchestratorRef: parentRef() });
+  assert.equal(buildTasks([root, grandchild])[0]!.subagents.length, 1);
+});
+
+test("rescue never joins a record of a DIFFERENT process that merely reused the pid (record older than the referenced process)", () => {
+  const stale = makeRecord({ id: "old", pid: 100, startedAt: iso(10), settledAt: iso(20) });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, startedAt: iso(500), settledAt: iso(600), orchestratorRef: parentRef({ startedAt: iso(200) }) });
+  assert.equal(buildTasks([stale, child])[0]!.subagents.length, 0);
+  assert.equal(orphanSubagents([stale, child]).length, 1);
+});
+
+test("rescue never joins a record that started AFTER the child did", () => {
+  const later = makeRecord({ id: "p9", pid: 100, startedAt: iso(700), settledAt: iso(800) });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, startedAt: iso(500), settledAt: iso(600), orchestratorRef: parentRef() });
+  assert.equal(buildTasks([later, child])[0]!.subagents.length, 0);
+});
+
+test("rescue needs an orchestratorRef: pid and ordering alone never join (no time-only join)", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, startedAt: iso(10), settledAt: iso(20) });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, startedAt: iso(500), settledAt: iso(600) });
+  assert.equal(buildTasks([parent, child])[0]!.subagents.length, 0);
+  assert.equal(orphanSubagents([parent, child]).length, 1);
+});
+
+test("rescue never anchors on an uncertain record, and never overrides a normal in-window match", () => {
+  const uncertain = makeRecord({ id: "u1", pid: 100, startedAt: iso(300), settledAt: iso(310), roleConfidence: "uncertain" });
+  const confirmed = makeRecord({ id: "p1", pid: 100, startedAt: iso(10), settledAt: iso(20) });
+  const late = makeRecord({ id: "c1", role: "subagent", pid: 300, parentPid: 100, startedAt: iso(500), settledAt: iso(600), orchestratorRef: parentRef() });
+  const tasks = buildTasks([uncertain, confirmed, late]);
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0]!.id, "p1");
+  assert.equal(tasks[0]!.subagents.length, 1);
+
+  const windowed = makeRecord({ id: "p2", pid: 100, startedAt: iso(40), settledAt: iso(90) });
+  const newest = makeRecord({ id: "p3", pid: 100, startedAt: iso(45), settledAt: iso(46) });
+  const inWindow = makeRecord({ id: "c2", role: "subagent", pid: 301, parentPid: 100, startedAt: iso(50), settledAt: iso(60), orchestratorRef: parentRef() });
+  const byId = new Map(buildTasks([windowed, newest, inWindow]).map((task) => [task.id, task.subagents.length]));
+  assert.equal(byId.get("p2"), 1);
+  assert.equal(byId.get("p3"), 0);
+});

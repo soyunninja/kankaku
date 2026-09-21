@@ -115,6 +115,47 @@ function isConfirmedOrchestrator(record: WorkRecord): boolean {
 }
 
 /**
+ * Second pass, only for a child no orchestrator window contains: join it to
+ * the most recent record of the very process that launched it, as PROVEN by
+ * its `orchestratorRef` (written at child start from a live, start-time
+ * checked registry entry — never inferred here).
+ *
+ * Why a child can start outside every window: its parent's run was never
+ * recorded (a run an extension started, before `WorkTracker.onAgentStart`
+ * existed), or the parent crashed before settling. Without this pass that
+ * child's time and cost stay in the log forever and never reach a task.
+ *
+ * Why this is an identity join and not the time-only join SUBAGENT-REQ-007
+ * forbids: a candidate must carry the referenced pid AND have started inside
+ * `[ref.startedAt, child.startedAt]`. The referenced process was alive at
+ * both ends of that interval, and the OS cannot hand a live process's pid to
+ * another one, so any record with that pid in that interval was written by
+ * that exact process. A record older than `ref.startedAt` (a previous owner
+ * of a reused pid) or newer than the child is never eligible; a child with
+ * no `orchestratorRef` is never rescued at all.
+ */
+function rescueByParentIdentity(child: WorkRecord, orchestrators: WorkRecord[]): WorkRecord | undefined {
+  const ref = child.orchestratorRef;
+  if (!ref) return undefined;
+  const processStart = toMs(ref.startedAt);
+  const childStart = toMs(child.startedAt);
+  if (!Number.isFinite(processStart) || !Number.isFinite(childStart)) return undefined;
+
+  let best: WorkRecord | undefined;
+  let bestStart = Number.NEGATIVE_INFINITY;
+  for (const orchestrator of orchestrators) {
+    if (orchestrator.pid !== ref.pid) continue;
+    const start = toMs(orchestrator.startedAt);
+    if (!(start >= processStart && start <= childStart)) continue;
+    if (start > bestStart) {
+      best = orchestrator;
+      bestStart = start;
+    }
+  }
+  return best;
+}
+
+/**
  * Match every subagent record to the orchestrator record it belongs to:
  * `parentPid === orchestrator.pid` and the child's `startedAt` falls inside
  * the orchestrator's `[startedAt, settledAt]` window. `project` is a
@@ -165,6 +206,8 @@ function matchChildren(records: WorkRecord[]): {
         bestSameProject = sameProject;
       }
     }
+
+    best ??= rescueByParentIdentity(child, orchestrators);
 
     if (best) {
       childrenByOrchestratorId.get(best.id)!.push(child);
