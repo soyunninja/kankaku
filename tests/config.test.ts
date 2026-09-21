@@ -1,6 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { detectRole, loadConfig, loadHubEnvCredentials, loadMachine, loadSyncConfig, readRoleOverride, stripRoleOverride, validateHubUrl } from "../src/config.ts";
+import {
+  detectRole,
+  loadConfig,
+  loadHubEnvCredentials,
+  loadMachine,
+  loadSyncConfig,
+  readRoleOverride,
+  stripRoleOverride,
+  validateHubUrl,
+  validateSubagentChildEnvMarkers,
+} from "../src/config.ts";
 
 function env(overrides: Record<string, string | undefined>): NodeJS.ProcessEnv {
   return { ...overrides } as NodeJS.ProcessEnv;
@@ -36,6 +46,69 @@ test("SUBAGENT-REQ-003: loadConfig parses KANKAKU_SUBAGENT_CHILD_ENV as ';'-sepa
   const config = loadConfig(env({ KANKAKU_SUBAGENT_CHILD_ENV: "MY_CHILD=1; PRESENCE_ONLY ; =bad; TRAILING_EQ=" }));
   const configured = config.subagentProfiles.find((p) => p.id === "configured");
   assert.deepEqual(configured?.childEnvMarkers, [{ name: "MY_CHILD", value: "1" }, { name: "PRESENCE_ONLY" }]);
+});
+
+// --- C2 (CRITICAL fix): denylist for KANKAKU_SUBAGENT_CHILD_ENV — a marker
+// name pi/the shell sets ambiently on every process must be rejected, not
+// silently accepted as a "child-only" marker. ---
+
+test("C2: validateSubagentChildEnvMarkers rejects PI_CODING_AGENT and AI_AGENT — pi sets these on EVERY process, not just a subagent's child", () => {
+  const { accepted, rejected } = validateSubagentChildEnvMarkers([{ name: "PI_CODING_AGENT" }, { name: "AI_AGENT", value: "pi" }]);
+  assert.deepEqual(accepted, []);
+  assert.deepEqual(
+    rejected.map((r) => r.name),
+    ["PI_CODING_AGENT", "AI_AGENT"],
+  );
+  assert.ok(rejected.every((r) => r.reason.length > 0));
+});
+
+test("C2: validateSubagentChildEnvMarkers rejects generic shell/OS environment variables", () => {
+  const names = ["PATH", "HOME", "USER", "SHELL", "PWD", "CI", "LANG", "TMUX"];
+  const { accepted, rejected } = validateSubagentChildEnvMarkers(names.map((name) => ({ name })));
+  assert.deepEqual(accepted, []);
+  assert.equal(rejected.length, names.length);
+});
+
+test("C2: validateSubagentChildEnvMarkers rejects namespaced prefixes: PI_*, TERM*, LC_*, NODE_*, npm_*, KANKAKU_*", () => {
+  const names = ["PI_SOME_SESSION_VAR", "TERM_PROGRAM", "TERM", "LC_ALL", "NODE_ENV", "npm_config_registry", "npm_lifecycle_event", "KANKAKU_DIR"];
+  const { accepted, rejected } = validateSubagentChildEnvMarkers(names.map((name) => ({ name })));
+  assert.deepEqual(accepted, []);
+  assert.equal(rejected.length, names.length);
+});
+
+test("C2: validateSubagentChildEnvMarkers denylist matching is case-insensitive", () => {
+  const { accepted, rejected } = validateSubagentChildEnvMarkers([{ name: "pi_coding_agent" }, { name: "Lc_Messages" }]);
+  assert.deepEqual(accepted, []);
+  assert.equal(rejected.length, 2);
+});
+
+test("C2: validateSubagentChildEnvMarkers accepts a genuine third-party marker name untouched", () => {
+  const markers = [{ name: "MY_CUSTOM_TOOL_CHILD", value: "1" }, { name: "ACME_AGENT_DEPTH" }];
+  const { accepted, rejected } = validateSubagentChildEnvMarkers(markers);
+  assert.deepEqual(accepted, markers);
+  assert.deepEqual(rejected, []);
+});
+
+test("C2: loadConfig strips a denylisted KANKAKU_SUBAGENT_CHILD_ENV marker from the configured profile and reports it as rejected", () => {
+  const config = loadConfig(env({ KANKAKU_SUBAGENT_CHILD_ENV: "PI_CODING_AGENT;MY_CHILD=1" }));
+  const configured = config.subagentProfiles.find((p) => p.id === "configured");
+  assert.deepEqual(configured?.childEnvMarkers, [{ name: "MY_CHILD", value: "1" }]);
+  assert.deepEqual(
+    config.rejectedSubagentChildEnvMarkers.map((r) => r.name),
+    ["PI_CODING_AGENT"],
+  );
+});
+
+test("C2: loadConfig reports no rejected markers when none were configured, or all were accepted", () => {
+  assert.deepEqual(loadConfig(env({})).rejectedSubagentChildEnvMarkers, []);
+  assert.deepEqual(loadConfig(env({ KANKAKU_SUBAGENT_CHILD_ENV: "MY_CHILD=1" })).rejectedSubagentChildEnvMarkers, []);
+});
+
+test("C2: loadConfig still builds a 'configured' profile from tool names alone when every configured marker was denylisted (tools and markers are independent)", () => {
+  const config = loadConfig(env({ KANKAKU_SUBAGENT_TOOLS: "my_tool", KANKAKU_SUBAGENT_CHILD_ENV: "CI" }));
+  const configured = config.subagentProfiles.find((p) => p.id === "configured");
+  assert.deepEqual(configured?.toolNames, ["my_tool"]);
+  assert.deepEqual(configured?.childEnvMarkers, []);
 });
 
 test("loadConfig omits the 'configured' profile entirely when neither KANKAKU_SUBAGENT_TOOLS nor KANKAKU_SUBAGENT_CHILD_ENV is set — no inert extra profile", () => {
@@ -194,6 +267,96 @@ test("detectRole's default childMarkers (no 4th arg) is unchanged: only GENTLE_P
   assert.deepEqual(detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" }), false, true), { role: "subagent" });
   assert.deepEqual(detectRole(env({ PI_SUBAGENT_DEPTH: "1" }), false, true), { role: "orchestrator" });
 });
+
+// --- C2 (CRITICAL fix): a user-configured marker is a SEPARATE, weaker
+// tier from the built-in `childMarkers` — it can confirm a subagent, but
+// unlike a built-in marker, never demotes an interactive session. ---
+
+test("C2: a configured marker confirms subagent for a NON-interactive process, exactly like a built-in one", () => {
+  const configured = [{ name: "MY_CHILD", value: "1" }];
+  assert.deepEqual(detectRole(env({ MY_CHILD: "1" }), false, false, [], configured), { role: "subagent" });
+});
+
+test("C2: a configured marker is IGNORED for an interactive process — role stays orchestrator, and configuredMarkerIgnoredInteractive is set (never silently trusted)", () => {
+  const configured = [{ name: "MY_CHILD", value: "1" }];
+  const result = detectRole(env({ MY_CHILD: "1" }), false, true, [], configured);
+  assert.deepEqual(result, { role: "orchestrator", configuredMarkerIgnoredInteractive: true });
+});
+
+test("C2: a configured marker ignored for interactivity is unaffected by a tracked ancestor — the uncertain/ancestor check only ever applies to a NON-interactive process, and this one is interactive", () => {
+  const configured = [{ name: "MY_CHILD", value: "1" }];
+  const result = detectRole(env({ MY_CHILD: "1" }), true, true, [], configured);
+  assert.deepEqual(result, { role: "orchestrator", configuredMarkerIgnoredInteractive: true });
+});
+
+test("C2: a configured marker present together with KANKAKU_ROLE=orchestrator, interactive — both agree, but the marker is still flagged as ignored (it was never actually needed to decide this)", () => {
+  const configured = [{ name: "MY_CHILD", value: "1" }];
+  const result = detectRole(env({ MY_CHILD: "1", KANKAKU_ROLE: "orchestrator" }), false, true, [], configured);
+  assert.deepEqual(result, { role: "orchestrator", configuredMarkerIgnoredInteractive: true });
+});
+
+test("C2: a configured marker present together with KANKAKU_ROLE=subagent, interactive — both flags surface (both were ignored for the same reason)", () => {
+  const configured = [{ name: "MY_CHILD", value: "1" }];
+  const result = detectRole(env({ MY_CHILD: "1", KANKAKU_ROLE: "subagent" }), false, true, [], configured);
+  assert.deepEqual(result, { role: "orchestrator", overrideIgnoredInteractive: true, configuredMarkerIgnoredInteractive: true });
+});
+
+test("C2: a BUILT-IN marker still wins outright over interactivity — the interactive exception applies ONLY to the configured tier, never to childMarkers", () => {
+  const result = detectRole(env({ GENTLE_PI_AGENTS_CHILD: "1" }), false, true, [{ name: "GENTLE_PI_AGENTS_CHILD", value: "1" }], []);
+  assert.deepEqual(result, { role: "subagent" });
+});
+
+test("C2: no configured marker present -> configuredMarkerIgnoredInteractive is never set, regardless of interactivity", () => {
+  assert.deepEqual(detectRole(env({}), false, true, [], [{ name: "MY_CHILD", value: "1" }]), { role: "orchestrator" });
+  assert.deepEqual(detectRole(env({}), false, false, [], [{ name: "MY_CHILD", value: "1" }]), { role: "orchestrator" });
+});
+
+test("C2: an unmarked, non-interactive process with a tracked ancestor is still 'uncertain' when a configured marker (not present) is also active — unaffected by an absent configured tier", () => {
+  const configured = [{ name: "MY_CHILD", value: "1" }];
+  assert.deepEqual(detectRole(env({}), true, false, [], configured), { role: "orchestrator", roleConfidence: "uncertain" });
+});
+
+// C2 precedence matrix: configuredMarker × override × hasTrackedAncestor × isInteractive.
+const CONFIGURED_MARKER_MATRIX: Array<{
+  configuredMarker: boolean;
+  override: "orchestrator" | "subagent" | undefined;
+  hasTrackedAncestor: boolean;
+  isInteractive: boolean;
+  expected: ReturnType<typeof detectRole>;
+}> = [];
+
+for (const configuredMarker of [true, false]) {
+  for (const override of ["orchestrator", "subagent", undefined] as const) {
+    for (const hasTrackedAncestor of [true, false]) {
+      for (const isInteractive of [true, false]) {
+        let base: ReturnType<typeof detectRole>;
+        if (configuredMarker && !isInteractive) {
+          base = { role: "subagent" };
+        } else if (override === "orchestrator") {
+          base = { role: "orchestrator" };
+        } else if (override === "subagent") {
+          base = isInteractive ? { role: "orchestrator", overrideIgnoredInteractive: true } : { role: "subagent" };
+        } else if (hasTrackedAncestor && !isInteractive) {
+          base = { role: "orchestrator", roleConfidence: "uncertain" };
+        } else {
+          base = { role: "orchestrator" };
+        }
+        const expected = configuredMarker && isInteractive ? { ...base, configuredMarkerIgnoredInteractive: true as const } : base;
+        CONFIGURED_MARKER_MATRIX.push({ configuredMarker, override, hasTrackedAncestor, isInteractive, expected });
+      }
+    }
+  }
+}
+
+for (const { configuredMarker, override, hasTrackedAncestor, isInteractive, expected } of CONFIGURED_MARKER_MATRIX) {
+  test(`C2 configured-marker matrix: configuredMarker=${configuredMarker} override=${override ?? "none"} hasTrackedAncestor=${hasTrackedAncestor} isInteractive=${isInteractive} -> ${JSON.stringify(expected)}`, () => {
+    const overrides: Record<string, string | undefined> = {};
+    if (configuredMarker) overrides["MY_CHILD"] = "1";
+    if (override) overrides["KANKAKU_ROLE"] = override;
+    const configured = [{ name: "MY_CHILD", value: "1" }];
+    assert.deepEqual(detectRole(env(overrides), hasTrackedAncestor, isInteractive, [], configured), expected);
+  });
+}
 
 test("readRoleOverride reads and validates KANKAKU_ROLE", () => {
   assert.equal(readRoleOverride(env({ KANKAKU_ROLE: "subagent" })), "subagent");

@@ -469,3 +469,27 @@ export function allChildMarkers(profiles: readonly SubagentProfile[]): ChildEnvM
   }
   return Array.from(byName.values());
 }
+
+/**
+ * C2 (CRITICAL fix): the "always confirms, regardless of interactivity"
+ * tier for `config.ts#detectRole`'s 4th param — every active profile's
+ * markers EXCEPT the single user-configured one (`id === "configured"`,
+ * built from `KANKAKU_SUBAGENT_CHILD_ENV` in `config.ts#loadConfig`). Only
+ * a real subagent runner (gentle-pi, pi-subagents) sets a built-in marker,
+ * so this tier keeps today's unconditional precedence.
+ */
+export function builtinChildMarkers(profiles: readonly SubagentProfile[]): ChildEnvMarker[] {
+  return allChildMarkers(profiles.filter((profile) => profile.id !== "configured"));
+}
+
+/**
+ * C2 (CRITICAL fix): the "never demotes an interactive session" tier for
+ * `config.ts#detectRole`'s 5th param — the user-configured profile's own
+ * markers only (empty when no `"configured"` profile is active). Kept
+ * separate from `builtinChildMarkers` because kankaku cannot verify an
+ * arbitrary configured environment variable name is genuinely child-only
+ * (see `config.ts#loadConfig`'s denylist and `detectRole`'s doc comment).
+ */
+export function configuredChildMarkers(profiles: readonly SubagentProfile[]): ChildEnvMarker[] {
+  return allChildMarkers(profiles.filter((profile) => profile.id === "configured"));
+}

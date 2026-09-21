@@ -22,6 +22,22 @@ export interface KankakuConfig {
   segmentRules: SegmentRule[];
   /** Default billing client for this project, from `KANKAKU_CLIENT`. See `domain/client-label.ts`. */
   client?: string;
+  /**
+   * C2 (CRITICAL fix): every `KANKAKU_SUBAGENT_CHILD_ENV` entry rejected by
+   * {@link validateSubagentChildEnvMarkers} — a marker name that looks like
+   * an ambient pi/shell/OS/npm environment variable, not a genuine
+   * child-only marker. Always present (empty when nothing was configured,
+   * or everything configured was accepted), so a caller never has to guard
+   * against it being `undefined`. `/kankaku doctor` and a one-time
+   * `ctx.ui.notify` are expected to surface this (see `adapters/pi-tracker.ts`).
+   */
+  rejectedSubagentChildEnvMarkers: RejectedChildEnvMarker[];
+}
+
+/** One `KANKAKU_SUBAGENT_CHILD_ENV` marker {@link validateSubagentChildEnvMarkers} rejected, with why. */
+export interface RejectedChildEnvMarker {
+  name: string;
+  reason: string;
 }
 
 const DEFAULT_DIR = ".kankaku";
@@ -124,6 +140,61 @@ function parseSubagentChildEnv(raw: string): ChildEnvMarker[] {
   return markers;
 }
 
+/**
+ * C2 (CRITICAL fix, item 1): exact marker names pi sets on EVERY process it
+ * runs (verified: `dist/cli/setup.js:5` sets `PI_CODING_AGENT=true`,
+ * `dist/rpc-entry.js:6` sets `AI_AGENT=pi` — both unconditionally, not just
+ * for a subagent's child) or that are otherwise ordinary, ambient
+ * shell/OS/npm-lifecycle environment, never something a real child-only
+ * marker would legitimately reuse.
+ */
+const DENIED_MARKER_NAMES = new Set(["PI_CODING_AGENT", "AI_AGENT", "PATH", "HOME", "USER", "SHELL", "PWD", "CI", "LANG", "TMUX"]);
+
+/** C2 item 1: namespace prefixes an ambient variable is overwhelmingly likely to fall under — a genuine child-only marker should never need one of these either. */
+const DENIED_MARKER_PREFIXES = ["PI_", "TERM", "LC_", "NODE_", "NPM_", "KANKAKU_"];
+
+/** `undefined` when `name` is an acceptable marker name; otherwise a human-readable reason it was rejected. Matching is case-insensitive — an env var name's case carries no meaning here. */
+function deniedMarkerReason(name: string): string | undefined {
+  const upper = name.toUpperCase();
+  if (DENIED_MARKER_NAMES.has(upper)) {
+    return `${name} is an ambient variable pi or the shell sets on EVERY process, not a marker exclusive to a subagent's child`;
+  }
+  for (const prefix of DENIED_MARKER_PREFIXES) {
+    if (upper.startsWith(prefix)) {
+      return `${name} looks like a pi/npm/shell-namespaced environment variable (prefix "${prefix}"), not a marker a third-party subagent tool would set`;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * C2 (CRITICAL fix, item 1): validate every `KANKAKU_SUBAGENT_CHILD_ENV`
+ * marker against the denylist above, config-time. A rejected marker is
+ * never added to the `"configured"` profile — so it can never demote a
+ * user's own top-level session to `role: "subagent"` in the first place
+ * (layered with C2 items 2/3's runtime interactive guard in
+ * `config.ts#detectRole`, which still protects a marker this denylist does
+ * not happen to catch). `loadConfig` surfaces `rejected` via
+ * `KankakuConfig.rejectedSubagentChildEnvMarkers` for `/kankaku doctor` and
+ * a one-time `ctx.ui.notify`.
+ */
+export function validateSubagentChildEnvMarkers(markers: readonly ChildEnvMarker[]): {
+  accepted: ChildEnvMarker[];
+  rejected: RejectedChildEnvMarker[];
+} {
+  const accepted: ChildEnvMarker[] = [];
+  const rejected: RejectedChildEnvMarker[] = [];
+  for (const marker of markers) {
+    const reason = deniedMarkerReason(marker.name);
+    if (reason) {
+      rejected.push({ name: marker.name, reason });
+    } else {
+      accepted.push(marker);
+    }
+  }
+  return { accepted, rejected };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): KankakuConfig {
   const dir = env["KANKAKU_DIR"]?.trim() || DEFAULT_DIR;
   const interactiveToolsRaw = env["KANKAKU_INTERACTIVE_TOOLS"]?.trim();
@@ -142,7 +213,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): KankakuConfig 
   const subagentToolsRaw = env["KANKAKU_SUBAGENT_TOOLS"]?.trim();
   const configuredTools = subagentToolsRaw ? parseSubagentTools(subagentToolsRaw) : [];
   const subagentChildEnvRaw = env["KANKAKU_SUBAGENT_CHILD_ENV"]?.trim();
-  const configuredMarkers = subagentChildEnvRaw ? parseSubagentChildEnv(subagentChildEnvRaw) : [];
+  const parsedMarkers = subagentChildEnvRaw ? parseSubagentChildEnv(subagentChildEnvRaw) : [];
+  // C2 (CRITICAL fix, item 1): a denylisted marker name is never handed to
+  // buildConfiguredProfile at all — it can never demote a session's role,
+  // and is instead surfaced via rejectedSubagentChildEnvMarkers below.
+  const { accepted: configuredMarkers, rejected: rejectedSubagentChildEnvMarkers } = validateSubagentChildEnvMarkers(parsedMarkers);
   const configuredProfile = buildConfiguredProfile(configuredTools, configuredMarkers);
   const subagentProfiles: SubagentProfile[] = [...BUILTIN_SUBAGENT_PROFILES, ...(configuredProfile ? [configuredProfile] : [])];
 
@@ -151,6 +226,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): KankakuConfig 
     interactiveTools,
     subagentProfiles,
     segmentRules,
+    rejectedSubagentChildEnvMarkers,
     ...(client !== undefined ? { client } : {}),
   };
 }
@@ -176,6 +252,19 @@ export interface RoleDetection {
    * silent.
    */
   overrideIgnoredInteractive?: true;
+  /**
+   * C2 item 2/3: set when a USER-CONFIGURED child-env marker
+   * (`KANKAKU_SUBAGENT_CHILD_ENV`, the `configuredMarkers` 5th param below)
+   * matched, but was ignored for this process's `role` because it looked
+   * interactive — a configured marker, unlike a BUILT-IN one, never demotes
+   * an interactive session (see this function's precedence doc). The
+   * caller is expected to surface this once (mirroring
+   * `overrideIgnoredInteractive`) via `ctx.ui.notify` and `/kankaku
+   * doctor`, and to escalate the wording when this process also has no
+   * tracked ancestor at all — the strongest signal the marker is genuinely
+   * ambient (C2 item 3's self-check), not a real subagent mechanism.
+   */
+  configuredMarkerIgnoredInteractive?: true;
 }
 
 export type RoleOverride = "orchestrator" | "subagent";
@@ -283,6 +372,29 @@ export function stripRoleOverride(env: NodeJS.ProcessEnv): void {
  * work, a far worse failure than the narrow overcount this guards against
  * elsewhere. `/kankaku doctor` is responsible for making that unavailable-
  * detection limitation visible; it is never encoded in `roleConfidence`.
+ *
+ * C2 (CRITICAL fix): `childMarkers` (built-in tier, step 1 above) and
+ * `configuredMarkers` (the 5th param) are now two DIFFERENT tiers, not one
+ * merged list. A BUILT-IN marker (`GENTLE_PI_AGENTS_CHILD`,
+ * `PI_SUBAGENT_DEPTH`) is set only by a real subagent runner and always
+ * wins outright, exactly as step 1 describes — verified that no built-in
+ * mechanism kankaku recognises ever launches its child interactively (see
+ * `domain/subagent-profile.ts#PI_SUBAGENTS_PROFILE`'s doc comment), so this
+ * tier never actually needs the interactive exception in practice, and
+ * keeping it unconditional avoids a behaviour change for it. A
+ * USER-CONFIGURED marker (`KANKAKU_SUBAGENT_CHILD_ENV`), by contrast, names
+ * an arbitrary environment variable kankaku cannot verify is child-only —
+ * pi itself sets `PI_CODING_AGENT`/`AI_AGENT` on EVERY process, and a naive
+ * choice like that (or `CI`, `TMUX`, an exported shell var) would make the
+ * user's own top-level interactive session `role: "subagent"` with no
+ * parent, never anchoring a task and unrecoverable once written (the log
+ * is append-only). So a configured marker gets EXACTLY the same
+ * interactive exception `KANKAKU_ROLE=subagent` already has (step 2): it
+ * never demotes an interactive session — `configuredMarkerIgnoredInteractive`
+ * is set instead, so the caller can self-check and surface the
+ * contradiction (C2 item 3) rather than silently trusting an ambient
+ * marker. See `config.ts#loadConfig`'s denylist for the config-time half of
+ * this fix (rejecting an obviously-ambient marker name outright).
  */
 /** `detectRole`'s default `childMarkers` when a caller does not pass its own active profile set — identical to the single marker this function hardcoded before SUBAGENT-REQ-001/002/003, so every pre-existing 3-arg call site keeps behaving exactly as before. */
 const DEFAULT_CHILD_MARKERS: ChildEnvMarker[] = [{ name: "GENTLE_PI_AGENTS_CHILD", value: "1" }];
@@ -291,21 +403,33 @@ export function detectRole(
   env: NodeJS.ProcessEnv = process.env,
   hasTrackedAncestor = false,
   isInteractive = true,
-  /** SUBAGENT-REQ-002/003: the full active set's child-env markers (built-in profiles' own markers plus any `KANKAKU_SUBAGENT_CHILD_ENV`-configured one) — generalises the single hardcoded `GENTLE_PI_AGENTS_CHILD` check below without changing precedence. See `domain/subagent-profile.ts#allChildMarkers`. */
+  /** SUBAGENT-REQ-002/003: built-in profiles' own child-env markers ONLY (never the user-configured one — see `configuredMarkers` below) — generalises the single hardcoded `GENTLE_PI_AGENTS_CHILD` check without changing precedence. See `domain/subagent-profile.ts#builtinChildMarkers`. */
   childMarkers: readonly ChildEnvMarker[] = DEFAULT_CHILD_MARKERS,
+  /** C2: the user-configured profile's child-env marker(s) only (`KANKAKU_SUBAGENT_CHILD_ENV`, already denylist-filtered by `loadConfig`) — a SEPARATE, weaker tier: it can confirm a subagent, but unlike `childMarkers` above, never demotes an interactive session. See `domain/subagent-profile.ts#configuredChildMarkers`. */
+  configuredMarkers: readonly ChildEnvMarker[] = [],
 ): RoleDetection {
   if (matchesAnyMarker(env, childMarkers)) return { role: "subagent" };
 
+  const configuredMatch = matchesAnyMarker(env, configuredMarkers);
+  if (configuredMatch && !isInteractive) return { role: "subagent" };
+
+  let result: RoleDetection;
   const override = readRoleOverride(env);
 
-  if (override === "orchestrator") return { role: "orchestrator" };
-
-  if (override === "subagent") {
-    return isInteractive ? { role: "orchestrator", overrideIgnoredInteractive: true } : { role: "subagent" };
+  if (override === "orchestrator") {
+    result = { role: "orchestrator" };
+  } else if (override === "subagent") {
+    result = isInteractive ? { role: "orchestrator", overrideIgnoredInteractive: true } : { role: "subagent" };
+  } else if (hasTrackedAncestor && !isInteractive) {
+    result = { role: "orchestrator", roleConfidence: "uncertain" };
+  } else {
+    result = { role: "orchestrator" };
   }
 
-  if (hasTrackedAncestor && !isInteractive) return { role: "orchestrator", roleConfidence: "uncertain" };
-  return { role: "orchestrator" };
+  // The configured marker matched but was ignored (this process is
+  // interactive) — flagged regardless of what else decided `result`, so the
+  // caller always learns a configured marker is present-but-ambient here.
+  return configuredMatch && isInteractive ? { ...result, configuredMarkerIgnoredInteractive: true } : result;
 }
 
 /** Hub (PocketBase) credentials read from the environment; any field can be absent. */

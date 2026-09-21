@@ -6,6 +6,8 @@ import {
   PI_REFERENCE_PROFILE,
   PI_SUBAGENTS_PROFILE,
   buildConfiguredProfile,
+  builtinChildMarkers,
+  configuredChildMarkers,
   findAmbiguousToolNames,
   matchToolProfiles,
   mergeAgreeingLaunchInfo,
@@ -328,4 +330,21 @@ test("profileMarkerMatches: a presence-only marker (no configured value) matches
 
 test("profileMarkerMatches: a profile with no markers at all (pi-reference) never matches, by construction — its role always falls back to ancestry", () => {
   assert.equal(profileMarkerMatches(PI_REFERENCE_PROFILE, env({ ANYTHING: "1" })), false);
+});
+
+// --- C2: builtinChildMarkers/configuredChildMarkers split ---
+
+test("C2: builtinChildMarkers returns every built-in marker, excluding a configured profile's", () => {
+  const configured = buildConfiguredProfile(["my_tool"], [{ name: "MY_CHILD", value: "1" }])!;
+  const markers = builtinChildMarkers([...BUILTIN_SUBAGENT_PROFILES, configured]);
+  assert.deepEqual(
+    markers.map((m) => m.name).sort(),
+    ["GENTLE_PI_AGENTS_CHILD", "PI_SUBAGENT_DEPTH"],
+  );
+});
+
+test("C2: configuredChildMarkers returns only the configured profile's markers, empty when none is active", () => {
+  assert.deepEqual(configuredChildMarkers(BUILTIN_SUBAGENT_PROFILES), []);
+  const configured = buildConfiguredProfile(["my_tool"], [{ name: "MY_CHILD", value: "1" }])!;
+  assert.deepEqual(configuredChildMarkers([...BUILTIN_SUBAGENT_PROFILES, configured]), [{ name: "MY_CHILD", value: "1" }]);
 });
