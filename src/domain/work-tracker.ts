@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Clock } from "../ports/clock.ts";
 import { clampIntervals, unionMs } from "./intervals.ts";
-import { emptyUsage, finiteOrZero, WORK_RECORD_SCHEMA } from "./work-record.ts";
-import type { SubagentSpan, UsageTotals, WorkRecordCore, WorkStatus } from "./work-record.ts";
+import { emptyUsage, EXTENSION_RUN_PROMPT, finiteOrZero, WORK_RECORD_SCHEMA } from "./work-record.ts";
+import type { RunTrigger, SubagentSpan, UsageTotals, WorkRecordCore, WorkStatus } from "./work-record.ts";
 import type { SegmentRule } from "./segment-rule.ts";
 import { mergeAgreeingLaunchInfo, readLaunchInfo, readResultInfo, resolveToolProfile, safeAmbiguousResultInfo } from "./subagent-profile.ts";
 import type { SubagentProfile } from "./subagent-profile.ts";
@@ -36,6 +36,7 @@ interface RunState {
   id: string;
   startedAt: number;
   prompt: string;
+  trigger?: RunTrigger;
   runs: number;
   turns: number;
   tools: Record<string, number>;
@@ -74,6 +75,8 @@ export class WorkTracker {
   private readonly subagentProfiles: SubagentProfile[];
   private readonly segmentRules: SegmentRule[];
   private state: RunState | undefined;
+  /** Set by {@link onRunStart}, consumed by {@link onAgentStart}: tells a user-announced run from one an extension started. */
+  private runAnnounced = false;
 
   constructor(options: WorkTrackerOptions) {
     this.clock = options.clock;
@@ -82,12 +85,32 @@ export class WorkTracker {
     this.segmentRules = options.segmentRules ?? [];
   }
 
-  onRunStart(prompt: string): void {
+  /**
+   * An agent loop actually started. pi announces a USER prompt with
+   * `before_agent_start` ({@link onRunStart}) and then this; a run an
+   * extension starts itself (`sendCustomMessage(..., { triggerTurn: true })`,
+   * how gentle-pi wakes the orchestrator when a background subagent
+   * finishes) only ever produces this one. Without it that whole run — its
+   * time, its cost, and the subagent spans it opens, which its children need
+   * to join — was never recorded.
+   */
+  onAgentStart(): void {
+    if (this.runAnnounced) {
+      this.runAnnounced = false;
+      return;
+    }
+    this.onRunStart(EXTENSION_RUN_PROMPT, "extension");
+    this.runAnnounced = false;
+  }
+
+  onRunStart(prompt: string, trigger?: RunTrigger): void {
+    this.runAnnounced = true;
     if (!this.state) {
       this.state = {
         id: randomUUID(),
         startedAt: this.clock.now(),
         prompt,
+        ...(trigger !== undefined ? { trigger } : {}),
         runs: 1,
         turns: 0,
         tools: {},
@@ -262,6 +285,7 @@ export class WorkTracker {
     if (!this.state) return undefined;
     const record = this.buildRecord(this.state.status, this.clock.now());
     this.state = undefined;
+    this.runAnnounced = false;
     return record;
   }
 
@@ -269,6 +293,7 @@ export class WorkTracker {
     if (!this.state) return undefined;
     const record = this.buildRecord("interrupted", this.clock.now());
     this.state = undefined;
+    this.runAnnounced = false;
     return record;
   }
 
@@ -316,6 +341,7 @@ export class WorkTracker {
       schema: WORK_RECORD_SCHEMA,
       id: state.id,
       prompt: state.prompt,
+      ...(state.trigger !== undefined ? { trigger: state.trigger } : {}),
       startedAt: new Date(state.startedAt).toISOString(),
       settledAt: new Date(settledAt).toISOString(),
       wallMs,

@@ -2047,3 +2047,81 @@ test("auto-sync notifies at most once per session on failure", async () => {
   assert.equal(notified.length, 1);
   assert.match(notified[0]!.message, /sync failed: network down/);
 });
+
+// --- Runs an extension starts without a user prompt --------------------------
+// pi emits `before_agent_start` only from `AgentSession.prompt()`. A run an
+// extension starts with `sendCustomMessage(..., { triggerTurn: true })` — how
+// gentle-pi wakes the orchestrator when a background subagent finishes — goes
+// straight to `_runAgentPrompt`: it fires `agent_start`, `turn_end`, tool
+// events and `agent_settled`, but NEVER `before_agent_start`. Found in real
+// use on 2026-09-21: 34 minutes of orchestration recorded as 31 seconds, four
+// subagents orphaned because the runs that launched them were never recorded.
+
+function makeExtensionRunHarness() {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 4242, parentPid: 4000 });
+  return { clock, log, pi, ctx };
+}
+
+test("a run started by an extension (agent_start with no before_agent_start) is recorded, with its time, cost and subagent spans", async () => {
+  const { clock, log, pi, ctx } = makeExtensionRunHarness();
+
+  clock.advanceTo(1000);
+  await pi.fire("agent_start", { type: "agent_start" }, ctx);
+  clock.advanceTo(2000);
+  await pi.fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "c1", toolName: "subagent_run", args: { agent: "sdd-apply", mode: "task" } }, ctx);
+  clock.advanceTo(2100);
+  await pi.fire("tool_execution_end", { type: "tool_execution_end", toolCallId: "c1", toolName: "subagent_run", result: { details: { gentleAgents: { taskId: "t9" } } }, isError: false }, ctx);
+  clock.advanceTo(5000);
+  await pi.fire("turn_end", { type: "turn_end", turnIndex: 0, message: { role: "assistant", usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 3, cost: { total: 0.25 } } }, toolResults: [] }, ctx);
+  await pi.fire("agent_end", { type: "agent_end", messages: [] }, ctx);
+  clock.advanceTo(6000);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  const record = log.records[0]!;
+  assert.equal(record.wallMs, 5000);
+  assert.equal(record.usage.cost, 0.25);
+  assert.equal(record.trigger, "extension");
+  assert.equal(record.subagents.length, 1);
+  assert.equal(record.subagents[0]!.taskId, "t9");
+  assert.match(record.prompt, /no user prompt/i);
+});
+
+test("a normal user prompt is unaffected by agent_start: one record, one run, no trigger field", async () => {
+  const { clock, log, pi, ctx } = makeExtensionRunHarness();
+
+  clock.advanceTo(0);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hello", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_start", { type: "agent_start" }, ctx);
+  clock.advanceTo(1000);
+  await pi.fire("agent_end", { type: "agent_end", messages: [] }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  assert.equal(log.records[0]!.prompt, "hello");
+  assert.equal(log.records[0]!.runs, 1);
+  assert.equal(log.records[0]!.trigger, undefined);
+});
+
+test("an extension-started run inside an already open record counts as one more run, not a new record", async () => {
+  const { clock, log, pi, ctx } = makeExtensionRunHarness();
+
+  clock.advanceTo(0);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hello", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_start", { type: "agent_start" }, ctx);
+  clock.advanceTo(1000);
+  await pi.fire("agent_end", { type: "agent_end", messages: [] }, ctx);
+  await pi.fire("agent_start", { type: "agent_start" }, ctx);
+  clock.advanceTo(2000);
+  await pi.fire("agent_end", { type: "agent_end", messages: [] }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  assert.equal(log.records[0]!.runs, 2);
+  assert.equal(log.records[0]!.prompt, "hello");
+});

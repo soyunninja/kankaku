@@ -353,6 +353,21 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   );
 
   pi.on(
+    "agent_start",
+    guarded((_event, ctx) => {
+      // A run an extension started itself never fires before_agent_start
+      // (see WorkTracker.onAgentStart): open the record, the status clock and
+      // the crash-recovery checkpoint here instead. A no-op for a user prompt.
+      const wasIdle = tracker.peek("interrupted") === undefined;
+      tracker.onAgentStart();
+      if (wasIdle) {
+        statusBar.start(ctx);
+        checkpoint(ctx);
+      }
+    }),
+  );
+
+  pi.on(
     "agent_end",
     guarded((event) => {
       tracker.onRunEnd(event.messages);

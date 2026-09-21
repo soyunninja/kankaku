@@ -742,3 +742,18 @@ test("C1: an UNAMBIGUOUS pi-reference call (pi-reference registered alone) with 
   assert.equal(record?.subagents[0]?.profile, "pi-reference");
   assert.deepEqual(record?.subagents[0]?.forwardedUsage, { input: 100, output: 40, cost: 0.03 });
 });
+
+test("a user prompt announced but never run does not swallow the next extension-started run", () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: [] });
+  tracker.onRunStart("cancelled before the loop started");
+  clock.advanceTo(100);
+  tracker.onSettled();
+
+  clock.advanceTo(1000);
+  tracker.onAgentStart();
+  clock.advanceTo(4000);
+  const record = tracker.onSettled();
+  assert.equal(record?.trigger, "extension");
+  assert.equal(record?.wallMs, 3000);
+});

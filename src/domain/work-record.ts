@@ -76,10 +76,23 @@ export interface OrchestratorRef {
  * Fields the pure {@link WorkTracker} state machine can compute on its own,
  * with no knowledge of the pi process or session it runs in.
  */
+/** What started a record: absent = a user prompt (every record before this field existed). */
+export type RunTrigger = "extension";
+
+/** The `prompt` of a record no user prompt started — see {@link RunTrigger}. */
+export const EXTENSION_RUN_PROMPT = "(no user prompt — run started by an extension)";
+
 export interface WorkRecordCore {
   schema: number;
   id: string;
   prompt: string;
+  /**
+   * `"extension"` when an extension, not the user, started this record's
+   * first run (e.g. gentle-pi waking the orchestrator because a background
+   * subagent finished). Optional and additive: `WORK_RECORD_SCHEMA` is
+   * unchanged and an older record without it still validates.
+   */
+  trigger?: RunTrigger;
   startedAt: string;
   settledAt: string;
   wallMs: number;
