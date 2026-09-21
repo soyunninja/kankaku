@@ -153,8 +153,19 @@ const DENIED_MARKER_NAMES = new Set(["PI_CODING_AGENT", "AI_AGENT", "PATH", "HOM
 /** C2 item 1: namespace prefixes an ambient variable is overwhelmingly likely to fall under — a genuine child-only marker should never need one of these either. */
 const DENIED_MARKER_PREFIXES = ["PI_", "TERM", "LC_", "NODE_", "NPM_", "KANKAKU_"];
 
+/** What an environment variable name may look like; anything else is a typo, never a marker. */
+const VALID_MARKER_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
 /** `undefined` when `name` is an acceptable marker name; otherwise a human-readable reason it was rejected. Matching is case-insensitive — an env var name's case carries no meaning here. */
 function deniedMarkerReason(name: string): string | undefined {
+  // A name that is not a valid environment variable name can never match a
+  // real variable: accepting it would silently disable the user's
+  // configuration AND hide any ambient name inside it from the denylist
+  // below. The usual cause is typing commas, as `KANKAKU_SUBAGENT_TOOLS`
+  // takes, where this list is `;`-separated.
+  if (!VALID_MARKER_NAME.test(name)) {
+    return `"${name}" is not a valid environment variable name — separate several markers with ";" (not ","), each as NAME or NAME=VALUE`;
+  }
   const upper = name.toUpperCase();
   if (DENIED_MARKER_NAMES.has(upper)) {
     return `${name} is an ambient variable pi or the shell sets on EVERY process, not a marker exclusive to a subagent's child`;

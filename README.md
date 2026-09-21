@@ -1119,7 +1119,10 @@ Columns (in this order for CSV; the same fields for JSON):
 - `KANKAKU_SUBAGENT_CHILD_ENV`: `;`-separated `NAME=VALUE` (exact match) or
   bare `NAME` (presence-only) child-process env markers that confirm a
   process as the configured tool's subagent — parsed like `KANKAKU_SEGMENTS`,
-  malformed entries skipped. A name that looks pi/shell/OS/npm-owned
+  malformed entries skipped. The separator is `;`, **not** the `,` that
+  `KANKAKU_SUBAGENT_TOOLS` takes: a name that is not a valid environment
+  variable name (such as `A,B`) is rejected and reported, never silently
+  accepted. A name that looks pi/shell/OS/npm-owned
   (`PI_CODING_AGENT`, `AI_AGENT`, `PATH`, `HOME`, `USER`, `SHELL`, `PWD`,
   `CI`, `LANG`, `TMUX`, or a `PI_`/`TERM`/`LC_`/`NODE_`/`NPM_`/`KANKAKU_`
   prefix, case-insensitive) is rejected outright, and even an accepted

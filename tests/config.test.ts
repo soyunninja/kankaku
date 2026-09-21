@@ -504,3 +504,22 @@ test("loadSyncConfig reads KANKAKU_SYNC_MIN_INTERVAL_MINUTES, treating 0 as a va
   assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_MIN_INTERVAL_MINUTES: "-3" })).minIntervalMinutes, 5);
   assert.equal(loadSyncConfig(env({ KANKAKU_SYNC_MIN_INTERVAL_MINUTES: "not-a-number" })).minIntervalMinutes, 5);
 });
+
+test("C2: a configured child marker whose NAME is not a valid environment variable name is rejected with a separator hint, never silently accepted", () => {
+  // `KANKAKU_SUBAGENT_TOOLS` is comma-separated but `KANKAKU_SUBAGENT_CHILD_ENV`
+  // is `;`-separated (its values may contain commas). Typing commas here used to
+  // yield one impossible name ("MY_CHILD,PI_CODING_AGENT") that was ACCEPTED: it
+  // can never match a real variable, so the user's configuration was silently
+  // dead — and the denylist never saw the ambient name hidden inside it.
+  const { accepted, rejected } = validateSubagentChildEnvMarkers([{ name: "MY_CHILD,PI_CODING_AGENT" }, { name: "MY CHILD" }, { name: "1BAD" }, { name: "GOOD_ONE" }]);
+  assert.deepEqual(accepted, [{ name: "GOOD_ONE" }]);
+  assert.deepEqual(rejected.map((r) => r.name), ["MY_CHILD,PI_CODING_AGENT", "MY CHILD", "1BAD"]);
+  assert.match(rejected[0]!.reason, /;/);
+});
+
+test("C2: loadConfig with a comma-separated KANKAKU_SUBAGENT_CHILD_ENV reports the bad entry instead of configuring a dead marker", () => {
+  const config = loadConfig({ KANKAKU_SUBAGENT_CHILD_ENV: "MY_CHILD,PI_CODING_AGENT" });
+  const configured = config.subagentProfiles.find((profile) => profile.id === "configured");
+  assert.deepEqual(configured?.childEnvMarkers ?? [], []);
+  assert.deepEqual(config.rejectedSubagentChildEnvMarkers.map((r) => r.name), ["MY_CHILD,PI_CODING_AGENT"]);
+});
