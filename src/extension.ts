@@ -2,9 +2,8 @@ import { homedir, hostname, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { detectRole, loadConfig, loadMachine, loadSyncConfig, readRoleOverride, stripRoleOverride } from "./config.ts";
+import { detectRole, loadConfig, loadMachine, loadSyncConfig } from "./config.ts";
 import { WorkTracker } from "./domain/work-tracker.ts";
-import { resolveOrchestratorRef } from "./domain/ancestry-match.ts";
 import { LazyJsonlWorkLog } from "./adapters/lazy-jsonl-work-log.ts";
 import { LazyFileInflightStore } from "./adapters/lazy-file-inflight-store.ts";
 import { createPiTracker } from "./adapters/pi-tracker.ts";
@@ -24,7 +23,7 @@ import { snapshotAncestry } from "./adapters/ancestry.ts";
 import { MachineProcessRegistry } from "./adapters/machine-process-registry.ts";
 import { JsonlWorkLog } from "./adapters/jsonl-work-log.ts";
 import { FileInflightStore } from "./adapters/file-inflight-store.ts";
-import { resolveSubagentStartup } from "./adapters/subagent-startup.ts";
+import { getProcessIdentityMemo } from "./adapters/process-identity-memo.ts";
 import { resolveAgentVersion, resolvePluginVersion } from "./adapters/agent-info.ts";
 import type { Catalog } from "./ports/catalog.ts";
 import type { SessionTarget } from "./adapters/session-target.ts";
@@ -45,57 +44,43 @@ export default function kankaku(pi: ExtensionAPI): void {
   // home dir, no permission) — see adapters/machine-process-registry.ts.
   const registry = new MachineProcessRegistry(homedir);
 
-  // F5: reads the registry first and only pays for an OS ancestor-chain
-  // snapshot (`ps`/`/proc`) when at least one other entry could possibly be
-  // an ancestor — the common case (no other kankaku process running) never
-  // spawns anything.
-  const startup = resolveSubagentStartup({
+  // G1 (HIGH, verified): pi re-invokes this factory function IN THE SAME
+  // OS PROCESS on `/new`, `/resume`, `/fork` and `/reload` ("reloads and
+  // rebinds extensions for the new session" — see
+  // node_modules/@earendil-works/pi-coding-agent/docs/extensions.md).
+  // Everything this block used to compute inline — `role`, `roleOverride`
+  // (read once, then stripped from `process.env` so a child never inherits
+  // it — R1), `childMarkerPresent`, `hasTrackedAncestor`/`ancestorEntry`
+  // (F5's registry+ancestor-chain walk), `orchestratorRef` (F4), and
+  // `ownProcessStartId` (F5) — is a fact about this OS PROCESS, not this pi
+  // session, and several of them can only ever be read correctly ONCE: a
+  // second invocation would see `roleOverride` as already stripped, so an
+  // explicitly forced role would silently fall back to ordinary detection
+  // (and, for `orchestrator`, could be demoted to `roleConfidence:
+  // "uncertain"`, silently dropping genuine billable work). `identity`
+  // (`adapters/process-identity.ts`) is computed once per OS process and
+  // memoized (`adapters/process-identity-memo.ts`) so a second, third,
+  // fourth... invocation always reuses the exact first result. A cheap,
+  // synchronous interactivity proxy feeds `role`'s one interactivity
+  // exception (see `config.ts#detectRole`'s doc comment) — it is available
+  // before pi's own ExtensionContext exists, unlike the authoritative
+  // `ctx.mode === "tui"`, only known later at `session_start`.
+  const isInteractiveGuess = Boolean(process.stdout.isTTY);
+  const identity = getProcessIdentityMemo().resolve({
+    env: process.env,
     registry,
     ppid: process.ppid,
     now: () => Date.now(),
     uptimeSeconds: () => process.uptime(),
+    isInteractiveGuess,
   });
-  const { ancestorEntry, ownProcessStartId } = startup;
-  const hasTrackedAncestor = ancestorEntry !== undefined;
+  const { role, roleOverride, childMarkerPresent, overrideIgnoredInteractive, hasTrackedAncestor, orchestratorRef, ownProcessStartId, liveStartId } = identity;
 
-  // `role` itself only ever depends on the env marker/override — never on
-  // ancestry, and (with one R1 exception below) never on interactivity
-  // either — so it is safe, and correct, to decide it once, right here,
-  // and never revisit it (F3: only `roleConfidence`, for an
-  // `"orchestrator"` record, is deferred — see `resolveRoleConfidence`
-  // below). `hasTrackedAncestor` is irrelevant to `role` itself, so `false`
-  // is passed here purely to obtain it cheaply.
-  //
-  // R1 (BLOCKER): read KANKAKU_ROLE, and whether the confirmed child marker
-  // is present, exactly once here — then strip the override from this
-  // process's own env (config.ts#stripRoleOverride) so a child this
-  // process spawns (a subagent runner, a tool shell) never inherits it.
-  // Everything below (the registry entry, orchestratorRef, write routing,
-  // session-target/client wiring) already uses the corrected `role`.
-  const childMarkerPresent = process.env["GENTLE_PI_AGENTS_CHILD"] === "1";
-  const roleOverride = readRoleOverride(process.env);
-  // A cheap, synchronous interactivity proxy, available before pi's own
-  // ExtensionContext exists (unlike the authoritative `ctx.mode === "tui"`,
-  // only known later, at `session_start` — too late here, since several
-  // decisions below already depend on the corrected `role`). Every
-  // subagent mechanism kankaku recognises launches its child with piped,
-  // non-TTY stdio, so this reliably tells a real subagent apart from a
-  // leaked `KANKAKU_ROLE=subagent` shell export reaching a genuine
-  // interactive terminal session — see `detectRole`'s doc comment for the
-  // precedence this feeds into, and its trade-off: an unusual, unrecognised
-  // subagent mechanism that happens to preserve a TTY would have its own
-  // explicit `KANKAKU_ROLE=subagent` overridden by this same guess.
-  const isInteractiveGuess = Boolean(process.stdout.isTTY);
-  const detection = detectRole(process.env, false, isInteractiveGuess);
-  const { role } = detection;
-  const overrideIgnoredInteractive = detection.overrideIgnoredInteractive === true;
-  stripRoleOverride(process.env);
-
-  // F4: resolves through a subagent-of-subagent chain to the real top-level
-  // orchestrator (never a middle hop), carrying that orchestrator's `dir`
-  // for F1's write routing below.
-  const orchestratorRef = role === "subagent" ? resolveOrchestratorRef(ancestorEntry) : undefined;
-
+  // `resolvedDir` (this session's project/write target) is deliberately
+  // NOT part of the frozen process identity above: pi can enter a
+  // different cwd across a session switch in the same process (see
+  // extensions.md's trust-resolution note on `/resume`), so this stays a
+  // per-session fact, recomputed on every invocation exactly like before.
   const resolvedDir = resolveKankakuDir(config.dir, process.cwd());
   registry.record(
     {
@@ -109,7 +94,7 @@ export default function kankaku(pi: ExtensionAPI): void {
       ...(ownProcessStartId !== undefined ? { processStartId: ownProcessStartId } : {}),
     },
     undefined,
-    { liveStartId: startup.liveStartId },
+    { liveStartId },
   );
 
   // Best-effort cleanup of this process's own registry file: on a normal
@@ -122,7 +107,14 @@ export default function kankaku(pi: ExtensionAPI): void {
   const removeOwnRegistryEntry = (): void => {
     registry.removeOwn?.(process.pid, ownProcessStartId);
   };
-  process.on("exit", removeOwnRegistryEntry);
+  // G1: `process` is the one real OS-process-wide singleton every factory
+  // invocation shares (unlike `pi`, a fresh `ExtensionAPI` per invocation,
+  // which does need its own `session_shutdown` listener below every time).
+  // Registering `process.on("exit", ...)` unconditionally on every
+  // `/new`/`/resume`/`/fork`/`/reload` would pile up one listener per
+  // invocation for the life of the process; `registerExitCleanupOnce`
+  // registers at most one, ever, for this process.
+  getProcessIdentityMemo().registerExitCleanupOnce((listener) => process.on("exit", listener), removeOwnRegistryEntry);
   pi.on("session_shutdown", () => {
     try {
       removeOwnRegistryEntry();
@@ -275,14 +267,18 @@ export default function kankaku(pi: ExtensionAPI): void {
     // itself must be decided above. `hasTrackedAncestor` is already final
     // here; only isInteractive is supplied later, by pi-tracker.ts.
     //
-    // R1: gated on `roleOverride === undefined` — once KANKAKU_ROLE decided
-    // (or, for a `subagent` value ignored via the interactive contradiction
-    // above, resolved) this process's role at factory time, that decision
-    // stays final and is never later demoted to `uncertain`; this
-    // refinement only ever applies to the genuine no-override path (and
-    // `process.env` is safe to re-read here despite the strip below, since
-    // this branch is only reached when there was nothing to strip that
-    // would have mattered to it).
+    // R1: gated on `roleOverride === undefined` — `roleOverride` is the
+    // frozen, process-wide fact from `identity` above (G1: it stays
+    // truthful across a same-process factory re-invocation even though
+    // `process.env["KANKAKU_ROLE"]` was stripped, possibly invocations ago)
+    // — once KANKAKU_ROLE decided (or, for a `subagent` value ignored via
+    // the interactive contradiction above, resolved) this process's role at
+    // factory time, that decision stays final and is never later demoted to
+    // `uncertain`; this refinement only ever applies to the genuine
+    // no-override path (and `process.env` is safe to re-read here for
+    // `detectRole`'s OWN internal override check, since this branch is only
+    // reached when `roleOverride` was never set — there is nothing left in
+    // `process.env` that could change what that internal check sees).
     resolveRoleConfidence: (isInteractive) =>
       role === "orchestrator" && roleOverride === undefined ? detectRole(process.env, hasTrackedAncestor, isInteractive).roleConfidence : undefined,
     ...(orchestratorRef !== undefined ? { orchestratorRef } : {}),

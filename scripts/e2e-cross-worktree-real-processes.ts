@@ -40,7 +40,7 @@
  */
 
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +53,7 @@ import { MachineProcessRegistry } from "../src/adapters/machine-process-registry
 import { resolveSubagentStartup } from "../src/adapters/subagent-startup.ts";
 import { resolveKankakuDir, resolveWritableTarget } from "../src/adapters/kankaku-dir.ts";
 import { JsonlWorkLog } from "../src/adapters/jsonl-work-log.ts";
+import { createProcessIdentityMemo } from "../src/adapters/process-identity-memo.ts";
 
 const THIS_SCRIPT = fileURLToPath(import.meta.url);
 
@@ -402,6 +403,109 @@ async function runRoleOverrideNonPropagation(): Promise<void> {
   console.log("[role-override] ALL ASSERTIONS PASSED — KANKAKU_ROLE never propagates to a real spawned child, whose own marker still decides its role (R1).");
 }
 
+/**
+ * G1 (HIGH, BLOCKER): a REAL child process that simulates pi re-invoking
+ * the extension factory IN THE SAME OS PROCESS (`/new`/`/resume`/`/fork`/
+ * `/reload`) by calling `process-identity-memo.ts`'s composition TWICE,
+ * exactly mirroring `extension.ts`'s real wiring both times — real
+ * `process.env` mutation (the override really is stripped from the real
+ * env by the first call), a real `MachineProcessRegistry` writing real
+ * files, and a real `process.on("exit", ...)` registration. This is
+ * exactly what a unit test (fake env object, fake registry) cannot prove:
+ * that the SAME real env object, mutated in place by the first call, does
+ * not fool the second call into losing the override, and that a real
+ * second `process.on("exit", ...)` call never registers a second listener.
+ */
+function runDoubleInvocationChild(): void {
+  const homeDir = process.env["KANKAKU_E2E_HOME"];
+  if (!homeDir) throw new Error("double-invocation child requires KANKAKU_E2E_HOME");
+  assert.equal(readRoleOverride(process.env), "orchestrator", "this process must actually start with KANKAKU_ROLE=orchestrator, or the scenario proves nothing");
+
+  const registry = new MachineProcessRegistry(() => homeDir);
+  const memo = createProcessIdentityMemo();
+  const exitListenersBefore = process.listenerCount("exit");
+
+  function invokeOnceLikeExtensionFactory(cwd: string): ReturnType<typeof memo.resolve> {
+    const identity = memo.resolve({
+      env: process.env,
+      registry,
+      ppid: process.ppid,
+      now: () => Date.now(),
+      uptimeSeconds: () => process.uptime(),
+      isInteractiveGuess: false,
+    });
+    const resolvedDir = resolveKankakuDir(".kankaku", cwd);
+    registry.record(
+      {
+        pid: process.pid,
+        parentPid: process.ppid,
+        role: identity.role,
+        project: cwd,
+        dir: resolvedDir,
+        startedAt: new Date().toISOString(),
+        ...(identity.orchestratorRef !== undefined ? { orchestratorRef: identity.orchestratorRef } : {}),
+        processStartId: identity.ownProcessStartId,
+      },
+      undefined,
+      { liveStartId: identity.liveStartId },
+    );
+    memo.registerExitCleanupOnce(
+      (listener) => process.on("exit", listener),
+      () => registry.removeOwn?.(process.pid, identity.ownProcessStartId),
+    );
+    return identity;
+  }
+
+  // Invocation 1 — like the very first `/new` of this process.
+  const first = invokeOnceLikeExtensionFactory(process.cwd());
+  assert.equal(first.roleOverride, "orchestrator");
+  assert.equal(process.env["KANKAKU_ROLE"], undefined, "the real env must have been stripped by invocation 1, exactly like a real single-invocation run");
+
+  // Invocation 2 — like pi re-invoking this SAME factory after `/resume`,
+  // reading the SAME (now-stripped) real process.env. Before the fix, this
+  // would read roleOverride as undefined and could demote role confidence.
+  const second = invokeOnceLikeExtensionFactory(process.cwd());
+  assert.strictEqual(second, first, "the second invocation must reuse the exact frozen object from the first, never recompute");
+  assert.equal(second.roleOverride, "orchestrator", "the override must still be reported on invocation 2, even though process.env no longer carries it");
+  assert.equal(second.role, "orchestrator");
+
+  const ownEntries = registry.readAll().filter((entry) => entry.pid === process.pid);
+  assert.equal(ownEntries.length, 1, "two invocations of the same process must never produce two registry entries — the filename is keyed by pid");
+
+  const exitListenersAfter = process.listenerCount("exit");
+  assert.equal(exitListenersAfter, exitListenersBefore + 1, "two invocations must register the process-wide exit-cleanup listener exactly ONCE, not twice");
+
+  console.log("[double-invocation-child] confirmed: roleOverride survived a second same-process invocation, one registry entry, exactly one exit listener registered.");
+  process.exit(0);
+}
+
+/** The "parent" half of the G1 double-invocation proof: spawns a real child with `KANKAKU_ROLE=orchestrator` and confirms its registry entry is gone after it exits (proving the single exit listener actually ran). */
+async function runDoubleInvocationNonRegression(): Promise<void> {
+  const scratchRoot = process.env["KANKAKU_E2E_SCRATCH"] ?? tmpdir();
+  const runDir = mkdtempSync(join(scratchRoot, "kankaku-e2e-double-invocation-"));
+  const homeDir = join(runDir, "home");
+  mkdirSync(homeDir, { recursive: true });
+
+  try {
+    console.log("[double-invocation] spawning a REAL process started with KANKAKU_ROLE=orchestrator, simulating two factory invocations in the same process (G1)...");
+    const result = spawnSync(process.execPath, [THIS_SCRIPT, "--double-invocation-child"], {
+      env: { ...process.env, KANKAKU_ROLE: "orchestrator", KANKAKU_E2E_HOME: homeDir },
+      encoding: "utf8",
+    });
+    process.stdout.write(result.stdout ?? "");
+    process.stderr.write(result.stderr ?? "");
+    assert.equal(result.status, 0, `the double-invocation child must confirm every G1 assertion (status=${result.status}, error=${result.error})`);
+
+    const runDirEntries = join(homeDir, ".kankaku", "run");
+    const remaining = existsSync(runDirEntries) ? readdirSync(runDirEntries) : [];
+    assert.equal(remaining.length, 0, "the single registered exit listener must have removed the process's own registry entry on real exit");
+
+    console.log("[double-invocation] ALL ASSERTIONS PASSED — a role override survives a same-process factory re-invocation, with no duplicate registry entry or exit-listener leak (G1).");
+  } finally {
+    rmSync(runDir, { recursive: true, force: true });
+  }
+}
+
 const mode = process.argv.includes("--child")
   ? "child"
   : process.argv.includes("--concurrent-writer")
@@ -410,7 +514,9 @@ const mode = process.argv.includes("--child")
       ? "role-override-parent"
       : process.argv.includes("--role-override-child")
         ? "role-override-child"
-        : "parent";
+        : process.argv.includes("--double-invocation-child")
+          ? "double-invocation-child"
+          : "parent";
 
 if (mode === "child") {
   runChild();
@@ -420,11 +526,14 @@ if (mode === "child") {
   runRoleOverrideParent();
 } else if (mode === "role-override-child") {
   runRoleOverrideChild();
+} else if (mode === "double-invocation-child") {
+  runDoubleInvocationChild();
 } else {
   (async () => {
     await runParent();
     await runConcurrencyStress();
     await runRoleOverrideNonPropagation();
+    await runDoubleInvocationNonRegression();
   })().catch((error) => {
     console.error("REAL-PROCESS E2E FAILED:", error);
     process.exitCode = 1;
