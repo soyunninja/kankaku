@@ -82,7 +82,16 @@ Read `README.md` for behaviour and the record schema before changing code.
   `KANKAKU_ROLE=orchestrator|subagent` (`config.ts#readRoleOverride`) is an
   explicit escape hatch, but — since R1 — it never beats a *confirmed*
   signal and is never inherited: `GENTLE_PI_AGENTS_CHILD=1` (the automatic
-  child marker) always wins over `KANKAKU_ROLE=orchestrator`, so a
+  child marker) always wins over `KANKAKU_ROLE=orchestrator`. Since 6b
+  (`domain/subagent-profile.ts`, ADR 0020) this precedence is no longer
+  gentle-pi-specific — `config.ts#detectRole`'s `childMarkers` parameter
+  generalises the check to any confirmed marker from the active
+  `SubagentProfile` set (built-in: gentle-pi, pi's bundled reference
+  example — no marker, ancestry-only — and pi-subagents' `PI_SUBAGENT_DEPTH`;
+  plus any `KANKAKU_SUBAGENT_CHILD_ENV`-configured one), with the exact same
+  "always wins" rule; every pre-6b 3-arg `detectRole` call site is
+  unaffected (its default `childMarkers` is still exactly
+  `GENTLE_PI_AGENTS_CHILD=1` alone). So a
   `KANKAKU_ROLE=orchestrator` leaked into the environment (a shell rc,
   tmux, CI) can never turn a genuine subagent into a confirmed,
   independently-billed orchestrator; and `KANKAKU_ROLE=subagent` with no

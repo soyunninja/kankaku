@@ -518,16 +518,90 @@ honoured for as long as that OS process stays alive, across every reload,
 rather than being silently forgotten the moment pi reloads extensions
 internally.
 
+### Subagent profiles (phase 6b)
+
+kankaku recognises a subagent-opening tool call through a `SubagentProfile`
+(one per ecosystem package), not a single hardcoded tool name. Three
+profiles are built in:
+
+- **gentle-pi** (first-class): `subagent_run`, joined by explicit `taskId`
+  (`result.details.gentleAgents`), confirmed by `GENTLE_PI_AGENTS_CHILD=1`.
+  Nothing about gentle-pi changes — every field it already exposed (agent,
+  mode, taskId, live status, cross-worktree `cwd`) still does.
+- **pi's bundled reference example**: the `subagent` tool, no env marker at
+  all — recognised only through ancestry, always starts `uncertain` until
+  the registry/ancestor-chain mechanism above corroborates it.
+- **pi-subagents**: also registers a tool named `subagent`, confirmed by
+  `PI_SUBAGENT_DEPTH` (present with any value — its own recursion-depth
+  counter, not a fixed sentinel).
+
+Two packages registering a tool with the exact same name (`subagent`) is a
+real ambiguity kankaku never guesses through: which ecosystem package
+actually made a given call can only be told apart by its child-env marker
+(present in the *child* process, not visible from the parent's tool-call
+alone), so a call to `subagent` still opens a span (best-effort
+agent/mode), but is never attributed to one specific profile unless a
+marker resolves it. `/kankaku doctor` reports this as an "ambiguous tool
+name" line.
+
+**`KANKAKU_SUBAGENT_TOOLS`** registers one or more additional tool names as
+subagent-opening spans, comma-separated, parsed exactly like
+`KANKAKU_INTERACTIVE_TOOLS` — always additive to the built-ins, never
+replacing gentle-pi's own recognition.
+
+**`KANKAKU_SUBAGENT_CHILD_ENV`** registers one or more child-process env
+markers that confirm a process as this configured tool's subagent,
+`;`-separated `NAME=VALUE` (exact match) or a bare `NAME` (presence-only,
+any non-empty value) — mirrors `KANKAKU_SEGMENTS`'s tolerant parsing:
+malformed entries are skipped, not fatal.
+
+```
+KANKAKU_SUBAGENT_TOOLS=my_subagent_tool
+KANKAKU_SUBAGENT_CHILD_ENV=MY_TOOL_CHILD=1
+```
+
+A confirmed marker from a configured profile takes the exact same
+"always wins over `KANKAKU_ROLE`" precedence gentle-pi's own marker
+already had — see "Interactive sessions and `KANKAKU_ROLE`" above.
+
+`/kankaku doctor` reports the active profile set, any configured tools/
+markers, and which profile matched each subagent record (or "unmatched"
+when no marker resolved it).
+
+### In-process subagents (phase 6c)
+
+A subagent tool result's `usage` field — pi's own documented convention
+for "a tool making nested LLM calls should return their combined `Usage`
+as `usage`" — is added to the triggering record's own usage totals, once,
+right where it is read. gentle-pi is unaffected (its result never carries
+one — cost for its children is, and stays, tracked through the registry/
+ancestry join above). A profile whose marker can also produce an
+ancestry-joined child record with its own usage (pi-subagents) never
+forwards `usage` even when its result happens to carry one, to avoid
+counting the same nested work twice.
+
+Real in-process (same-OS-process, no separate `pid`) subagent nesting was
+investigated directly against pi's own source and documented API
+(`docs/extensions.md`) for this release: none of gentle-pi, pi's bundled
+reference example, or pi-subagents actually run a child *inside* the
+parent's process — every one of them spawns a real, separate OS process.
+pi's own in-process mechanism (`ctx.newSession`/`ctx.fork`) replaces one
+session with another *sequentially* in the same process (the old session's
+`session_shutdown` fires, then the new one's `session_start` — never
+concurrently), which is exactly what "kankaku reads/writes a fresh record
+per session_start, same pid" already handles correctly. As a defensive
+guard for the pattern true concurrent nesting *would* leave behind,
+`/kankaku doctor` flags two confirmed-orchestrator records sharing a pid
+with **overlapping** `[startedAt, settledAt]` windows as "likely
+in-process nesting", unioning (never summing) their wall time via the
+same interval-union primitive `buildTasks` itself uses — informational
+only, it never changes a task's own numbers. This has not been observed
+from any real subagent mechanism in this codebase's research; if pi (or an
+extension built on its SDK) grows genuine concurrent in-process nesting in
+the future, this is the signal that would surface it.
+
 ### Limitations, honestly
 
-- **In-process subagents are not handled yet.** A subagent mechanism that
-  runs entirely inside the same OS process (no separate `pid`) is invisible
-  to the registry/ancestry mechanism above; it is a planned, separate
-  follow-up.
-- **Only gentle-pi's `subagent_run` is recognised as a subagent-opening
-  tool call today.** Other ecosystem packages are not yet specifically
-  profiled — an unmarked child from one of them is `uncertain`, safely, but
-  not automatically joined the way a gentle-pi child is.
 - **Windows has no ancestor-chain detection** (an ancestor can never be
   identity-verified there), though this process's own `processStartId` is
   always available regardless of platform — see "Identity, not just pid"
@@ -988,6 +1062,18 @@ Columns (in this order for CSV; the same fields for JSON):
   `ask_user_question,ask_user_choice`.
 - `KANKAKU_SEGMENTS`: `;`-separated `tag=tool:regex` rules for tagged
   segments (see above). Defaults to the single `review` rule.
+- `KANKAKU_SUBAGENT_TOOLS`: comma-separated list of additional tool names
+  treated as subagent-opening spans, parsed exactly like
+  `KANKAKU_INTERACTIVE_TOOLS`. Always additive to the built-in profiles
+  (gentle-pi, pi's bundled reference example, pi-subagents) — never
+  replaces gentle-pi's own recognition. See "Subagents" > "Subagent
+  profiles (phase 6b)". Unset by default (built-in profiles' tool names
+  only).
+- `KANKAKU_SUBAGENT_CHILD_ENV`: `;`-separated `NAME=VALUE` (exact match) or
+  bare `NAME` (presence-only) child-process env markers that confirm a
+  process as the configured tool's subagent — parsed like `KANKAKU_SEGMENTS`,
+  malformed entries skipped. See "Subagents" > "Subagent profiles (phase
+  6b)". Unset by default.
 - `KANKAKU_ROLE`: `orchestrator` or `subagent` — an explicit escape hatch
   for this process. Any other value is ignored. Scope it to one
   invocation (`KANKAKU_ROLE=orchestrator pi ...`) — **never export it in
@@ -1052,9 +1138,16 @@ Columns (in this order for CSV; the same fields for JSON):
 - Linking a `task_entries` row to an existing `tasks` record (phase 3 in the
   hub's own data model) — kankaku never invents tasks; it would only ever
   link to one created in the manager.
-- Generic subagent detection (phase 6): this version (6a) fixes the two
-  correctness bugs described in "Subagents" above (a phantom-orchestrator
-  double count; a gentle-pi cross-worktree child's work going missing). A
-  `SubagentProfile` abstraction recognising other ecosystem packages
-  (`KANKAKU_SUBAGENT_TOOLS`/`KANKAKU_SUBAGENT_CHILD_ENV`) and in-process
-  subagent usage attribution are planned follow-ups, not built yet.
+- Generic subagent detection (phase 6): 6a fixed the two correctness bugs
+  described in "Subagents" above (a phantom-orchestrator double count; a
+  gentle-pi cross-worktree child's work going missing). 6b added the
+  `SubagentProfile` abstraction, built-in profiles for pi's bundled
+  reference example and pi-subagents alongside gentle-pi, and
+  `KANKAKU_SUBAGENT_TOOLS`/`KANKAKU_SUBAGENT_CHILD_ENV` for a third-party
+  tool kankaku does not recognise out of the box. 6c added subagent-result
+  `usage` forwarding and the same-pid overlapping-orchestrator guard — see
+  "Subagents" > "Subagent profiles (phase 6b)" / "In-process subagents
+  (phase 6c)" above. Built-in profiles beyond these three
+  (`pi-background-tasks`, `@d3ara1n/pi-subagent`), gentle-pi handing a
+  child its own task id, and the cosmetic `linked_task_id` hub
+  self-relation remain out of scope.
