@@ -682,6 +682,57 @@ async function main(): Promise<void> {
     assert.equal(await countTaskEntries(superuserToken, "task-phantom"), 0, "an uncertain-role record must never become its own task_entries row");
     log("  task-phantom: confirmed absent from the hub — never billed as a phantom task");
 
+    // --- Phase 6b scenario: a configured third-party subagent tool
+    // (KANKAKU_SUBAGENT_TOOLS/KANKAKU_SUBAGENT_CHILD_ENV, no separate
+    // OS-process child of its own in this scenario — the child never runs
+    // kankaku, so there is no separately-joined WorkRecord for it) whose
+    // tool result forwarded `usage` (SUBAGENT-REQ-006). The forwarded
+    // usage/cost is already folded into the orchestrator's own `usage`
+    // totals exactly as `WorkTracker.onToolEnd` computes it — this proves
+    // the sync pipeline carries that through to the hub row's cost/input/
+    // output, counted once, with subagent_linkage correctly reported
+    // "unlinked" (a span was opened, but no child record ever joined it —
+    // the same conservative bucket a genuine in-process mechanism would
+    // fall into, see domain/hub-entry.ts#computeSubagentLinkage). ---
+    log("phase-6b/6c scenario: a configured subagent tool's forwarded usage reaches the hub row, counted once, subagent_linkage=unlinked");
+    const t4 = Date.parse("2026-09-19T14:00:00.000Z");
+    const configuredToolTask = makeRecord({
+      id: "task-configured-tool",
+      role: "orchestrator",
+      pid: 7000,
+      parentPid: 1,
+      startedAt: iso(t4),
+      settledAt: iso(t4 + 20_000),
+      wallMs: 20_000,
+      waitingMs: 0,
+      workMs: 20_000,
+      // The orchestrator's own turn usage (100/40/0.01) PLUS the configured
+      // tool's forwarded usage (25/10/0.004), already summed exactly once
+      // by WorkTracker.onToolEnd — see domain/work-tracker.ts.
+      usage: { input: 125, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.014 },
+      costObserved: true,
+      runs: 1,
+      turns: 1,
+      tools: { my_review_tool: 1 },
+      subagents: [{ toolCallId: "call-configured-1", agent: "reviewer", mode: "task", ms: 5_000, profile: "configured" }],
+    });
+    worktreeALog.append(configuredToolTask);
+
+    const summary9 = await runSync(
+      { log: worktreeALog, sink: makeSink(), stateStore, clock: { now: () => Date.now() }, target: PB_URL, windowHours: 24 },
+      {},
+    );
+    assert.equal(summary9.error, undefined, `configured-tool sync should not error: ${summary9.error}`);
+    const configuredRow = await findTaskEntry(superuserToken, "task-configured-tool");
+    assert.equal(configuredRow["input"], 125);
+    assert.equal(configuredRow["output"], 50);
+    assert.ok(Math.abs((configuredRow["cost"] as number) - 0.014) < 1e-9, "forwarded usage cost must be counted exactly once");
+    assert.equal(configuredRow["cost_quality"], "measured");
+    assert.equal(configuredRow["subagent_count"], 0, "no child record was ever joined for this span");
+    assert.equal(configuredRow["subagent_linkage"], "unlinked", "a span was opened but never joined — the conservative bucket, never guessed 'linked'");
+    assert.equal(await countWorkRecords(superuserToken, configuredRow["id"] as string), 1, "exactly one work_records row — the orchestrator's own, nothing duplicated");
+    log("  task-configured-tool: forwarded usage counted once, subagent_linkage=unlinked — verified");
+
     log("ALL E2E ASSERTIONS PASSED");
   } finally {
     log("stopping PocketBase");
