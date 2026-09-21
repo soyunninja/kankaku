@@ -89,7 +89,7 @@ function sumSegments(segmentMaps: Array<Record<string, number> | undefined>): Re
  * entry — both treated as zero rather than corrupting the sum with
  * `undefined`/`NaN`.
  */
-export function sumUsage(totals: Array<UsageTotals | undefined>): UsageTotals {
+export function sumUsage(totals: Array<Partial<UsageTotals> | undefined>): UsageTotals {
   const usage = emptyUsage();
   for (const total of totals) {
     usage.input += finiteOrZero(total?.input);
@@ -176,6 +176,34 @@ function matchChildren(records: WorkRecord[]): {
   return { childrenByOrchestratorId, orphans };
 }
 
+/**
+ * C1 (CRITICAL fix): the reconciliation ADR 0006 keeps in exactly this one
+ * place — the only spot that decides whether a subagent span's
+ * `forwardedUsage` (`domain/work-tracker.ts#onToolEnd`, SUBAGENT-REQ-006
+ * revised) actually gets added to this task's total, or is assumed already
+ * covered by a joined child record's own `usage`.
+ *
+ * There is no explicit per-span correlation id today (same limitation
+ * `computeSubagentLinkage` in `domain/hub-entry.ts` already documents), so
+ * this reconciles at PROFILE granularity, not per span: a span's forwarded
+ * usage is excluded only when this task also has at least one joined child
+ * record confirmed by the SAME profile (`WorkRecord.profile`) — i.e. a
+ * profile that can BOTH forward usage AND be ancestry-joined for the same
+ * kind of call (today, only a user-configured profile that declares both a
+ * child-env marker and usage forwarding — see `buildConfiguredProfile`'s
+ * doc comment; none of the built-ins can be both at once, so their spans'
+ * forwarded usage is never excluded here). A span whose profile is
+ * `undefined` (an ambiguous match — see `safeAmbiguousResultInfo`) never
+ * carries `forwardedUsage` in the first place, so it never reaches this
+ * function at all.
+ */
+function unjoinedForwardedUsage(orchestrator: WorkRecord, subagents: WorkRecord[]): Array<Partial<UsageTotals>> {
+  const joinedProfiles = new Set(subagents.map((child) => child.profile).filter((id): id is string => id !== undefined));
+  return orchestrator.subagents
+    .filter((span) => span.forwardedUsage !== undefined && !(span.profile !== undefined && joinedProfiles.has(span.profile)))
+    .map((span) => span.forwardedUsage!);
+}
+
 function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskView {
   const parentStart = toMs(orchestrator.startedAt);
   const parentEnd = toMs(orchestrator.settledAt);
@@ -189,7 +217,7 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
   const endedAtMs = Math.max(parentEnd, ...subagents.map((child) => toMs(child.settledAt)));
   const waitingMs = orchestrator.waitingMs;
   const workMs = wallMs - waitingMs;
-  const usage = sumUsage([orchestrator.usage, ...subagents.map((child) => child.usage)]);
+  const usage = sumUsage([orchestrator.usage, ...subagents.map((child) => child.usage), ...unjoinedForwardedUsage(orchestrator, subagents)]);
   const segments = sumSegments([orchestrator.segments, ...subagents.map((child) => child.segments)]);
 
   return {

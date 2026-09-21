@@ -618,9 +618,17 @@ test("a tool name matching no profile at all never opens a subagent span", () =>
   assert.deepEqual(record?.subagents, []);
 });
 
-// --- 6c: SUBAGENT-REQ-006, usage forwarding ---
+// --- 6c/C1: SUBAGENT-REQ-006, usage forwarding (revised) ---
+//
+// C1 (CRITICAL fix): forwarded usage is no longer folded into the parent
+// record's own `usage` totals at write time — it lives on the span as
+// `forwardedUsage`, and `domain/task-view.ts#buildTasks` (ADR 0006) is the
+// only place that later decides whether to add it to a task's aggregate
+// total (never when a joined child with the same profile already carries
+// it). The orchestrator record's own `usage` reflects only its own directly
+// observed turns from here on.
 
-test("SUBAGENT-REQ-006: a subagent tool result's usage is added to the PARENT record's usage totals exactly once", () => {
+test("SUBAGENT-REQ-006: a subagent tool result's usage is recorded on the span as forwardedUsage, never folded into the parent record's own usage totals", () => {
   const clock = new FakeClock(0);
   const tracker = makeTracker(clock, [], [GENTLE_PI_PROFILE, PI_REFERENCE_PROFILE]);
 
@@ -631,7 +639,9 @@ test("SUBAGENT-REQ-006: a subagent tool result's usage is added to the PARENT re
   tracker.onToolEnd("call-1", { usage: { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.002 } });
   const record = tracker.onSettled();
 
-  assert.deepEqual(record?.usage, { input: 120, output: 60, cacheRead: 0, cacheWrite: 0, cost: 0.012 });
+  // Only the real turn's own usage — the forwarded span usage is not here.
+  assert.deepEqual(record?.usage, { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.01 });
+  assert.deepEqual(record?.subagents[0]?.forwardedUsage, { input: 20, output: 10, cacheRead: 0, cacheWrite: 0, cost: 0.002 });
 });
 
 test("SUBAGENT-REQ-006: forwarded usage sets costObserved only when a finite cost figure accompanies it — matches onTurnEnd's own semantics (a forwarded usage without a cost figure is 'unknown', not 'measured')", () => {
@@ -645,10 +655,11 @@ test("SUBAGENT-REQ-006: forwarded usage sets costObserved only when a finite cos
   const record = tracker.onSettled();
 
   assert.equal(record?.costObserved, undefined);
-  assert.equal(record?.usage.input, 5);
+  assert.equal(record?.usage.input, 0);
+  assert.deepEqual(record?.subagents[0]?.forwardedUsage, { input: 5, output: 5 });
 });
 
-test("SUBAGENT-REQ-006/gentle-pi regression: gentle-pi's subagent_run result never carries usage, so it never contributes to the parent's totals (verified: gentle-pi 3.3.0 never sets it)", () => {
+test("SUBAGENT-REQ-006/gentle-pi regression: gentle-pi's subagent_run result never carries usage, so no forwardedUsage is ever recorded on its span (verified: gentle-pi 3.3.0 never sets it)", () => {
   const clock = new FakeClock(0);
   const tracker = makeTracker(clock);
 
@@ -663,6 +674,7 @@ test("SUBAGENT-REQ-006/gentle-pi regression: gentle-pi's subagent_run result nev
   // ignored, since the profile's own readResult simply does not look at it.
   assert.deepEqual(record?.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
   assert.equal(record?.costObserved, undefined);
+  assert.equal(record?.subagents[0]?.forwardedUsage, undefined);
 });
 
 test("a repeated onToolEnd for the same toolCallId never double-adds forwarded usage (the open-span map entry is consumed exactly once, guarding double attribution)", () => {
@@ -678,8 +690,8 @@ test("a repeated onToolEnd for the same toolCallId never double-adds forwarded u
   tracker.onToolEnd("call-1", { usage: { input: 10, cost: 0.01 } });
   const record = tracker.onSettled();
 
-  assert.equal(record?.usage.input, 10);
-  assert.equal(record?.usage.cost, 0.01);
+  assert.equal(record?.subagents.length, 1);
+  assert.deepEqual(record?.subagents[0]?.forwardedUsage, { input: 10, cost: 0.01 });
 });
 
 test("pi-subagents' profile never forwards usage even when its tool result happens to carry one — avoids double-counting an ancestry-joined child (see domain/subagent-profile.ts)", () => {
@@ -693,4 +705,40 @@ test("pi-subagents' profile never forwards usage even when its tool result happe
   const record = tracker.onSettled();
 
   assert.deepEqual(record?.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  assert.equal(record?.subagents[0]?.forwardedUsage, undefined);
+});
+
+// --- C1 (CRITICAL fix): production-shaped ambiguity — every built-in
+// profile active together (exactly how production always runs), the
+// collision that actually caused the latent double count. ---
+
+test("C1: an ambiguous 'subagent' call (pi-reference + pi-subagents both registered) with usage on the result never forwards it — span opens, but forwardedUsage stays undefined", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock); // default: all 3 built-ins — the real production shape
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent", { agent: "researcher" });
+  clock.advanceTo(500);
+  tracker.onToolEnd("call-1", { usage: { input: 5000, output: 2000, cost: 1.23 } });
+  const record = tracker.onSettled();
+
+  assert.equal(record?.subagents.length, 1);
+  assert.equal(record?.subagents[0]?.profile, undefined);
+  assert.equal(record?.subagents[0]?.forwardedUsage, undefined);
+  assert.deepEqual(record?.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 });
+  assert.equal(record?.costObserved, undefined);
+});
+
+test("C1: an UNAMBIGUOUS pi-reference call (pi-reference registered alone) with usage and no marker-confirmed child still forwards usage on the span exactly once", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock, [], [GENTLE_PI_PROFILE, PI_REFERENCE_PROFILE]);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent", { agent: "researcher" });
+  clock.advanceTo(500);
+  tracker.onToolEnd("call-1", { usage: { input: 100, output: 40, cost: 0.03 } });
+  const record = tracker.onSettled();
+
+  assert.equal(record?.subagents[0]?.profile, "pi-reference");
+  assert.deepEqual(record?.subagents[0]?.forwardedUsage, { input: 100, output: 40, cost: 0.03 });
 });

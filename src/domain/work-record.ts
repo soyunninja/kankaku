@@ -28,6 +28,23 @@ export interface SubagentSpan {
    * an older-format span (written before profiles existed) still validates.
    */
   profile?: string;
+  /**
+   * C1 (CRITICAL fix, SUBAGENT-REQ-006 revised): nested LLM usage the
+   * matched profile's `readResult` forwarded from this span's tool result,
+   * kept SEPARATE from the orchestrator's own `WorkRecordCore.usage` —
+   * never folded in at write time (`domain/work-tracker.ts#onToolEnd`).
+   * `domain/task-view.ts#buildTasks` (ADR 0006: aggregation across
+   * spans/children stays in exactly this one place) is the only place that
+   * decides whether to add it to a task's total, based on whether a joined
+   * child record with the SAME `profile` already carries this same cost
+   * through its own confirmed-marker ancestry join — see
+   * `task-view.ts#unjoinedForwardedUsage`. Never set for an ambiguous
+   * tool-name match (nothing money-affecting is ever taken from one — see
+   * `domain/subagent-profile.ts#safeAmbiguousResultInfo`) or when the
+   * matched profile's `readResult` reported no usage at all. Optional so an
+   * older-format span (written before this field existed) still validates.
+   */
+  forwardedUsage?: Partial<UsageTotals>;
 }
 
 /**

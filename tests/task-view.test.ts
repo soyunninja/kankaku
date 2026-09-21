@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { buildSessions, buildTasks, detectSameProcessOverlaps, orphanSubagents, sumUsage, uncertainRecords } from "../src/domain/task-view.ts";
-import type { UsageTotals, WorkRecord } from "../src/domain/work-record.ts";
+import type { SubagentSpan, UsageTotals, WorkRecord } from "../src/domain/work-record.ts";
 
 function iso(secondsFromEpoch: number): string {
   return new Date(secondsFromEpoch * 1000).toISOString();
@@ -523,4 +523,119 @@ test("SUBAGENT-REQ-015: detectSameProcessOverlaps never changes buildTasks' own 
   assert.equal(tasks.length, 2);
   assert.equal(tasks.find((t) => t.id === "a")?.wallMs, 30000);
   assert.equal(tasks.find((t) => t.id === "b")?.wallMs, 40000);
+});
+
+// --- C1 (CRITICAL fix): buildTasks reconciles span-level forwardedUsage
+// (SUBAGENT-REQ-006 revised) — ADR 0006's "aggregation happens in exactly
+// one place" rule applied to the writer-admitted "configured profile with
+// both a marker AND usage forwarding" double-count hole. ---
+
+function span(overrides: Partial<SubagentSpan> = {}): SubagentSpan {
+  return { toolCallId: "call-1", agent: "researcher", mode: "task", ms: 1000, ...overrides };
+}
+
+test("C1: an unambiguous pi-reference span's forwardedUsage is added to the task total when no child was ever joined for it", () => {
+  const orchestrator = makeRecord({
+    id: "o1",
+    pid: 10,
+    parentPid: 1,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    usage: { input: 100, output: 50, cacheRead: 0, cacheWrite: 0, cost: 0.1 },
+    subagents: [span({ profile: "pi-reference", forwardedUsage: { input: 20, output: 5, cost: 0.02 } })],
+  });
+
+  const tasks = buildTasks([orchestrator]);
+
+  assert.equal(tasks.length, 1);
+  assert.equal(tasks[0]!.usage.input, 120);
+  assert.equal(tasks[0]!.usage.output, 55);
+  assert.ok(Math.abs(tasks[0]!.usage.cost - 0.12) < 1e-9);
+});
+
+test("C1: a configured-profile span's forwardedUsage is EXCLUDED from the task total when a same-profile child was joined (the child's own usage already carries it — counted once)", () => {
+  const orchestrator = makeRecord({
+    id: "o2",
+    pid: 20,
+    parentPid: 1,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    usage: { input: 100, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.1 },
+    subagents: [span({ profile: "configured", forwardedUsage: { input: 500, output: 200, cost: 1.5 } })],
+  });
+  const child = makeRecord({
+    id: "o2-child",
+    role: "subagent",
+    pid: 21,
+    parentPid: 20,
+    startedAt: iso(1),
+    settledAt: iso(9),
+    usage: { input: 500, output: 200, cacheRead: 0, cacheWrite: 0, cost: 1.5 },
+    profile: "configured",
+  });
+
+  const tasks = buildTasks([orchestrator, child]);
+
+  assert.equal(tasks.length, 1);
+  // Child usage counted once via the ordinary join; forwardedUsage is not
+  // added on top of it.
+  assert.deepEqual(tasks[0]!.usage, { input: 600, output: 200, cacheRead: 0, cacheWrite: 0, cost: 1.6 });
+});
+
+test("C1: a configured-profile span's forwardedUsage IS included when no same-profile child was joined in this task (undercount avoided)", () => {
+  const orchestrator = makeRecord({
+    id: "o3",
+    pid: 30,
+    parentPid: 1,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    subagents: [span({ profile: "configured", forwardedUsage: { input: 500, output: 200, cost: 1.5 } })],
+  });
+
+  const tasks = buildTasks([orchestrator]);
+
+  assert.deepEqual(tasks[0]!.usage, { input: 500, output: 200, cacheRead: 0, cacheWrite: 0, cost: 1.5 });
+});
+
+test("C1: an ambiguous span (profile undefined) never carries forwardedUsage in the first place, so buildTasks has nothing to add for it", () => {
+  const orchestrator = makeRecord({
+    id: "o4",
+    pid: 40,
+    parentPid: 1,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    usage: { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.01 },
+    subagents: [span({ profile: undefined, forwardedUsage: undefined })],
+  });
+
+  const tasks = buildTasks([orchestrator]);
+
+  assert.deepEqual(tasks[0]!.usage, { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.01 });
+});
+
+test("C1: a joined child of a DIFFERENT profile does not suppress an unrelated span's forwardedUsage", () => {
+  const orchestrator = makeRecord({
+    id: "o5",
+    pid: 50,
+    parentPid: 1,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    subagents: [span({ profile: "pi-reference", forwardedUsage: { input: 10, cost: 0.01 } })],
+  });
+  const child = makeRecord({
+    id: "o5-child",
+    role: "subagent",
+    pid: 51,
+    parentPid: 50,
+    startedAt: iso(1),
+    settledAt: iso(9),
+    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+    profile: "gentle-pi",
+  });
+
+  const tasks = buildTasks([orchestrator, child]);
+
+  assert.deepEqual(tasks[0]!.usage, { input: 10, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.01 });
 });

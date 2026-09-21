@@ -4,7 +4,7 @@ import { clampIntervals, unionMs } from "./intervals.ts";
 import { emptyUsage, finiteOrZero, WORK_RECORD_SCHEMA } from "./work-record.ts";
 import type { SubagentSpan, UsageTotals, WorkRecordCore, WorkStatus } from "./work-record.ts";
 import type { SegmentRule } from "./segment-rule.ts";
-import { matchToolProfiles, readLaunchInfo, readResultInfo, resolveToolProfile } from "./subagent-profile.ts";
+import { mergeAgreeingLaunchInfo, readLaunchInfo, readResultInfo, resolveToolProfile, safeAmbiguousResultInfo } from "./subagent-profile.ts";
 import type { SubagentProfile } from "./subagent-profile.ts";
 
 export interface WorkTrackerOptions {
@@ -149,11 +149,15 @@ export class WorkTracker {
     // ever guessing when 2+ profiles share the same tool name (e.g.
     // "subagent", registered by both the pi reference example and
     // pi-subagents): the span still opens either way (a subagent tool call
-    // genuinely happened), with a best-effort merged agent/mode read and
-    // `profile` left undefined.
-    const { profile, candidates } = resolveToolProfile(this.subagentProfiles, toolName);
+    // genuinely happened), with `profile` left undefined. C1: when
+    // genuinely ambiguous, agent/mode are read with `mergeAgreeingLaunchInfo`
+    // (kept only when every candidate that reports a value agrees) instead
+    // of `readLaunchInfo`'s first-defined-wins merge — this is purely
+    // descriptive (never money/join-affecting), but "agreeing" is still the
+    // more honest answer than silently picking one candidate's guess.
+    const { profile, candidates, ambiguous } = resolveToolProfile(this.subagentProfiles, toolName);
     if (candidates.length > 0) {
-      const launch = readLaunchInfo(candidates, args);
+      const launch = ambiguous ? mergeAgreeingLaunchInfo(candidates, args) : readLaunchInfo(candidates, args);
       this.state.openSubagents.set(toolCallId, {
         toolCallId,
         toolName,
@@ -182,31 +186,30 @@ export class WorkTracker {
       // usage forwarding below from ever double-attributing the same call.
       this.state.openSubagents.delete(toolCallId);
 
-      const candidates = matchToolProfiles(this.subagentProfiles, openSubagent.toolName);
-      const resultInfo = readResultInfo(candidates, result);
+      const { ambiguous, candidates } = resolveToolProfile(this.subagentProfiles, openSubagent.toolName);
+      // C1 (CRITICAL fix, SUBAGENT-REQ-005/006): a genuinely ambiguous
+      // match (2+ profiles registered this tool name, never told apart)
+      // must never forward `usage` or `taskId` — see
+      // `subagent-profile.ts#safeAmbiguousResultInfo`'s doc comment for
+      // why. The unambiguous case keeps the existing best-effort merge
+      // (a no-op merge when there is exactly one candidate).
+      const resultInfo = ambiguous ? safeAmbiguousResultInfo(candidates, result) : readResultInfo(candidates, result);
 
-      // SUBAGENT-REQ-006: a subagent tool result's usage, when its matched
-      // profile's readResult reports one, is added to the PARENT record's
-      // own totals here — exactly once, right where it is read, mirroring
-      // onTurnEnd's own accumulation/costObserved semantics below. Safe
-      // against double attribution across the built-in profiles by
-      // construction: gentle-pi never reports usage (verified, its result
-      // never carries one); pi-reference's children can never become a
-      // confirmed, separately-joined subagent record (it declares no
-      // child-env marker, so this is the only place their cost is ever
-      // counted); pi-subagents deliberately never forwards usage, since its
-      // marker CAN produce an ancestry-joined child with its own usage
-      // already counted through that join (see domain/subagent-profile.ts).
+      // SUBAGENT-REQ-006 (revised by C1): forwarded usage is recorded on
+      // the SPAN itself as `forwardedUsage`, never folded into this
+      // record's own `usage` totals here — `domain/task-view.ts#buildTasks`
+      // (ADR 0006: aggregation across spans/children stays in exactly one
+      // place) is the only place that adds it to a task's total, and only
+      // for a span whose profile has no joined child record already
+      // carrying this same cost through its own confirmed-marker ancestry
+      // join (the writer-admitted "configured profile with both a marker
+      // AND usage forwarding" hole — see `buildConfiguredProfile`'s doc
+      // comment). `costObserved` is still set here, eagerly: a real cost
+      // figure genuinely WAS observed by this call, whether or not this
+      // specific number ends up in the final sum later.
       const usage = resultInfo.usage;
-      if (usage) {
-        this.state.usage.input += finiteOrZero(usage.input);
-        this.state.usage.output += finiteOrZero(usage.output);
-        this.state.usage.cacheRead += finiteOrZero(usage.cacheRead);
-        this.state.usage.cacheWrite += finiteOrZero(usage.cacheWrite);
-        this.state.usage.cost += finiteOrZero(usage.cost);
-        if (typeof usage.cost === "number" && Number.isFinite(usage.cost)) {
-          this.state.costObserved = true;
-        }
+      if (usage && typeof usage.cost === "number" && Number.isFinite(usage.cost)) {
+        this.state.costObserved = true;
       }
 
       this.state.subagents.push({
@@ -218,6 +221,7 @@ export class WorkTracker {
         // Clamped to >= 0: a backward clock jump while the subagent was
         // running must never produce a negative duration.
         ms: Math.max(0, this.clock.now() - openSubagent.start),
+        ...(usage !== undefined ? { forwardedUsage: usage } : {}),
       });
       return;
     }

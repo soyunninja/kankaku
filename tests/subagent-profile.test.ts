@@ -8,11 +8,13 @@ import {
   buildConfiguredProfile,
   findAmbiguousToolNames,
   matchToolProfiles,
+  mergeAgreeingLaunchInfo,
   profileMarkerMatches,
   readLaunchInfo,
   readResultInfo,
   resolveChildProfile,
   resolveToolProfile,
+  safeAmbiguousResultInfo,
 } from "../src/domain/subagent-profile.ts";
 import type { SubagentProfile } from "../src/domain/subagent-profile.ts";
 
@@ -196,6 +198,90 @@ test("readResultInfo merges best-effort across ambiguous candidates and never in
     readResult: () => ({ taskId: "t9", agent: "someone-else" }),
   };
   assert.deepEqual(readResultInfo([fakeA, fakeB], {}), { agent: "researcher", taskId: "t9" });
+});
+
+// --- C1: real production-shaped ambiguity (both built-ins registering "subagent") ---
+
+test("C1: mergeAgreeingLaunchInfo keeps agent when every candidate agrees (pi-reference and pi-subagents both read agent from args.agent)", () => {
+  const candidates = matchToolProfiles(BUILTIN_SUBAGENT_PROFILES, "subagent"); // [pi-reference, pi-subagents]
+  assert.deepEqual(mergeAgreeingLaunchInfo(candidates, { agent: "researcher" }), { agent: "researcher" });
+});
+
+test("C1: mergeAgreeingLaunchInfo drops a field when candidates disagree, instead of picking one", () => {
+  const fakeA: SubagentProfile = {
+    id: "a",
+    toolNames: ["subagent"],
+    childEnvMarkers: [],
+    joinKeyConfidence: "none",
+    readLaunchArgs: () => ({ mode: "task" }),
+    readResult: () => ({}),
+  };
+  const fakeB: SubagentProfile = {
+    id: "b",
+    toolNames: ["subagent"],
+    childEnvMarkers: [],
+    joinKeyConfidence: "none",
+    readLaunchArgs: () => ({ mode: "background" }),
+    readResult: () => ({}),
+  };
+  assert.deepEqual(mergeAgreeingLaunchInfo([fakeA, fakeB], {}), {});
+});
+
+test("C1: mergeAgreeingLaunchInfo keeps a field only one candidate reports at all (no actual disagreement)", () => {
+  const fakeA: SubagentProfile = {
+    id: "a",
+    toolNames: ["subagent"],
+    childEnvMarkers: [],
+    joinKeyConfidence: "none",
+    readLaunchArgs: () => ({ agent: "researcher" }),
+    readResult: () => ({}),
+  };
+  const fakeB: SubagentProfile = {
+    id: "b",
+    toolNames: ["subagent"],
+    childEnvMarkers: [],
+    joinKeyConfidence: "none",
+    readLaunchArgs: () => ({}),
+    readResult: () => ({}),
+  };
+  assert.deepEqual(mergeAgreeingLaunchInfo([fakeA, fakeB], {}), { agent: "researcher" });
+});
+
+test("C1: safeAmbiguousResultInfo never forwards usage or taskId across ambiguous candidates, even when one candidate's readResult reports them", () => {
+  const candidates: SubagentProfile[] = [
+    PI_REFERENCE_PROFILE, // forwards result.usage generically
+    { ...PI_SUBAGENTS_PROFILE, readResult: () => ({ taskId: "leaked-task-id" }) },
+  ];
+  const result = { usage: { input: 5000, output: 2000, cost: 1.23 } };
+  const info = safeAmbiguousResultInfo(candidates, result);
+  assert.equal(info.usage, undefined);
+  assert.equal(info.taskId, undefined);
+});
+
+test("C1: safeAmbiguousResultInfo still keeps descriptive fields (agent/status/mode/cwd) — they affect neither money nor joins", () => {
+  const fakeA: SubagentProfile = {
+    id: "a",
+    toolNames: ["subagent"],
+    childEnvMarkers: [],
+    joinKeyConfidence: "none",
+    readLaunchArgs: () => ({}),
+    readResult: () => ({ agent: "researcher", status: "completed" }),
+  };
+  const fakeB: SubagentProfile = {
+    id: "b",
+    toolNames: ["subagent"],
+    childEnvMarkers: [],
+    joinKeyConfidence: "none",
+    readLaunchArgs: () => ({}),
+    readResult: () => ({ mode: "task", cwd: "/repo" }),
+  };
+  assert.deepEqual(safeAmbiguousResultInfo([fakeA, fakeB], {}), { agent: "researcher", status: "completed", mode: "task", cwd: "/repo" });
+});
+
+test("C1 (production-shaped): the real ambiguous 'subagent' collision between pi-reference and pi-subagents never forwards usage via safeAmbiguousResultInfo", () => {
+  const candidates = matchToolProfiles(BUILTIN_SUBAGENT_PROFILES, "subagent");
+  const result = { usage: { input: 5000, output: 2000, cost: 1.23 } };
+  assert.equal(safeAmbiguousResultInfo(candidates, result).usage, undefined);
 });
 
 // --- child-side marker resolution (env -> confirmed profile) ---

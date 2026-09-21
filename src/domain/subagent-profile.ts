@@ -152,6 +152,26 @@ export const GENTLE_PI_PROFILE: SubagentProfile = {
  * (see `resolveChildProfile`) and therefore can never be double-joined —
  * safe to forward `usage` unconditionally.
  */
+/**
+ * C1 investigation note (real-shape disambiguation, verified against the
+ * bundled reference example's actual source above): its real tool RESULT
+ * never actually sets a top-level `usage` field at all — every `execute()`
+ * return statement in `examples/extensions/subagent/index.ts` returns only
+ * `{content, details, isError?}`; nested-call usage lives per-result inside
+ * `details.results[].usage`, not where pi's documented convention (and
+ * `readStandardUsage` below) looks. `pi-subagents` (npm, verified against
+ * 0.28.0 `src/runs/foreground/subagent-executor.ts` and
+ * `src/runs/foreground/execution.ts`) is the same: no `execute()` return
+ * anywhere in that package sets a top-level `usage` either. So for BOTH
+ * real packages examined, `readStandardUsage(result)` returns `undefined`
+ * today regardless of which one actually answered the call — this
+ * profile's generic top-level-`usage` read exists for pi's DOCUMENTED
+ * convention (`docs/extensions.md`: "If a tool makes nested LLM calls,
+ * return their combined Usage as usage"), which a well-behaved third-party
+ * "subagent"-named tool, or a future version of either package, could
+ * start following at any time. That forward-looking risk is exactly what
+ * C1 guards against — see `safeAmbiguousResultInfo`.
+ */
 export const PI_REFERENCE_PROFILE: SubagentProfile = {
   id: "pi-reference",
   toolNames: ["subagent"],
@@ -247,6 +267,41 @@ export interface ToolProfileResolution {
  * still open a best-effort span (see `readLaunchInfo`/`readResultInfo`)
  * without ever claiming a specific profile matched.
  */
+/**
+ * C1 investigation note — real disambiguation was investigated and
+ * rejected for the "subagent" name collision between `PI_REFERENCE_PROFILE`
+ * and `PI_SUBAGENTS_PROFILE`, both by args/result SHAPE and by pi's own
+ * `getAllTools()[].sourceInfo.path`:
+ *
+ * - Args shape: pi-subagents' `action` field ("list"/"get"/"create"/
+ *   "update"/"delete"/"status"/"interrupt"/"resume"/"doctor" — verified
+ *   0.28.0 `src/extension/schemas.ts`) is absent from pi-reference's schema
+ *   entirely, so its PRESENCE would be conclusive — but it is only ever
+ *   set for pi-subagents' management/diagnostic calls, never for the
+ *   money-affecting single/parallel/chain execution calls (`agent`+`task`,
+ *   `tasks[]`, `chain[]`) that are the whole point of C1: those look
+ *   identical in both packages' schemas (`agent`, `task`, `tasks`,
+ *   `chain`, `cwd` all present in both). Result shape is no better: neither
+ *   package's real result carries a top-level `usage` at all (see
+ *   `PI_REFERENCE_PROFILE`'s doc comment) — no distinguishing signal is
+ *   present in exactly the calls that matter.
+ * - `sourceInfo.path`: `pi.getAllTools()` does expose which extension
+ *   registered a given tool name (`docs/extensions.md` "pi.getAllTools()").
+ *   But that same doc explicitly warns, for the structurally identical
+ *   `sourceInfo` on `pi.getCommands()`: "Use sourceInfo as the canonical
+ *   provenance field. Do not infer ownership from command names or from ad
+ *   hoc path parsing." Matching a tool's `sourceInfo.path` against a
+ *   hardcoded substring (a package name, an examples/ path) IS ad hoc path
+ *   parsing — the path is not guaranteed to contain any stable, portable
+ *   substring across install layouts (a monorepo, a symlinked/hoisted
+ *   dependency, a vendored fork). This was rejected as unreliable, not
+ *   merely inconvenient.
+ *
+ * Neither route was conclusive, so kankaku stays ambiguous by design
+ * (SUBAGENT-REQ-005: never guessed) and instead fixes the CONSEQUENCE of
+ * ambiguity — see `safeAmbiguousResultInfo`/`mergeAgreeingLaunchInfo` and
+ * `domain/work-tracker.ts#onToolEnd`.
+ */
 export function resolveToolProfile(profiles: readonly SubagentProfile[], toolName: string): ToolProfileResolution {
   const candidates = matchToolProfiles(profiles, toolName);
   if (candidates.length === 1) return { profile: candidates[0], ambiguous: false, candidates };
@@ -296,6 +351,71 @@ export function readResultInfo(candidates: readonly SubagentProfile[], result: u
     if (merged.usage === undefined && info.usage !== undefined) merged.usage = info.usage;
   }
   return merged;
+}
+
+/**
+ * C1 (CRITICAL fix): the launch-args counterpart of `readResultInfo`'s
+ * caution, used specifically for a genuinely AMBIGUOUS tool-name match
+ * (2+ candidate profiles, none of them the winner — SUBAGENT-REQ-005).
+ * Unlike `readLaunchInfo`'s "first defined field wins" merge (kept as-is,
+ * still used for the unambiguous single-candidate case, where there is
+ * nothing to disagree about), this only keeps a field when every candidate
+ * that reports a value for it reports the SAME value — "agent/mode if they
+ * read identically, else omitted". Two candidates disagreeing (e.g. one
+ * profile reads `mode` from `args.mode`, another from `args.action`, and
+ * they differ) means kankaku genuinely does not know which is right, so
+ * the field is dropped rather than silently picking one. Never reads
+ * anything money- or join-affecting — launch args never carry `usage` or
+ * `taskId` in the first place, only descriptive `agent`/`mode`.
+ */
+export function mergeAgreeingLaunchInfo(candidates: readonly SubagentProfile[], args: Record<string, unknown> | undefined): SubagentLaunchInfo {
+  let agent: string | undefined;
+  let agentConflict = false;
+  let mode: string | undefined;
+  let modeConflict = false;
+
+  for (const profile of candidates) {
+    const info = profile.readLaunchArgs(args);
+    if (info.agent !== undefined) {
+      if (agent === undefined) agent = info.agent;
+      else if (agent !== info.agent) agentConflict = true;
+    }
+    if (info.mode !== undefined) {
+      if (mode === undefined) mode = info.mode;
+      else if (mode !== info.mode) modeConflict = true;
+    }
+  }
+
+  return {
+    ...(agent !== undefined && !agentConflict ? { agent } : {}),
+    ...(mode !== undefined && !modeConflict ? { mode } : {}),
+  };
+}
+
+/**
+ * C1 (CRITICAL fix): the result-reading counterpart for a genuinely
+ * AMBIGUOUS tool-name match. `readResultInfo`'s own best-effort merge stays
+ * available (and is still exactly right for the UNAMBIGUOUS single-
+ * candidate case), but when 2+ profiles registered the same tool name and
+ * neither could be told apart, nothing MONEY- or JOIN-affecting is ever
+ * taken from any candidate: `usage` (would silently double-bill the day a
+ * package sharing an ambiguous tool name, e.g. "subagent", starts
+ * following pi's documented top-level `usage` convention — see
+ * `PI_REFERENCE_PROFILE`) and `taskId` (a join key) are always stripped.
+ * Purely descriptive fields (`agent`/`status`/`mode`/`cwd`) are kept from
+ * the best-effort merge — they affect neither billing nor task/child
+ * joining, only how a span/record is labelled for a human reading it.
+ * `profile` itself is never part of this shape; the caller already leaves
+ * it `undefined` for an ambiguous match (see `resolveToolProfile`).
+ */
+export function safeAmbiguousResultInfo(candidates: readonly SubagentProfile[], result: unknown): SubagentResultInfo {
+  const merged = readResultInfo(candidates, result);
+  return {
+    ...(merged.agent !== undefined ? { agent: merged.agent } : {}),
+    ...(merged.status !== undefined ? { status: merged.status } : {}),
+    ...(merged.mode !== undefined ? { mode: merged.mode } : {}),
+    ...(merged.cwd !== undefined ? { cwd: merged.cwd } : {}),
+  };
 }
 
 /**
