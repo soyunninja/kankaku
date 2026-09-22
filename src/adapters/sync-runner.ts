@@ -34,8 +34,10 @@ export interface SyncSummary {
  * Which automatic trigger asked for this run, or `undefined` for a manual
  * one (`/kankaku sync`, `sync all`, `backfill`) — see `runSync`'s
  * short-circuit and throttle, which apply only to the automatic path.
+ * `session_shutdown` (pi awaits this handler — see `adapters/pi-tracker.ts`)
+ * is, like `session_start`, never throttled: only `agent_settled` is.
  */
-export type SyncTrigger = "session_start" | "agent_settled";
+export type SyncTrigger = "session_start" | "agent_settled" | "session_shutdown";
 
 export interface SyncRunnerDeps {
   log: WorkLog;
@@ -68,18 +70,21 @@ function emptySummary(durationMs: number, syncedThrough: string | undefined): Sy
 
 /**
  * Whether the automatic path's throttle should block this run right now.
- * `undefined`/non-finite `lastRunAt` (never run, or a malformed on-disk
- * value) never throttles — there is nothing to measure the interval
- * against. `session_start` gets one bypass the other trigger does not: a
- * previous run that errored is worth retrying immediately even inside the
- * window, so a stuck hub does not silently stay unsynced across restarts.
+ * Only `agent_settled` — fired once per prompt, far more often than a
+ * session starts or ends — is ever throttled; `session_start` and
+ * `session_shutdown` always bypass it (a session boundary is a good time
+ * to catch up regardless of how recently the last automatic run happened,
+ * and the shutdown one is awaited and time-bounded on its own — see
+ * `adapters/pi-tracker.ts`). `undefined`/non-finite `lastRunAt` (never
+ * run, or a malformed on-disk value) never throttles either — there is
+ * nothing to measure the interval against.
  */
 function isThrottled(state: SyncState | undefined, trigger: SyncTrigger, now: number, minIntervalMs: number): boolean {
+  if (trigger !== "agent_settled") return false;
   if (minIntervalMs <= 0) return false;
   const lastRunAt = state?.lastRunAt;
   if (!Number.isFinite(lastRunAt)) return false;
   if (now - (lastRunAt as number) >= minIntervalMs) return false;
-  if (trigger === "session_start" && state?.lastError !== undefined) return false;
   return true;
 }
 
@@ -89,13 +94,15 @@ function isThrottled(state: SyncState | undefined, trigger: SyncTrigger, now: nu
  * processes never race on the same `sync-state.json`.
  *
  * When `options.trigger` is set (the automatic `session_start`/
- * `agent_settled` path, as opposed to a manual `/kankaku sync`), two cheap
- * gates run before any `WorkLog.readAll()` or network call: (a) if the
- * log's `version()` is unchanged since the last successful sync and that
- * sync did not error, skip entirely; otherwise (b) throttle to at most one
- * real attempt per `minAutoIntervalMs`, since `version()` almost always
- * differs right after `agent_settled` appended a record. Neither gate ever
- * applies to a manual sync.
+ * `agent_settled`/`session_shutdown` path, as opposed to a manual
+ * `/kankaku sync`), two cheap gates run before any `WorkLog.readAll()` or
+ * network call: (a) if the log's `version()` is unchanged since the last
+ * successful sync and that sync did not error, skip entirely, for every
+ * trigger; otherwise (b) throttle to at most one real attempt per
+ * `minAutoIntervalMs`, but only for `agent_settled` — fired once per
+ * prompt, so `version()` almost always differs right after it appended a
+ * record. `session_start` and `session_shutdown` never throttle (see
+ * `isThrottled`). Neither gate ever applies to a manual sync.
  */
 export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; trigger?: SyncTrigger } = {}): Promise<SyncSummary> {
   const startedAt = deps.clock.now();

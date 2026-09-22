@@ -274,18 +274,28 @@ Read `README.md` for behaviour and the record schema before changing code.
   migration; a task whose hash a pre-fix build already pruned is reported
   stale exactly once more (an unavoidable one-time correction, not a
   recurring flood) and then never again. Nothing in a pi
-  event handler awaits the network: sync is a separate, later step
-  (`/kankaku sync`, or fire-and-forget on `session_start`/`agent_settled`),
-  and `worklog.jsonl` is still never rewritten by it — sync only reads.
-  The automatic (`session_start`/`agent_settled`) path only, never a
-  manual sync, is gated by two cheap checks before any `readAll()` or
-  network call, in `runSync` (`adapters/sync-runner.ts`): it skips entirely
-  when `WorkLog#version()` is unchanged since the last successful sync
-  (persisted as `SyncState.logVersion`), and otherwise throttles to at most
-  once per `KANKAKU_SYNC_MIN_INTERVAL_MINUTES` (default 5, `0` disables;
-  persisted as `SyncState.lastRunAt` so it holds across processes) —
-  `session_start` bypasses the throttle only when the last attempt errored
-  or never happened.
+  event handler awaits the network, with exactly one exception:
+  `session_shutdown` (`adapters/pi-tracker.ts`) awaits a single
+  time-bounded sync — pi awaits `session_shutdown` handlers with no
+  timeout of its own (verified in pi's dist), so the last prompt(s) of a
+  session reach the hub before pi exits instead of waiting for the next
+  session's `session_start`, and `shutdownSyncTimeoutMs` (default 3000,
+  see `PiTrackerDeps`) is the only thing bounding how long quitting can
+  take when the hub is unreachable. `session_start`/`agent_settled` sync
+  remains fire-and-forget, and `worklog.jsonl` is still never rewritten by
+  any of this — sync only reads. The automatic (`session_start`/
+  `agent_settled`/`session_shutdown`) path only, never a manual sync, is
+  gated by two cheap checks before any `readAll()` or network call, in
+  `runSync` (`adapters/sync-runner.ts`): it skips entirely, for every
+  automatic trigger, when `WorkLog#version()` is unchanged since the last
+  successful sync (persisted as `SyncState.logVersion`); otherwise it
+  throttles to at most once per `KANKAKU_SYNC_MIN_INTERVAL_MINUTES`
+  (default 5, `0` disables; persisted as `SyncState.lastRunAt` so it holds
+  across processes) — but only `agent_settled` is ever throttled, since it
+  fires once per prompt. `session_start` and `session_shutdown` always
+  bypass the throttle: a session boundary is worth catching up on
+  regardless of how recently the last automatic run happened, and the
+  shutdown one is awaited and time-bounded on its own anyway.
 - Task assignment (`client`/`project`/`task`/`legacy_client_label` on a
   `task_entries` row) is **create-only**: `domain/hub-entry.ts`'s
   `buildTaskEntryUpdatePayload` must never include those fields, so a

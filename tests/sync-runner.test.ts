@@ -425,10 +425,11 @@ test("the automatic path does not short-circuit when the last recorded attempt e
   assert.equal(summary.uploaded, 1);
 });
 
-test("the automatic path is throttled: right after a record was appended (version changed), a second trigger within the interval does not run again", async () => {
+test("the automatic path is throttled: right after a record was appended (version changed), a second agent_settled trigger within the interval does not run again", async () => {
   // Mirrors what actually happens after agent_settled: the log version
   // WILL have changed (a record was just appended), so the version
   // short-circuit alone cannot protect against re-reading on every prompt.
+  // Only agent_settled is ever throttled — see the two tests below.
   const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
   const log = fakeLog([orchestrator], "v2");
   const { sink, calls } = fakeSink({});
@@ -442,7 +443,20 @@ test("the automatic path is throttled: right after a record was appended (versio
   assert.equal(summary.error, undefined);
 });
 
-test("session_start bypasses the throttle when the last automatic run errored", async () => {
+test("session_start is never throttled: a changed log within the interval still runs even with no previous error", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v2");
+  const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore({ target: TARGET, hashes: {}, logVersion: "v1", lastRunAt: 1_000_000 });
+  const clock = makeClock(1_000_100); // within the throttle window
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "session_start" });
+
+  assert.equal(log.readAllCalls, 1);
+  assert.equal(summary.uploaded, 1);
+});
+
+test("session_start also runs immediately within the window after a previous automatic run errored (no behavior change from the general rule above)", async () => {
   const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
   const log = fakeLog([orchestrator], "v2");
   const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
@@ -461,7 +475,33 @@ test("session_start bypasses the throttle when the last automatic run errored", 
   assert.equal(summary.uploaded, 1);
 });
 
-test("agent_settled (unlike session_start) does not get an error bypass: it stays throttled within the interval even after a previous error", async () => {
+test("session_shutdown is never throttled: a changed log within the interval still runs", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v2");
+  const { sink } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore({ target: TARGET, hashes: {}, logVersion: "v1", lastRunAt: 1_000_000 });
+  const clock = makeClock(1_000_100); // within the throttle window
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "session_shutdown" });
+
+  assert.equal(log.readAllCalls, 1);
+  assert.equal(summary.uploaded, 1);
+});
+
+test("session_shutdown still short-circuits on an unchanged log version, exactly like the other automatic triggers", async () => {
+  const log = fakeLog([], "v1");
+  const { sink, calls } = fakeSink({});
+  const stateStore = fakeStateStore({ target: TARGET, hashes: {}, logVersion: "v1", lastRunAt: 1_000_000 });
+  const clock = makeClock(2_000_000);
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET }, { trigger: "session_shutdown" });
+
+  assert.equal(log.readAllCalls, 0);
+  assert.equal(calls.length, 0);
+  assert.equal(summary.error, undefined);
+});
+
+test("agent_settled (unlike session_start and session_shutdown) does not get an error bypass: it stays throttled within the interval even after a previous error", async () => {
   const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
   const log = fakeLog([orchestrator], "v2");
   const { sink, calls } = fakeSink({});

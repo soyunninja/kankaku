@@ -2048,6 +2048,179 @@ test("auto-sync notifies at most once per session on failure", async () => {
   assert.match(notified[0]!.message, /sync failed: network down/);
 });
 
+// --- Shutdown sync: session_shutdown awaits one bounded sync, after records ---
+
+test("shutdown sync: sync.run() is called exactly once, after every settled record has been appended, with trigger session_shutdown", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+  let recordsInLogAtCallTime = -1;
+  const originalRun = sync.run.bind(sync);
+  sync.run = (options) => {
+    recordsInLogAtCallTime = log.records.length;
+    return originalRun(options);
+  };
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0, sync });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "p", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  clock.advanceTo(300);
+  await pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+
+  assert.equal(sync.runCalls, 1);
+  assert.equal(sync.runOptions[0]?.trigger, "session_shutdown");
+  assert.equal(log.records.length, 1);
+  assert.equal(recordsInLogAtCallTime, 1);
+});
+
+test("shutdown sync: a subagent process never triggers one", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "subagent",
+    pid: 2,
+    parentPid: 1,
+    sync,
+  });
+
+  await pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+
+  assert.equal(sync.runCalls, 0);
+});
+
+test("shutdown sync: an uncertain-role orchestrator never triggers one (ADR 0022)", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    roleConfidence: "uncertain",
+    pid: 1,
+    parentPid: 0,
+    sync,
+  });
+
+  await pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+
+  assert.equal(sync.runCalls, 0);
+});
+
+test("shutdown sync: KANKAKU_SYNC_AUTO=0 (autoSyncEnabled: false) disables it", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+  const sync = new FakeSync();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log: new FakeWorkLog(),
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sync,
+    autoSyncEnabled: false,
+  });
+
+  await pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx);
+
+  assert.equal(sync.runCalls, 0);
+});
+
+test("shutdown sync: without a hub configured (no sync deps), nothing is attempted and shutdown does not throw", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log: new FakeWorkLog(), inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  await assert.doesNotReject(() => pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx));
+});
+
+test("shutdown sync: a never-resolving sync still lets cleanup run once the timeout elapses, and does not throw or hang", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({
+    ui: {
+      notify: (message: string, type?: string) => notified.push({ message, type }),
+      setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
+    },
+  });
+  const sync: SyncCommandDeps = {
+    run: () => new Promise<SyncSummary>(() => {}), // never resolves or rejects
+    status: () => ({ state: undefined, pending: 0, staleOutsideWindow: 0 }),
+  };
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sync,
+    shutdownSyncTimeoutMs: 0,
+  });
+
+  await assert.doesNotReject(() => pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx));
+
+  // Cleanup (statusBar.stop) still ran despite the sync never settling.
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", undefined]);
+  assert.equal(notified.length, 1);
+  assert.match(notified[0]!.message, /shutdown sync timed out/);
+});
+
+test("shutdown sync: a rejecting sync does not throw, and cleanup still runs", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const statusCalls: Array<[string, string | undefined]> = [];
+  const notified: Array<{ message: string; type?: string }> = [];
+  const ctx = makeFakeCtx({
+    ui: {
+      notify: (message: string, type?: string) => notified.push({ message, type }),
+      setStatus: (key: string, value: string | undefined) => statusCalls.push([key, value]),
+    },
+  });
+  const sync: SyncCommandDeps = {
+    run: () => Promise.reject(new Error("hub unreachable")),
+    status: () => ({ state: undefined, pending: 0, staleOutsideWindow: 0 }),
+  };
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sync,
+  });
+
+  await assert.doesNotReject(() => pi.fire("session_shutdown", { type: "session_shutdown", reason: "quit" }, ctx));
+
+  assert.deepEqual(statusCalls.at(-1), ["zz-kankaku", undefined]);
+  assert.equal(notified.length, 1);
+  assert.match(notified[0]!.message, /sync failed: hub unreachable/);
+});
+
 // --- Runs an extension starts without a user prompt --------------------------
 // pi emits `before_agent_start` only from `AgentSession.prompt()`. A run an
 // extension starts with `sendCustomMessage(..., { triggerTurn: true })` — how

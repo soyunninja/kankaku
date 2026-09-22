@@ -477,7 +477,7 @@ export interface SyncConfig {
   windowHours: number;
   /** `KANKAKU_SYNC_RECORDS`. Defaults to enabled; `"0"` disables uploading `work_records` children. */
   syncRecords: boolean;
-  /** `KANKAKU_SYNC_AUTO`. Defaults to enabled; `"0"` disables the fire-and-forget session_start/agent_settled sync. */
+  /** `KANKAKU_SYNC_AUTO`. Defaults to enabled; `"0"` disables every automatic sync: the fire-and-forget session_start/agent_settled ones and the awaited session_shutdown one. */
   auto: boolean;
   /**
    * `KANKAKU_SYNC_MIN_INTERVAL_MINUTES`. How often the *automatic*

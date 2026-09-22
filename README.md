@@ -954,27 +954,42 @@ leaves the machine at all: `none` (default — omitted entirely), `truncated`
   (see "Assignment is create-only" above).
 
 **Automatic sync.** Unless `KANKAKU_SYNC_AUTO=0`, kankaku also syncs
-fire-and-forget (never awaited, errors never surface as a failure of the
-run that triggered them) on `session_start` (orchestrator only, after
-crash recovery) and again after `agent_settled`. Both triggers share one
-single-flight guard, so they never race each other within a process, and a
-lock file (`<KANKAKU_DIR>/sync.lock`, an atomic exclusive-create so two
-racing processes can never both acquire it, stale after 5 minutes) keeps
-two pi processes from syncing the same directory concurrently. Subagents
-never sync. The automatic path never notifies on success; on failure it
-notifies at most once per session (`kankaku: sync failed: ...`) — check
-`/kankaku sync status` for the details, including on a later run.
+automatically on three triggers (orchestrator role only): fire-and-forget
+(never awaited, errors never surface as a failure of the run that
+triggered them) on `session_start` (after crash recovery) and again after
+`agent_settled`; and, on `session_shutdown`, one **awaited**, time-bounded
+sync — pi awaits its `session_shutdown` handlers with no timeout of its
+own, so this is the one place kankaku's own handler awaits the network, up
+to `shutdownSyncTimeoutMs` (default 3 s). This is what makes the last
+prompt(s) of a session reach the hub when the session ends, rather than
+only on the next session's `session_start`: quitting with an unreachable
+hub costs at most that timeout longer, never more, and cleanup (status
+bar, session-client bookkeeping) still runs even if the sync times out or
+fails. All three triggers share one single-flight guard, so they never
+race each other within a process — a `session_shutdown` sync that arrives
+while one is already in flight awaits that same one rather than starting a
+second — and a lock file (`<KANKAKU_DIR>/sync.lock`, an atomic
+exclusive-create so two racing processes can never both acquire it, stale
+after 5 minutes) keeps two pi processes from syncing the same directory
+concurrently. Subagents never sync. None of the three triggers notify on
+success; on failure (including a shutdown timeout) they notify at most
+once per session (`kankaku: sync failed: ...` / `kankaku: shutdown sync
+timed out`) — check `/kankaku sync status` for the details, including on a
+later run.
 
 The automatic path is cheap on every prompt, not just fire-and-forget: it
 skips entirely (no read of `worklog.jsonl`, no network) when the log has
-not changed since the last successful sync, and otherwise runs at most
-once per `KANKAKU_SYNC_MIN_INTERVAL_MINUTES` (default 5; `0` disables the
-throttle) — since right after `agent_settled` the log *has* just changed
-(a record was just appended), the throttle is what actually keeps that
-trigger cheap. `session_start` gets one exception: it bypasses the
-throttle when the previous automatic attempt errored or never happened, so
-a stuck hub does not stay silently unsynced across restarts. None of this
-ever applies to a manual `/kankaku sync`, `sync all`, or `backfill`.
+not changed since the last successful sync, for all three triggers.
+Otherwise, only `agent_settled` — fired once per prompt — is throttled, to
+at most once per `KANKAKU_SYNC_MIN_INTERVAL_MINUTES` (default 5; `0`
+disables the throttle); since right after `agent_settled` the log *has*
+just changed (a record was just appended), this throttle is what actually
+keeps that trigger cheap. `session_start` and `session_shutdown` never
+throttle: a session boundary is worth catching up on regardless of how
+recently the last automatic run happened, so a stuck hub does not stay
+silently unsynced across restarts, and the shutdown sync is already
+bounded by its own timeout. None of this ever applies to a manual
+`/kankaku sync`, `sync all`, or `backfill`.
 
 **Network/validation failures.** A network or server (5xx) error stops a
 sync run where it is and does not advance its watermark past the failing
@@ -1153,12 +1168,14 @@ Columns (in this order for CSV; the same fields for JSON):
   per-`WorkRecord` detail); `task_entries` are always uploaded regardless.
   Defaults to enabled.
 - `KANKAKU_SYNC_AUTO`: `0` disables the automatic `session_start`/
-  `agent_settled` sync; `/kankaku sync` still works. Defaults to enabled.
+  `agent_settled`/`session_shutdown` sync; `/kankaku sync` still works.
+  Defaults to enabled.
 - `KANKAKU_SYNC_MIN_INTERVAL_MINUTES`: how often the automatic
-  `session_start`/`agent_settled` sync is allowed to actually run, at
-  most — see "Automatic sync" above. Defaults to 5; `0` disables the
-  throttle. Never applies to a manual `/kankaku sync`, `sync all`, or
-  `backfill`.
+  `agent_settled` sync is allowed to actually run, at most — see
+  "Automatic sync" above. Defaults to 5; `0` disables the throttle. Only
+  ever applies to `agent_settled`: `session_start` and `session_shutdown`
+  are never throttled, and none of this applies to a manual `/kankaku
+  sync`, `sync all`, or `backfill`.
 
 ## Limitations
 

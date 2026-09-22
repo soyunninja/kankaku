@@ -164,7 +164,20 @@ export interface PiTrackerDeps {
    * quiet notification, never on success.
    */
   autoSyncEnabled?: boolean;
+  /**
+   * Upper bound (ms) on how long the `session_shutdown` handler awaits
+   * `sync.run({ trigger: "session_shutdown" })` before giving up and
+   * letting cleanup proceed regardless. pi awaits `session_shutdown`
+   * handlers with no timeout of its own (verified in pi's dist), so this
+   * is the only thing bounding how long quitting can take when the hub is
+   * unreachable. Defaults to 3000; injectable so tests never wait on a
+   * real timer.
+   */
+  shutdownSyncTimeoutMs?: number;
 }
+
+/** Default for {@link PiTrackerDeps.shutdownSyncTimeoutMs}. */
+const DEFAULT_SHUTDOWN_SYNC_TIMEOUT_MS = 3000;
 
 /** Default `isAlive`: probe with signal 0 — no signal is sent, only existence/permission is checked. */
 function defaultIsAlive(pid: number): boolean {
@@ -259,27 +272,79 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     subagentProfiles: deps.subagentProfiles,
   });
 
-  /** At most one quiet auto-sync failure notification per session; never notified on success. */
+  /** At most one quiet auto-sync failure notification per session; never notified on success. Shared by the fire-and-forget `triggerAutoSync` and the awaited shutdown sync below. */
   let autoSyncErrorNotified = false;
+
+  function notifyAutoSyncFailureOnce(ctx: ExtensionContext, message: string): void {
+    if (autoSyncErrorNotified) return;
+    autoSyncErrorNotified = true;
+    if (ctx.hasUI) ctx.ui.notify(message, "warning");
+  }
+
+  // An uncertain-role process (ADR 0022) never anchors a task (see
+  // `domain/task-view.ts#buildTasks`), so a sync attempt from it would
+  // only ever find nothing new to push — skip it outright, exactly like a
+  // subagent, rather than pay for a pointless run. Shared by every
+  // automatic trigger, fire-and-forget or awaited.
+  function autoSyncEligible(): boolean {
+    return Boolean(deps.sync) && role === "orchestrator" && roleConfidence !== "uncertain" && deps.autoSyncEnabled !== false;
+  }
 
   /** Fire-and-forget a sync (orchestrator role, `sync` configured, auto-sync enabled). Never awaited, never throws. `trigger` lets the automatic path's version short-circuit and throttle (see `adapters/sync-runner.ts#runSync`) tell apart `session_start` from `agent_settled`. */
   function triggerAutoSync(ctx: ExtensionContext, trigger: SyncTrigger): void {
-    // An uncertain-role process (ADR 0022) never anchors a task (see
-    // `domain/task-view.ts#buildTasks`), so a sync attempt from it would
-    // only ever find nothing new to push — skip it outright, exactly like
-    // a subagent, rather than pay for a pointless run.
-    if (!deps.sync || role !== "orchestrator" || roleConfidence === "uncertain" || deps.autoSyncEnabled === false) return;
+    if (!deps.sync || !autoSyncEligible()) return;
     void deps.sync
       .run({ trigger })
       .then((summary) => {
-        if (!summary.error || autoSyncErrorNotified) return;
-        autoSyncErrorNotified = true;
-        if (ctx.hasUI) ctx.ui.notify(`kankaku: sync failed: ${summary.error}`, "warning");
+        if (summary.error) notifyAutoSyncFailureOnce(ctx, `kankaku: sync failed: ${summary.error}`);
       })
       .catch(() => {
         // sync.run is expected to never throw (see adapters/sync-runner.ts);
         // this catch only guards against a misbehaving implementation.
       });
+  }
+
+  /**
+   * Awaited counterpart of {@link triggerAutoSync}, for `session_shutdown`
+   * only: called after every settled record for this shutdown has already
+   * been appended (see the handler below), so the sync it runs includes
+   * them. Races `sync.run({ trigger: "session_shutdown" })` against
+   * `shutdownSyncTimeoutMs` (default {@link DEFAULT_SHUTDOWN_SYNC_TIMEOUT_MS})
+   * so an unreachable hub costs at most that timeout, never longer, and pi
+   * awaits this handler with no timeout of its own. Never throws: a
+   * rejection from `sync.run` (never expected — see
+   * `adapters/sync-runner.ts`) is caught exactly like `triggerAutoSync`'s
+   * own `.catch`, and is never left as an unhandled rejection even when the
+   * timeout branch of the race wins first. Notifies at most once per
+   * session, sharing {@link notifyAutoSyncFailureOnce}'s guard.
+   */
+  async function runShutdownSync(ctx: ExtensionContext): Promise<void> {
+    if (!deps.sync || !autoSyncEligible()) return;
+    const sync = deps.sync;
+
+    const timeoutMs = deps.shutdownSyncTimeoutMs ?? DEFAULT_SHUTDOWN_SYNC_TIMEOUT_MS;
+    let timer: NodeJS.Timeout | undefined;
+    // Caught right here, unconditionally, so this promise never becomes an
+    // unhandled rejection regardless of which side of the race below wins.
+    const settled = sync
+      .run({ trigger: "session_shutdown" })
+      .then((summary) => ({ kind: "summary", summary }) as const)
+      .catch((error: unknown) => ({ kind: "rejected", error }) as const);
+    const timedOut = new Promise<{ kind: "timeout" }>((resolve) => {
+      timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+    });
+
+    const outcome = await Promise.race([settled, timedOut]);
+    if (timer !== undefined) clearTimeout(timer);
+
+    if (outcome.kind === "timeout") {
+      notifyAutoSyncFailureOnce(ctx, "kankaku: shutdown sync timed out");
+    } else if (outcome.kind === "rejected") {
+      const message = outcome.error instanceof Error ? outcome.error.message : String(outcome.error);
+      notifyAutoSyncFailureOnce(ctx, `kankaku: sync failed: ${message}`);
+    } else if (outcome.summary.error) {
+      notifyAutoSyncFailureOnce(ctx, `kankaku: sync failed: ${outcome.summary.error}`);
+    }
   }
 
   /** `log.append` plus cache invalidation, so every append this process makes keeps the completion cache correct. */
@@ -455,12 +520,17 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
   pi.on(
     "session_shutdown",
-    guarded((_event, ctx) => {
+    guardedAsync(async (_event, ctx) => {
       const cores = tracker.shutdownAll();
       try {
         for (const core of cores) {
           appendRecord(buildRecord(core, ctx));
         }
+        // Only reached once every record above was appended: the shutdown
+        // sync (bounded by runShutdownSync's own timeout, see above) must
+        // include them. If appendRecord threw, this is skipped and the
+        // finally below still runs cleanup — never left half-done.
+        await runShutdownSync(ctx);
       } finally {
         inflight.clear();
         statusBar.stop(ctx);
