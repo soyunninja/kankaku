@@ -4,6 +4,8 @@ A [pi](https://pi.dev) extension that measures how long an agent actually
 spends working on each prompt, so the time can later be accounted for
 (billing, reporting).
 
+Docs and guide: [kankaku.io](https://kankaku.io).
+
 ## What it measures
 
 For every prompt, kankaku tracks the span from `before_agent_start` to
