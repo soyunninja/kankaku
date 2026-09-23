@@ -1198,6 +1198,34 @@ Columns (in this order for CSV; the same fields for JSON):
   are never throttled, and none of this applies to a manual `/kankaku
   sync`, `sync all`, or `backfill`.
 
+## Using kankaku as a library
+
+Besides the pi extension, `kankaku` publishes three compiled, pi-free entry
+points for a plain Node consumer — no pi, no TypeScript loader — such as a
+separate CLI or another agent's plugin (e.g. the `kankaku-claude` package):
+
+- `kankaku/domain` — the pure domain layer: `WorkTracker`, `buildTasks`,
+  `unionMs`, and the rest of `src/domain/`.
+- `kankaku/ports` — the port interfaces only (`Clock`, `WorkLog`, `Catalog`,
+  `WorkSink`, `ProcessRegistry`, `InflightStore`), for writing your own
+  adapters against.
+- `kankaku/hub` — the pi-free adapters: the PocketBase HTTP client and
+  catalog/sink, `runSync`, the JSONL work log, the cached catalog, hub
+  credentials, and related filesystem helpers. Nothing reachable from this
+  entry point ever imports a pi package type.
+
+```js
+import { runSync } from "kankaku/hub";
+import { buildTasks } from "kankaku/domain";
+```
+
+Each entry point is compiled ahead of time (`npm run build`, part of `npm
+run check`) to `dist/<domain|ports|hub>/index.{js,d.ts}` and resolved
+through `package.json`'s `exports` map, so importing it never needs type
+stripping or a `.ts` loader. `kankaku/src/*` is how pi itself loads
+`./src/extension.ts` and is not a public API — its shape can change without
+notice; import only `kankaku/domain`, `kankaku/ports`, or `kankaku/hub`.
+
 ## Limitations
 
 - A prompt shown by a tool that does not go through `ctx.ui` and is not
@@ -1217,11 +1245,12 @@ Columns (in this order for CSV; the same fields for JSON):
   (PocketBase)" above is phase 1; sync itself ("Hub (PocketBase)" > "Sync")
   is phase 2 — both already shipped.
 - A standalone CLI entry point (`npx kankaku sync`, for a cron/launchd job
-  outside of any pi session) is deliberately not included yet: Node refuses
-  type stripping for a `.ts` file under `node_modules`, so a bin script
-  needs a build step this package does not have yet. `sync-runner.ts` and
-  its adapters are already decoupled from pi so that build step is the only
-  missing piece.
+  outside of any pi session) is deliberately not included yet. The build
+  step it needs now exists — `sync-runner.ts` and its adapters are
+  published pi-free and pre-compiled as `kankaku/hub` (see "Using kankaku
+  as a library") — but a `bin` script that wires that up as a runnable CLI
+  is not; the compiled entry points are today consumed as a library, not a
+  binary.
 - Linking a `task_entries` row to an existing `tasks` record (phase 3 in the
   hub's own data model) — kankaku never invents tasks; it would only ever
   link to one created in the manager.

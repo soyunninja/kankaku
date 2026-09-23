@@ -3,6 +3,21 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **Compiled, pi-free library entry points** (`kankaku/domain`,
+  `kankaku/ports`, `kankaku/hub`) so a plain Node consumer — no pi, no
+  TypeScript loader — can import the pure domain, the port interfaces, and
+  the hub adapters (PocketBase client/catalog/sink, `runSync`, the JSONL
+  work log, the cached catalog, hub credentials). Built by `npm run build`
+  (`tsc -p tsconfig.build.json`) to `dist/`, resolved through
+  `package.json`'s `exports` map, and required to stay pi-free by
+  `tests/public-exports.test.ts` against the compiled output. `npm run
+  check` now builds first. `./src/extension.ts` (pi's own load path) is
+  unchanged. See README "Using kankaku as a library".
+
 ## 0.5.1 — 2026-09-23
 
 ### Changed

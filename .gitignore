@@ -3,3 +3,5 @@ node_modules/
 .atl/
 # CodeGraph local index
 .codegraph/
+# Compiled library entrypoints (kankaku/domain, kankaku/ports, kankaku/hub)
+dist/

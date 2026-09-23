@@ -371,6 +371,15 @@ Read `README.md` for behaviour and the record schema before changing code.
   dev dependencies for types only; pi provides them at runtime. Do not add
   runtime dependencies without a reason written in the pull request.
 - Code, comments, docs and commit messages are in English, neutral register.
+- The public library surface is exactly the three compiled barrels
+  (`src/domain/index.ts`, `src/ports/index.ts`, `src/hub/index.ts`,
+  published as `kankaku/domain`, `kankaku/ports`, `kankaku/hub`). Nothing
+  reachable from any of them may import `@earendil-works/*` (a pi package
+  type) — `tests/public-exports.test.ts` enforces this against the
+  compiled `dist/` output. `npm run check` builds (`tsc -p
+  tsconfig.build.json`) before typechecking and testing, so a barrel that
+  newly reaches a pi-touching adapter fails `check`, not just a separate
+  lint step. See README "Using kankaku as a library".
 
 ## Verification before calling work done
 

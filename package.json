@@ -22,18 +22,36 @@
   ],
   "files": [
     "src/",
+    "dist/",
     "README.md",
     "LICENSE"
   ],
+  "exports": {
+    "./domain": {
+      "types": "./dist/domain/index.d.ts",
+      "import": "./dist/domain/index.js"
+    },
+    "./ports": {
+      "types": "./dist/ports/index.d.ts",
+      "import": "./dist/ports/index.js"
+    },
+    "./hub": {
+      "types": "./dist/hub/index.d.ts",
+      "import": "./dist/hub/index.js"
+    },
+    "./package.json": "./package.json",
+    "./src/*": "./src/*"
+  },
   "pi": {
     "extensions": [
       "./src/extension.ts"
     ]
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "test": "node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "check": "npm run typecheck && npm test",
+    "check": "npm run build && npm run typecheck && npm test",
     "e2e:hub": "node scripts/e2e-hub.ts",
     "e2e:cross-worktree": "node scripts/e2e-cross-worktree-real-processes.ts",
     "prepublishOnly": "npm run check"
