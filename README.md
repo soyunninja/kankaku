@@ -804,7 +804,9 @@ On `session_start`, for the orchestrator role with a UI available:
    sorted by name, plus "— skip —"), then for the project (active projects
    of that client, plus "(no project)" and "— skip —"). Declining at either
    step — "— skip —" or dismissing the dialog — cancels the whole pick and
-   is remembered for the session.
+   is remembered for the session. The picker shows the freshly refreshed
+   catalog when the hub answered within the deadline described in "Caching
+   and offline behaviour" below; otherwise it falls back to the cache.
 
 After a pick, kankaku asks whether to remember it for this repository; a
 "yes" merges `clientId`/`projectId` into `<KANKAKU_DIR>/config.json`.
@@ -826,19 +828,36 @@ a project) in place of the legacy client label, both idle and during a run.
 ### Caching and offline behaviour
 
 The catalog (clients/projects) is cached machine-wide at
-`~/.kankaku/catalog.json` with a 6-hour TTL. On startup: a fresh cache is
-used as-is; a stale cache is used immediately while a refresh happens in
-the background; when there is no cache at all, one refresh is awaited
-(bounded by the hub client's own request timeout, 3s by default) before
-falling back. If the hub is unreachable and there is no cache, kankaku
-notifies once (`kankaku: hub unreachable, using local labels`) and
-continues exactly as it would without a hub configured. `/kankaku catalog
-refresh` forces a refresh on demand. The cache file is always written
-owner-only (`0600`); if kankaku is the first thing to ever create
-`~/.kankaku` itself (no project has put its own `.kankaku` there), the
-directory is created owner-only (`0700`) too — but an already-existing
-`~/.kankaku` is never chmod'd, since it may be a project's own kankaku
-directory (see "The registry" below for the same rule applied to `run/`).
+`~/.kankaku/catalog.json`. On `session_start`, for the orchestrator role
+with a UI available, kankaku always starts a background refresh when a
+cache already exists — regardless of the cache's age — so a client or
+project created in the hub minutes ago shows up without waiting for a TTL
+to expire (the 6-hour TTL and `isStale()` still exist and still gate other
+callers, but session start no longer depends on them). If the target
+resolves silently from the project config file or `repo_paths` against
+the cached snapshot, `ensurePicked` returns immediately without waiting
+for that refresh at all; it keeps running in the background and
+`catalog.read()` reflects it once it lands, exactly as before. Only when
+the picker is actually about to be shown does kankaku wait for the
+in-flight refresh, bounded by a short deadline (1.5s by default,
+`pickerRefreshDeadlineMs`): if the hub answers in time, the picker offers
+the fresh clients/projects; otherwise (or if the refresh fails) it falls
+back to the cached snapshot silently, and the refresh keeps running
+in the background rather than being aborted. `/kankaku target pick` (the
+explicit re-pick command) follows the same wait-then-fall-back rule. When
+there is no cache at all, one refresh is still awaited (bounded by the hub
+client's own request timeout, 3s by default) before falling back — this
+path is unchanged. If the hub is unreachable and there is no cache,
+kankaku notifies once (`kankaku: hub unreachable, using local labels`) and
+continues exactly as it would without a hub configured; a background
+refresh that merely fails once a cache already exists is silent, with no
+notification. `/kankaku catalog refresh` still forces a refresh on demand
+independently of any of this. The cache file is always written owner-only
+(`0600`); if kankaku is the first thing to ever create `~/.kankaku` itself
+(no project has put its own `.kankaku` there), the directory is created
+owner-only (`0700`) too — but an already-existing `~/.kankaku` is never
+chmod'd, since it may be a project's own kankaku directory (see "The
+registry" below for the same rule applied to `run/`).
 
 ### Privacy (catalog)
 

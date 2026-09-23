@@ -32,12 +32,21 @@ export interface SessionTargetDeps {
    * per-request. Defaults to 5000.
    */
   firstFetchDeadlineMs?: number;
+  /**
+   * Deadline, in ms, for awaiting an already-in-flight background refresh
+   * before showing the picker with the cached snapshot instead — see
+   * {@link getSnapshotForPicker}. The refresh itself is never aborted at
+   * this deadline; it keeps running, and a later `catalog.read()` call
+   * (e.g. the next run) sees its result once it lands. Defaults to 1500.
+   */
+  pickerRefreshDeadlineMs?: number;
   /** Injectable for tests; defaults to the global timer functions. */
   setTimeout?: (handler: () => void, ms: number) => NodeJS.Timeout;
   clearTimeout?: (timer: NodeJS.Timeout) => void;
 }
 
 const DEFAULT_FIRST_FETCH_DEADLINE_MS = 5000;
+const DEFAULT_PICKER_REFRESH_DEADLINE_MS = 1500;
 
 export interface SessionTarget {
   /** Restore the session-level target (or its remembered "skipped" state) from the last `kankaku-target` entry. */
@@ -86,6 +95,7 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
   const scheduleTimeout = deps.setTimeout ?? setTimeout;
   const cancelTimeout = deps.clearTimeout ?? clearTimeout;
   const firstFetchDeadlineMs = deps.firstFetchDeadlineMs ?? DEFAULT_FIRST_FETCH_DEADLINE_MS;
+  const pickerRefreshDeadlineMs = deps.pickerRefreshDeadlineMs ?? DEFAULT_PICKER_REFRESH_DEADLINE_MS;
 
   /** Session-level override, restored on `session_start` or set by an explicit pick/skip/legacy command. */
   let sessionOverride: WorkTargetSessionOverride;
@@ -166,30 +176,18 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
   }
 
   /**
-   * Resolve a catalog snapshot to show the picker with: the cached
-   * snapshot immediately when fresh; the cached snapshot immediately with
-   * a fire-and-forget refresh when stale (not deadline-bound: it is never
-   * awaited, so a slow or hung refresh here cannot block anything); or,
-   * when there is no cache at all, one awaited refresh bounded by an
-   * *overall* deadline ({@link SessionTargetDeps.firstFetchDeadlineMs},
-   * default 5000ms) — not merely the hub client's own per-request timeout,
-   * which alone does not bound the whole sequence of a lazy auth,
-   * pagination, and a possible 401 retry. The deadline is enforced with an
+   * The no-cache-at-all path: one awaited refresh bounded by an *overall*
+   * deadline ({@link SessionTargetDeps.firstFetchDeadlineMs}, default
+   * 5000ms) — not merely the hub client's own per-request timeout, which
+   * alone does not bound the whole sequence of a lazy auth, pagination,
+   * and a possible 401 retry. The deadline is enforced with an
    * `AbortSignal` composed, per request, with that request's own
    * per-request timeout (see `pocketbase-client.ts#rawFetch`). Notifies
    * "hub unreachable" at most once when no snapshot is available at all,
    * whether because the hub failed outright or because the deadline fired
    * first — both are treated identically.
    */
-  async function getSnapshot(ctx: ExtensionContext): Promise<CatalogSnapshot | undefined> {
-    const cached = deps.catalog.read();
-    if (cached) {
-      if (deps.catalog.isStale()) {
-        void deps.catalog.refresh();
-      }
-      return cached;
-    }
-
+  async function awaitFirstFetch(ctx: ExtensionContext): Promise<CatalogSnapshot | undefined> {
     const controller = new AbortController();
     const timer = scheduleTimeout(() => controller.abort(), firstFetchDeadlineMs);
     let fresh: CatalogSnapshot | undefined;
@@ -202,6 +200,50 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
       notifyUnreachableOnce(ctx);
     }
     return fresh;
+  }
+
+  /**
+   * Races an already-started background refresh against
+   * {@link SessionTargetDeps.pickerRefreshDeadlineMs} (default 1500ms): if
+   * the refresh lands in time (and did not fail — `refresh()` resolving
+   * `undefined` falls back exactly like a deadline miss, with no
+   * notification), the picker shows the fresh snapshot; otherwise it
+   * shows `cached`. The refresh is never aborted here — it keeps running
+   * in the background, and `catalog.read()` reflects it once it resolves,
+   * exactly as it would without a picker in the way.
+   */
+  function awaitPickerRefresh(
+    refreshPromise: Promise<CatalogSnapshot | undefined>,
+    cached: CatalogSnapshot,
+  ): Promise<CatalogSnapshot> {
+    return new Promise((resolve) => {
+      let settled = false;
+      const timer = scheduleTimeout(() => {
+        if (settled) return;
+        settled = true;
+        resolve(cached);
+      }, pickerRefreshDeadlineMs);
+      void refreshPromise.then((fresh) => {
+        if (settled) return;
+        settled = true;
+        cancelTimeout(timer);
+        resolve(fresh ?? cached);
+      });
+    });
+  }
+
+  /** Resolves silently (project config / `repoPaths`) against `snapshot`, or shows the picker with it. */
+  async function resolveOrShowPicker(pi: ExtensionAPI, ctx: ExtensionContext, snapshot: CatalogSnapshot): Promise<void> {
+    const projectIds = deps.resolveProjectConfigIds();
+    const resolved = resolveWorkTarget({
+      project: projectIds,
+      cwd: cwd(),
+      clients: snapshot.clients,
+      projects: snapshot.projects,
+    });
+    if (resolved) return;
+
+    await runPicker(pi, ctx, snapshot);
   }
 
   async function runPicker(pi: ExtensionAPI, ctx: ExtensionContext, snapshot: CatalogSnapshot): Promise<void> {
@@ -227,24 +269,44 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
     if (deps.role !== "orchestrator" || !ctx.hasUI) return;
     if (sessionOverride !== undefined) return;
 
-    const snapshot = await getSnapshot(ctx);
-    if (!snapshot) return;
+    const cached = deps.catalog.read();
+    if (!cached) {
+      const fresh = await awaitFirstFetch(ctx);
+      if (!fresh) return;
+      await resolveOrShowPicker(pi, ctx, fresh);
+      return;
+    }
+
+    // Always start a refresh, regardless of staleness (the owner hit a
+    // clients/projects change that a merely-stale-TTL check missed). Silent
+    // resolution below returns without ever awaiting it; the refresh keeps
+    // running and `catalog.read()` reflects it once it lands.
+    const refreshPromise = deps.catalog.refresh();
 
     const projectIds = deps.resolveProjectConfigIds();
     const resolved = resolveWorkTarget({
       project: projectIds,
       cwd: cwd(),
-      clients: snapshot.clients,
-      projects: snapshot.projects,
+      clients: cached.clients,
+      projects: cached.projects,
     });
     if (resolved) return;
 
+    const snapshot = await awaitPickerRefresh(refreshPromise, cached);
     await runPicker(pi, ctx, snapshot);
   }
 
   async function pick(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
-    const snapshot = await getSnapshot(ctx);
-    if (!snapshot) return;
+    const cached = deps.catalog.read();
+    if (!cached) {
+      const fresh = await awaitFirstFetch(ctx);
+      if (!fresh) return;
+      await runPicker(pi, ctx, fresh);
+      return;
+    }
+
+    const refreshPromise = deps.catalog.refresh();
+    const snapshot = await awaitPickerRefresh(refreshPromise, cached);
     await runPicker(pi, ctx, snapshot);
   }
 

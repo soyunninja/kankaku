@@ -49,6 +49,38 @@ class HangingCatalog implements Catalog {
   }
 }
 
+/**
+ * A `Catalog` that already has a cached snapshot but whose `refresh` never
+ * settles on its own (no `AbortSignal` handling at all) — for
+ * deterministically testing the picker-refresh deadline race: the returned
+ * promise is never aborted, so a later manual `resolveRefresh` still lands.
+ */
+class StaleCatalogThatNeverRefreshes implements Catalog {
+  refreshCalls = 0;
+  resolveRefresh: ((snapshot: CatalogSnapshot | undefined) => void) | undefined;
+  snapshot: CatalogSnapshot;
+
+  constructor(snapshot: CatalogSnapshot) {
+    this.snapshot = snapshot;
+  }
+
+  read(): CatalogSnapshot | undefined {
+    return this.snapshot;
+  }
+  isStale(): boolean {
+    return true;
+  }
+  refresh(): Promise<CatalogSnapshot | undefined> {
+    this.refreshCalls += 1;
+    return new Promise((resolve) => {
+      this.resolveRefresh = (fresh) => {
+        if (fresh) this.snapshot = fresh;
+        resolve(fresh);
+      };
+    });
+  }
+}
+
 /** A fake `setTimeout`/`clearTimeout` pair that never fires on its own; the test invokes the captured handler(s) itself — mirrors `status-bar.test.ts`'s fake interval scheduler. */
 function makeFakeTimer() {
   const scheduled: Array<{ handler: () => void; ms: number }> = [];
@@ -318,23 +350,110 @@ test("ensurePicked awaits refresh when there is no cache at all", async () => {
   assert.equal(target.effectiveTarget()?.clientId, "c-acme");
 });
 
-test("ensurePicked uses a stale cache immediately and fires a background refresh without awaiting it", async () => {
+test("ensurePicked resolves silently from the cache immediately and does not await the background refresh it started", async () => {
   const catalog = new FakeCatalog();
   catalog.snapshot = SNAPSHOT;
-  catalog.stale = true;
   let resolveRefresh: (() => void) | undefined;
-  catalog.refresh = () =>
-    new Promise((resolve) => {
+  catalog.refresh = () => {
+    catalog.refreshCalls += 1;
+    return new Promise((resolve) => {
       resolveRefresh = () => resolve(SNAPSHOT);
     });
+  };
   const target = createSessionTarget(makeDeps({ catalog, resolveProjectConfigIds: () => ({ clientId: "c-acme" }) }));
   const { ctx } = makeCtx(true, []);
 
   await target.ensurePicked(makeFakePi(), ctx);
 
-  assert.equal(target.effectiveTarget()?.clientId, "c-acme", "resolved immediately from the stale cache");
+  assert.equal(target.effectiveTarget()?.clientId, "c-acme", "resolved immediately from the cache");
   assert.ok(resolveRefresh, "a background refresh was started");
+  assert.equal(catalog.refreshCalls, 1);
   resolveRefresh?.();
+});
+
+test("with a fresh (non-stale) cache, ensurePicked still starts a refresh", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  catalog.stale = false;
+  const target = createSessionTarget(makeDeps({ catalog, resolveProjectConfigIds: () => ({ clientId: "c-acme" }) }));
+  const { ctx } = makeCtx(true, []);
+
+  await target.ensurePicked(makeFakePi(), ctx);
+
+  assert.equal(catalog.refreshCalls, 1);
+});
+
+test("ensurePicked shows the picker with the freshly refreshed snapshot when refresh resolves before the picker deadline", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  let resolveRefresh: ((snapshot: CatalogSnapshot | undefined) => void) | undefined;
+  catalog.refresh = () =>
+    new Promise((resolve) => {
+      resolveRefresh = (fresh) => {
+        if (fresh) catalog.snapshot = fresh;
+        resolve(fresh);
+      };
+    });
+  const FRESH: CatalogSnapshot = {
+    ...SNAPSHOT,
+    clients: [...SNAPSHOT.clients, { id: "c-initech", name: "Initech", code: "initech", active: true }],
+  };
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const { ctx, selectCalls } = makeCtx(true, ["Initech", "(no project)"]);
+
+  const promise = target.ensurePicked(makeFakePi(), ctx);
+  resolveRefresh?.(FRESH);
+  await promise;
+
+  assert.ok(selectCalls[0]?.options.includes("Initech"), "the picker was offered the client from the fresh snapshot");
+  assert.equal(target.effectiveTarget()?.clientId, "c-initech");
+});
+
+test("ensurePicked shows the picker with the cached snapshot when refresh has not resolved at the picker deadline, and the refresh is not aborted", async () => {
+  const catalog = new StaleCatalogThatNeverRefreshes(SNAPSHOT);
+  const timer = makeFakeTimer();
+  const target = createSessionTarget(makeDeps({ catalog, setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout }));
+  const { ctx, selectCalls } = makeCtx(true, ["Acme", "Portal"]);
+
+  const promise = target.ensurePicked(makeFakePi(), ctx);
+  timer.fireAll(); // simulate the picker-refresh deadline elapsing; the refresh keeps running
+  await promise;
+
+  assert.ok(!selectCalls[0]?.options.includes("Initech"));
+  assert.equal(target.effectiveTarget()?.clientId, "c-acme", "the picker used the cached snapshot");
+  assert.equal(catalog.refreshCalls, 1);
+
+  const FRESH: CatalogSnapshot = {
+    ...SNAPSHOT,
+    clients: [...SNAPSHOT.clients, { id: "c-initech", name: "Initech", code: "initech", active: true }],
+  };
+  catalog.resolveRefresh?.(FRESH);
+  assert.equal(catalog.read()?.clients.some((c) => c.id === "c-initech"), true, "the background refresh, once it resolves, still updates the catalog");
+});
+
+test("ensurePicked shows the picker with the cached snapshot when the background refresh fails, with no notification", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  catalog.refreshResult = undefined;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const { ctx, notified, selectCalls } = makeCtx(true, ["Acme", "Portal"]);
+
+  await target.ensurePicked(makeFakePi(), ctx);
+
+  assert.equal(selectCalls.length, 2);
+  assert.equal(target.effectiveTarget()?.clientId, "c-acme");
+  assert.equal(notified.length, 0, "a failed background refresh falls back to the cache silently");
+});
+
+test("ensurePicked resolves silently from the project config and returns before a never-resolving background refresh settles", async () => {
+  const catalog = new StaleCatalogThatNeverRefreshes(SNAPSHOT);
+  const target = createSessionTarget(makeDeps({ catalog, resolveProjectConfigIds: () => ({ clientId: "c-acme" }) }));
+  const { ctx, selectCalls } = makeCtx(true, []);
+
+  await target.ensurePicked(makeFakePi(), ctx);
+
+  assert.equal(selectCalls.length, 0);
+  assert.equal(target.effectiveTarget()?.clientId, "c-acme");
 });
 
 test("pick always shows the picker even when a session override already exists", async () => {
@@ -349,6 +468,48 @@ test("pick always shows the picker even when a session override already exists",
 
   assert.equal(selectCalls.length, 2);
   assert.equal(target.effectiveTarget()?.clientId, "c-globex");
+});
+
+test("pick awaits the background refresh up to the picker deadline and falls back to the cache", async () => {
+  const catalog = new StaleCatalogThatNeverRefreshes(SNAPSHOT);
+  const timer = makeFakeTimer();
+  const target = createSessionTarget(makeDeps({ catalog, setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout }));
+  const pi = makeFakePi();
+  const { ctx, selectCalls } = makeCtx(true, ["Acme", "Portal"]);
+
+  const promise = target.pick(pi, ctx);
+  timer.fireAll();
+  await promise;
+
+  assert.equal(selectCalls.length, 2);
+  assert.equal(target.effectiveTarget()?.clientId, "c-acme");
+  assert.equal(catalog.refreshCalls, 1);
+});
+
+test("the picker-refresh deadline defaults to 1500ms", async () => {
+  const catalog = new StaleCatalogThatNeverRefreshes(SNAPSHOT);
+  const timer = makeFakeTimer();
+  const target = createSessionTarget(makeDeps({ catalog, setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout }));
+  const { ctx } = makeCtx(true, ["Acme", "Portal"]);
+
+  const promise = target.pick(makeFakePi(), ctx);
+  assert.equal(timer.scheduled[0]?.ms, 1500);
+  timer.fireAll();
+  await promise;
+});
+
+test("the picker-refresh deadline is injectable via pickerRefreshDeadlineMs", async () => {
+  const catalog = new StaleCatalogThatNeverRefreshes(SNAPSHOT);
+  const timer = makeFakeTimer();
+  const target = createSessionTarget(
+    makeDeps({ catalog, pickerRefreshDeadlineMs: 750, setTimeout: timer.setTimeout, clearTimeout: timer.clearTimeout }),
+  );
+  const { ctx } = makeCtx(true, ["Acme", "Portal"]);
+
+  const promise = target.pick(makeFakePi(), ctx);
+  assert.equal(timer.scheduled[0]?.ms, 750);
+  timer.fireAll();
+  await promise;
 });
 
 test("setExplicit sets the session override without showing the picker", () => {

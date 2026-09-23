@@ -3,6 +3,21 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Changed
+
+- **The hub catalog now refreshes on every session start**, not just when
+  its 6-hour cache is stale, so a client or project created in the hub
+  minutes ago shows up right away instead of waiting for the TTL. Silent
+  target resolution (project config / `repo_paths`) still returns without
+  waiting for that refresh; only when the picker is actually shown does
+  kankaku wait for it, bounded by a new 1.5s deadline
+  (`pickerRefreshDeadlineMs`), falling back to the cached snapshot — without
+  aborting the refresh — if the hub does not answer in time or the refresh
+  fails. `/kankaku target pick` follows the same rule. The no-cache-at-all
+  path and `/kankaku catalog refresh` are unchanged.
+
 ## 0.5.0 — 2026-09-23
 
 The first release that talks to a hub, and the one that makes subagent time
