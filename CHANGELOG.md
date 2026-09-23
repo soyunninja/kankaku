@@ -3,7 +3,7 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
-## 0.5.0 — unreleased (prepared 2026-09-22)
+## 0.5.0 — 2026-09-23
 
 The first release that talks to a hub, and the one that makes subagent time
 trustworthy across every mechanism kankaku recognises.
