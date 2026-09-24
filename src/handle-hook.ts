@@ -152,7 +152,7 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   const totalUsd = state.cost?.totalUsd;
   const cost =
     typeof costAtStart === "number" && typeof totalUsd === "number"
-      ? Math.max(0, totalUsd - costAtStart)
+      ? Math.max(0, Math.round((totalUsd - costAtStart) * 1e6) / 1e6) // micro-dollars: no binary float noise in the record
       : undefined;
 
   const core = replayPrompt(last, { cost });

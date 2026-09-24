@@ -152,7 +152,9 @@ test("full prompt lifecycle: one completed record with a cost delta from a simul
     assert.equal(record.waitingMs, 500);
     assert.equal(record.tools.Read, 1);
     assert.equal(record.tools.Bash, 1);
-    assert.ok(Math.abs(record.usage.cost - 0.3) < 1e-9);
+    // 0.4 - 0.1 is 0.30000000000000004 in binary floating point; the delta is
+    // rounded to micro-dollars so the persisted record carries no such noise.
+    assert.equal(record.usage.cost, 0.3);
     assert.equal(record.costObserved, true);
     assert.equal(record.sessionId, "session-1");
     assert.equal(record.project, "/repo");
