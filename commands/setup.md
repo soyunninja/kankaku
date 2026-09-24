@@ -1,5 +1,6 @@
 ---
 description: Print the statusLine snippet to add to ~/.claude/settings.json so kankaku can read per-prompt cost
+allowed-tools: Bash(node:*)
 ---
 
 Run the kankaku CLI setup command and show its output to the user verbatim.
