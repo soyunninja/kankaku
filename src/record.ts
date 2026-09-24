@@ -1,0 +1,24 @@
+import type { WorkRecord, WorkRecordCore } from "kankaku/domain";
+import type { SessionState } from "./session-state.ts";
+
+/**
+ * Attaches the orchestrator metadata a replayed {@link WorkRecordCore}
+ * needs to become a persistable {@link WorkRecord}. Phase 1: no
+ * `client`/`clientId` (hub sync is phase 2).
+ */
+export function buildClaudeRecord(
+  core: WorkRecordCore,
+  state: SessionState,
+  sessionId: string,
+): WorkRecord {
+  return {
+    ...core,
+    role: "orchestrator",
+    pid: state.pid,
+    parentPid: state.parentPid,
+    project: state.cwd,
+    sessionId,
+    mode: "claude-code",
+    ...(state.cost?.model ? { model: `anthropic/${state.cost.model}` } : {}),
+  };
+}
