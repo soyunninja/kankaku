@@ -60,9 +60,35 @@ function baseInput(overrides: Record<string, unknown>): Record<string, unknown> 
   };
 }
 
-test("static check: src/hook.ts and src/handle-hook.ts have no top-level runtime import from kankaku", () => {
-  for (const file of ["hook.ts", "handle-hook.ts"]) {
-    const text = readFileSync(join(__dirname, "..", "src", file), "utf8");
+/**
+ * Every module statically reachable from `src/hook.ts` through relative
+ * `import ... from "./x.ts"` lines. `import type` lines are erased by Node's
+ * type stripping and dynamic `import()` calls only run on the heavy paths
+ * (Stop/SessionStart/SessionEnd), so neither is followed.
+ */
+function lightPathModules(entry: string): string[] {
+  const seen = new Set<string>();
+  const queue = [entry];
+  while (queue.length > 0) {
+    const file = queue.shift()!;
+    if (seen.has(file)) continue;
+    seen.add(file);
+    const text = readFileSync(file, "utf8");
+    for (const line of text.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("import") || trimmed.startsWith("import type")) continue;
+      const match = /from\s+"(\.\.?\/[^"]+)"/.exec(trimmed);
+      if (match) queue.push(join(file, "..", match[1]!));
+    }
+  }
+  return [...seen];
+}
+
+test("static check: nothing on the light hook path (src/hook.ts and its transitive relative imports) has a top-level runtime import from kankaku", () => {
+  const modules = lightPathModules(join(__dirname, "..", "src", "hook.ts"));
+  assert.ok(modules.some((file) => file.endsWith("handle-hook.ts")), "the walk must reach handle-hook.ts");
+  for (const file of modules) {
+    const text = readFileSync(file, "utf8");
     for (const line of text.split("\n")) {
       const trimmed = line.trim();
       if (!trimmed.startsWith("import")) continue;

@@ -3,7 +3,7 @@ import { resolvePaths, type ResolvedPaths } from "./paths.ts";
 import { appendEvent, readEventLog, dropSettledPrompts } from "./event-log.ts";
 import { readState, writeState, updateState, type SessionState } from "./session-state.ts";
 import { resolveClaudePid, type PsInfo } from "./claude-pid.ts";
-import { splitPrompts, type PromptEvents } from "./replay.ts";
+import { splitPrompts, type PromptEvents } from "./prompts.ts";
 import type { Event } from "./events.ts";
 import type { WorkLog } from "kankaku/ports";
 

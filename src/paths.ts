@@ -1,6 +1,5 @@
 import { readdirSync } from "node:fs";
-import { join } from "node:path";
-import { resolveKankakuDir } from "kankaku/hub";
+import { isAbsolute, join } from "node:path";
 
 export interface ResolvePathsInput {
   env: NodeJS.ProcessEnv;
@@ -13,6 +12,16 @@ export interface ResolvedPaths {
   claudeDir: string;
   eventsFile: string;
   stateFile: string;
+}
+
+/**
+ * Same rule as kankaku's `resolveKankakuDir` (kankaku/hub): an absolute
+ * `KANKAKU_DIR` is used as-is, a relative one is joined against the session's
+ * cwd. Inlined rather than imported so the light hooks (one per tool call)
+ * never load the hub barrel for a two-line helper.
+ */
+export function resolveKankakuDir(dirOrRelative: string, cwd: string): string {
+  return isAbsolute(dirOrRelative) ? dirOrRelative : join(cwd, dirOrRelative);
 }
 
 /** `<KANKAKU_DIR or .kankaku>/claude/<sessionId>.{events.jsonl,state.json}`. */
