@@ -198,7 +198,20 @@ class KankakuPanelComponent implements Component {
 
   handleInput(data: string): void {
     if (matchesKey(data, Key.escape)) {
-      this.goBack();
+      // Forward escape to the body when it can handle input itself (a real
+      // `SettingsList`/`SelectList`-backed screen): pi-tui's own
+      // `SettingsList.handleInput`/`SelectList.handleInput` already close an
+      // open submenu on escape and fall through to the body's own
+      // `onCancel` only once no submenu remains — wired to `host.back()` by
+      // every real screen (the root `SelectList`, the target screen). Only
+      // a body with no `handleInput` at all (the placeholder "coming soon"
+      // `Text`, or a read-only note like the subagent target screen) has no
+      // way to react, so the shell pops the stack itself in that case.
+      if (this.body.handleInput) {
+        this.body.handleInput(data);
+      } else {
+        this.goBack();
+      }
       return;
     }
     if (data === "q" && !this.bodyWantsText) {

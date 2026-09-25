@@ -14,8 +14,15 @@ type TestComponent = Component & {
   dispose?(): void;
 };
 
-/** A `factory(host) => Component` double that records every input/mouse call it receives. */
-function stubScreen(bodyLine: string) {
+/**
+ * A `factory(host) => Component` double that records every input/mouse call
+ * it receives. By default it swallows every key, including escape (proving
+ * the shell forwards escape instead of handling it itself). Pass
+ * `escapeCallsBack: true` to make it behave like a real wired screen (the
+ * root `SelectList` and the target screen), whose own `onCancel` calls
+ * `host.back()` on escape.
+ */
+function stubScreen(bodyLine: string, options: { escapeCallsBack?: boolean } = {}) {
   const inputs: string[] = [];
   const mouseEvents: TuiMouseEvent[] = [];
   let capturedHost: PanelHost | undefined;
@@ -23,7 +30,10 @@ function stubScreen(bodyLine: string) {
     capturedHost = host;
     return {
       render: () => [bodyLine],
-      handleInput: (data: string) => inputs.push(data),
+      handleInput: (data: string) => {
+        inputs.push(data);
+        if (options.escapeCallsBack && data === ESCAPE) host.back();
+      },
       handleMouse: (event: TuiMouseEvent): TuiMouseEventResult => {
         mouseEvents.push(event);
         return { handled: true };
@@ -113,9 +123,11 @@ test("root menu omits hubOnly rows (sync) when the hub is not configured, in ord
   assert.equal(lines.some((line) => line === "report body"), true);
 });
 
-test("enter on a root menu item pushes that screen; escape goes back to root", () => {
+test("enter on a root menu item pushes that screen; escape goes back to root (body wires escape to host.back())", () => {
   const { ctx, getComponent } = makeCtx();
-  const report = stubScreen("report body");
+  // A real screen (like the root SelectList or the target screen) wires its
+  // own onCancel to host.back() — the shell no longer pops on its own.
+  const report = stubScreen("report body", { escapeCallsBack: true });
   void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
   const component = getComponent()! as TestComponent;
 
@@ -130,6 +142,34 @@ test("enter on a root menu item pushes that screen; escape goes back to root", (
   component.handleInput(ESCAPE);
   lines = component.render(80);
   assert.equal(lines[0], "kankaku");
+});
+
+test("escape is forwarded to a body that implements handleInput; the shell never pops on its own", () => {
+  const { ctx, getComponent } = makeCtx();
+  const report = stubScreen("report body"); // swallows escape, never calls host.back()
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(DOWN); // target (no factory) -> report
+  component.handleInput(ENTER); // push report
+  component.handleInput(ESCAPE);
+
+  assert.deepEqual(report.inputs, [ESCAPE]);
+  // The screen must still be "Report": the shell forwarded escape instead
+  // of popping the stack itself.
+  assert.equal(component.render(80)[0], "kankaku · Report");
+});
+
+test("escape on a placeholder body with no handleInput (e.g. 'coming soon') pops the screen itself", () => {
+  const { ctx, getComponent } = makeCtx();
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: {} });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(ENTER); // first root item (target) has no factory registered -> "coming soon"
+  assert.ok(component.render(80).some((line) => line.includes("coming soon")));
+
+  component.handleInput(ESCAPE);
+  assert.equal(component.render(80)[0], "kankaku");
 });
 
 test("a screen with no registered factory renders a 'coming soon' placeholder", () => {
