@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { SettingsList } from "@earendil-works/pi-tui";
 import type { SettingsListTheme } from "@earendil-works/pi-tui";
 import { actionItem } from "../src/adapters/panel/panel-items.ts";
 
@@ -113,24 +114,34 @@ test("a non-Error throw from run() is stringified into the error line", async ()
   assert.deepEqual(component.render(80), ["error: boom"]);
 });
 
-test("Enter closes the submenu, keeping the cursor on this row via navigateTo", () => {
-  const calls: Array<[string | undefined, { navigateTo?: string } | undefined]> = [];
-  const item = actionItem(fakeTheme(), { id: "remember", label: "Remember", run: () => [] });
-  const component = item.submenu!("", (selectedValue, options) => calls.push([selectedValue, options]));
+test("Enter closes the result inside a real SettingsList without reopening it or re-running the action", () => {
+  let runs = 0;
+  const item = actionItem(fakeTheme(), { id: "sync-now", label: "Sync now", run: () => { runs += 1; return ["done"]; } });
+  const list = new SettingsList([{ id: "status", label: "Status", currentValue: "ok" }, item], 10, fakeTheme(), () => {}, () => {}, { enableSearch: false });
 
-  component.handleInput!("\r");
+  list.handleInput("\x1b[B");
+  list.handleInput("\r");
+  assert.equal(runs, 1);
+  assert.match(list.render(60).join("\n"), /hint\(…\)|done/);
 
-  assert.deepEqual(calls, [[undefined, { navigateTo: "remember" }]]);
+  list.handleInput("\r");
+
+  assert.equal(runs, 1, "closing the result must not run the action again");
+  assert.match(list.render(60).join("\n"), /Sync now/, "the list is visible again, not the result");
+  assert.equal(list.render(60).some((line) => line.includes("> ") && line.includes("Sync now")), true, "the cursor stays on the action row");
 });
 
-test("Escape also closes the submenu, keeping the cursor on this row via navigateTo", () => {
-  const calls: Array<[string | undefined, { navigateTo?: string } | undefined]> = [];
-  const item = actionItem(fakeTheme(), { id: "remember", label: "Remember", run: () => [] });
-  const component = item.submenu!("", (selectedValue, options) => calls.push([selectedValue, options]));
+test("Escape also closes the result inside a real SettingsList without reopening it", () => {
+  let runs = 0;
+  const item = actionItem(fakeTheme(), { id: "sync-now", label: "Sync now", run: () => { runs += 1; return ["done"]; } });
+  const list = new SettingsList([{ id: "status", label: "Status", currentValue: "ok" }, item], 10, fakeTheme(), () => {}, () => {}, { enableSearch: false });
 
-  component.handleInput!("\x1b");
+  list.handleInput("\x1b[B");
+  list.handleInput("\r");
+  list.handleInput("\x1b");
 
-  assert.deepEqual(calls, [[undefined, { navigateTo: "remember" }]]);
+  assert.equal(runs, 1);
+  assert.match(list.render(60).join("\n"), /Sync now/);
 });
 
 test("onOpen fires when the submenu component is created", () => {

@@ -23,6 +23,13 @@ follow semver. Dates are the day the version was cut.
   client/project/task submenus, its legacy-label input, or an action's
   result view) still receives Escape/← first and closes itself before the
   shell takes over.
+- **An action's result view (sync now, sync all, backfill, catalog
+  refresh, export, pin, remember) closed and immediately reopened on
+  `Enter`/`Esc`, re-running the action each time** — only `q` got out. The
+  result view closed its submenu with `navigateTo` pointing at its own
+  row, which pi-tui's `SettingsList` treats as "select and activate that
+  row", so the row's submenu opened again. It now closes plainly; the list
+  restores the cursor to that row on its own.
 
 ## 0.7.0 — 2026-09-25
 

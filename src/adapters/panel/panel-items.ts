@@ -64,9 +64,13 @@ class ActionItemComponent implements Component {
   handleInput(data: string): void {
     if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) {
       this.options.onClose?.();
-      // Keep the cursor on the row that opened this action — the caller
-      // (the enclosing SettingsList) restores selection to it by id.
-      this.done(undefined, { navigateTo: this.options.id });
+      // Close with NO `navigateTo`: pi-tui's `SettingsList.closeSubmenu`
+      // treats `navigateTo` as "select that row and activate it", and
+      // activating this row opens its submenu again — the result would
+      // reopen and the action re-run on every Enter/Escape, leaving the
+      // user stuck until `q`. Without it the list restores the cursor to
+      // the row that opened the submenu on its own (`submenuItemIndex`).
+      this.done();
     }
   }
 }
