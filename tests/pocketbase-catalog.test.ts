@@ -3,9 +3,13 @@ import { test } from "node:test";
 import { createPocketBaseCatalogFetcher } from "../src/adapters/pocketbase-catalog.ts";
 import type { PocketBaseClient } from "../src/adapters/pocketbase-client.ts";
 
-function fakeClient(clients: unknown[], projects: unknown[]): PocketBaseClient {
+function fakeClient(clients: unknown[], projects: unknown[], tasks: unknown[] = []): PocketBaseClient {
   return {
-    list: async (collection: string) => (collection === "clients" ? clients : projects),
+    list: async (collection: string) => {
+      if (collection === "clients") return clients;
+      if (collection === "projects") return projects;
+      return tasks;
+    },
   } as unknown as PocketBaseClient;
 }
 
@@ -45,4 +49,34 @@ test("filters non-string entries out of repo_paths", async () => {
   const { projects } = await fetchCatalog();
 
   assert.deepEqual(projects[0]?.repoPaths, ["/ok"]);
+});
+
+test("maps PocketBase task records into domain HubTask, defaulting title to '' and an unrecognised status to 'open'", async () => {
+  const client = fakeClient(
+    [],
+    [],
+    [
+      { id: "t1", title: "Fix the thing", project: "p1", status: "doing", external_ref: "JIRA-1" },
+      { id: "t2", project: "p1" },
+      { id: "t3", title: "Weird status", project: "p1", status: "blocked" },
+    ],
+  );
+
+  const fetchCatalog = createPocketBaseCatalogFetcher(client);
+  const { tasks } = await fetchCatalog();
+
+  assert.deepEqual(tasks, [
+    { id: "t1", title: "Fix the thing", projectId: "p1", status: "doing", externalRef: "JIRA-1" },
+    { id: "t2", title: "", projectId: "p1", status: "open" },
+    { id: "t3", title: "Weird status", projectId: "p1", status: "open" },
+  ]);
+});
+
+test("omits externalRef when it is not a non-empty string", async () => {
+  const client = fakeClient([], [], [{ id: "t1", title: "No ref", project: "p1", status: "open", external_ref: "" }]);
+
+  const fetchCatalog = createPocketBaseCatalogFetcher(client);
+  const { tasks } = await fetchCatalog();
+
+  assert.equal("externalRef" in tasks[0]!, false);
 });

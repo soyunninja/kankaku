@@ -5,7 +5,7 @@ import { PocketBaseError } from "../src/adapters/pocketbase-client.ts";
 import type { PocketBaseClient } from "../src/adapters/pocketbase-client.ts";
 import type { TaskView } from "../src/domain/task-view.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
-import type { Client, Project } from "../src/domain/work-target.ts";
+import type { Client, HubTask, Project } from "../src/domain/work-target.ts";
 
 function iso(secondsFromEpoch: number): string {
   return new Date(secondsFromEpoch * 1000).toISOString();
@@ -153,12 +153,14 @@ function createFakeClient() {
 const client: Client = { id: "client-1", name: "Acme", code: "acme", active: true };
 const unassignedClient: Client = { id: "client-unassigned", name: "Sin determinar", code: "sin-determinar", active: true, unassigned: true };
 const project: Project = { id: "project-1", name: "Portal", clientId: "client-1", repoPaths: [], active: true };
+const hubTask: HubTask = { id: "task-1", title: "Fix the thing", projectId: "project-1", status: "open" };
 
-function makeSink(overrides: Partial<{ syncRecords: boolean; chunkSize: number }> = {}, fake = createFakeClient()) {
+function makeSink(overrides: Partial<{ syncRecords: boolean; chunkSize: number; tasks: HubTask[] }> = {}, fake = createFakeClient()) {
   const sink = new PocketBaseSink({
     client: fake.client,
     clients: [client, unassignedClient],
     projects: [project],
+    tasks: overrides.tasks ?? [hubTask],
     machine: "laptop",
     promptMode: "none",
     syncRecords: overrides.syncRecords ?? true,
@@ -198,12 +200,41 @@ test("push sends agent/plugin identity and measurement-quality fields, defaultin
   assert.equal("plugin_version" in row!, false);
 });
 
+test("push sends task: <id> on create when the task's hubTaskId resolves against deps.tasks", async () => {
+  const { sink, fake } = makeSink();
+  const task = makeTask({ clientId: "client-1", projectId: "project-1", hubTaskId: "task-1" });
+
+  await sink.push([task]);
+
+  const [row] = Array.from(fake.collections.get("task_entries")!.values());
+  assert.equal(row!["task"], "task-1");
+});
+
+test("push never re-sends task on an update, even when the TaskView carries a valid hubTaskId (assignment is create-only)", async () => {
+  const fake = createFakeClient();
+  const updateBodies: unknown[] = [];
+  const rawRequest = (fake.client as unknown as { request: (method: string, path: string, body?: unknown) => Promise<unknown> }).request;
+  (fake.client as unknown as { request: typeof rawRequest }).request = async (method: string, path: string, body?: unknown) => {
+    if (method === "PATCH" && path.includes("/task_entries/")) updateBodies.push(body);
+    return rawRequest(method, path, body);
+  };
+  const { sink } = makeSink({}, fake);
+  const task = makeTask({ clientId: "client-1", projectId: "project-1", hubTaskId: "task-1" });
+
+  await sink.push([task]); // create
+  await sink.push([task]); // update, same task_id already exists
+
+  assert.equal(updateBodies.length, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(updateBodies[0] as object, "task"), false);
+});
+
 test("push sends agent_version/plugin_version when injected, on both create and update", async () => {
   const fake = createFakeClient();
   const sink = new PocketBaseSink({
     client: fake.client,
     clients: [client, unassignedClient],
     projects: [project],
+    tasks: [],
     machine: "laptop",
     promptMode: "none",
     syncRecords: true,

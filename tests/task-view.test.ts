@@ -364,6 +364,34 @@ test("buildTasks leaves hub fields undefined when the orchestrator has none, and
   assert.equal("clientId" in tasks[0]!, false);
 });
 
+test("buildTasks exposes the orchestrator's hubTaskId/hubTaskTitle on the task", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1, hubTaskId: "t-1", hubTaskTitle: "Fix the thing" });
+
+  const tasks = buildTasks([parent]);
+
+  assert.equal(tasks[0]!.hubTaskId, "t-1");
+  assert.equal(tasks[0]!.hubTaskTitle, "Fix the thing");
+});
+
+test("buildTasks leaves hubTaskId/hubTaskTitle undefined when the orchestrator has none, and does not inherit them from a subagent child", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+  const child = makeRecord({
+    id: "c1",
+    role: "subagent",
+    pid: 200,
+    parentPid: 100,
+    startedAt: iso(2),
+    settledAt: iso(5),
+    hubTaskId: "t-1",
+    hubTaskTitle: "Fix the thing",
+  });
+
+  const tasks = buildTasks([parent, child]);
+
+  assert.equal(tasks[0]!.hubTaskId, undefined);
+  assert.equal("hubTaskId" in tasks[0]!, false);
+});
+
 // --- SUBAGENT-REQ-013/014: uncertain records never anchor a task ---
 
 test("buildTasks excludes an orchestrator-role record flagged roleConfidence 'uncertain' (SUBAGENT-REQ-013, SUBAGENT-REQ-014)", () => {

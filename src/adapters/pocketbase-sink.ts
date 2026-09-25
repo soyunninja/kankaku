@@ -14,7 +14,7 @@
 import { buildTaskEntryCreatePayload, buildTaskEntryUpdatePayload, buildWorkRecordPayload, resolveTaskAssignment, taskWorkRecords } from "../domain/hub-entry.ts";
 import type { PromptPrivacyMode } from "../domain/hub-entry.ts";
 import type { TaskView } from "../domain/task-view.ts";
-import type { Client, Project } from "../domain/work-target.ts";
+import type { Client, HubTask, Project } from "../domain/work-target.ts";
 import type { PushOutcome, PushTaskResult, WorkSink } from "../ports/work-sink.ts";
 import type { PocketBaseClient, PocketBaseRecord } from "./pocketbase-client.ts";
 import { PocketBaseError } from "./pocketbase-client.ts";
@@ -24,6 +24,7 @@ export interface PocketBaseSinkDeps {
   /** Catalog snapshot to resolve assignment against; see `domain/hub-entry.ts#resolveTaskAssignment`. */
   clients: Client[];
   projects: Project[];
+  tasks: HubTask[];
   machine: string;
   promptMode: PromptPrivacyMode;
   /** Coding agent that produced these rows; see `domain/hub-entry.ts#HubEntryContext.agent`. Defaults to `"pi"`. */
@@ -105,10 +106,21 @@ export class PocketBaseSink implements WorkSink {
     return found.get(value);
   }
 
-  private get entryContext(): { clients: Client[]; projects: Project[]; machine: string; promptMode: PromptPrivacyMode; agent: string; agentVersion?: string; plugin: string; pluginVersion?: string } {
+  private get entryContext(): {
+    clients: Client[];
+    projects: Project[];
+    tasks: HubTask[];
+    machine: string;
+    promptMode: PromptPrivacyMode;
+    agent: string;
+    agentVersion?: string;
+    plugin: string;
+    pluginVersion?: string;
+  } {
     return {
       clients: this.deps.clients,
       projects: this.deps.projects,
+      tasks: this.deps.tasks,
       machine: this.deps.machine,
       promptMode: this.deps.promptMode,
       agent: this.deps.agent ?? "pi",
@@ -177,7 +189,7 @@ export class PocketBaseSink implements WorkSink {
   }
 
   private async pushOne(task: TaskView, existingId: string | undefined): Promise<PushOutcome> {
-    const assignment = resolveTaskAssignment(task, this.deps.clients, this.deps.projects);
+    const assignment = resolveTaskAssignment(task, this.deps.clients, this.deps.projects, this.deps.tasks);
     const pushAssignment = { unassigned: assignment.routedToUnassigned, ...(assignment.legacyClientLabel ? { legacyLabel: assignment.legacyClientLabel } : {}) };
 
     try {

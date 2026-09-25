@@ -13,13 +13,15 @@
 import type { TaskView } from "./task-view.ts";
 import type { WorkRecord, WorkRole, WorkStatus } from "./work-record.ts";
 import { finiteOrZero } from "./work-record.ts";
-import type { Client, Project } from "./work-target.ts";
+import type { Client, HubTask, Project } from "./work-target.ts";
 
 export type PromptPrivacyMode = "none" | "truncated" | "full";
 
 export interface HubEntryContext {
   clients: Client[];
   projects: Project[];
+  /** The hub's known tasks, to validate a task's linked `hubTaskId` against. See {@link resolveTaskAssignment}. */
+  tasks: HubTask[];
   /** This machine's hostname or `KANKAKU_MACHINE`. */
   machine: string;
   /** `KANKAKU_SYNC_PROMPT`; see {@link applyPromptPrivacy}. */
@@ -39,6 +41,8 @@ export interface TaskAssignment {
   clientId: string;
   /** `projects` relation id, or `""`. */
   projectId: string;
+  /** `tasks` relation id, or `""` when no usable hub task could be resolved. See {@link resolveTaskAssignment}. */
+  hubTaskId: string;
   /** Only set (non-empty) for a task routed to the unassigned client. */
   legacyClientLabel: string;
   /** `true` when this task was routed to the catalog's unassigned ("Sin determinar") client. */
@@ -46,7 +50,8 @@ export interface TaskAssignment {
 }
 
 /**
- * Resolve which client/project a task's `task_entries` row should link to.
+ * Resolve which client/project/hub-task a task's `task_entries` row should
+ * link to.
  *
  * - A task whose `clientId` still exists in `clients` links to that client
  *   (regardless of its `active` flag — this is a historical fact, not a
@@ -57,16 +62,25 @@ export interface TaskAssignment {
  *   `unassigned: true`), carrying forward the record's free-text `client`
  *   label (or its `clientName` when the label itself is absent) as
  *   `legacyClientLabel` — the historical backfill rule (proposal §5.3).
+ * - `hubTaskId` is kept only when it still exists in `tasks` AND belongs to
+ *   the resolved `projectId` (non-empty); otherwise it is `""` — including
+ *   whenever the client fell back to unassigned, since there is then no
+ *   resolved project for a task to belong to.
  */
-export function resolveTaskAssignment(task: TaskView, clients: Client[], projects: Project[]): TaskAssignment {
+export function resolveTaskAssignment(task: TaskView, clients: Client[], projects: Project[], tasks: HubTask[]): TaskAssignment {
   const client = task.clientId !== undefined ? clients.find((candidate) => candidate.id === task.clientId) : undefined;
 
   if (client) {
     const project =
       task.projectId !== undefined ? projects.find((candidate) => candidate.id === task.projectId && candidate.clientId === client.id) : undefined;
+    const hubTask =
+      project !== undefined && task.hubTaskId !== undefined
+        ? tasks.find((candidate) => candidate.id === task.hubTaskId && candidate.projectId === project.id)
+        : undefined;
     return {
       clientId: client.id,
       projectId: project ? project.id : "",
+      hubTaskId: hubTask ? hubTask.id : "",
       legacyClientLabel: "",
       routedToUnassigned: false,
     };
@@ -76,6 +90,7 @@ export function resolveTaskAssignment(task: TaskView, clients: Client[], project
   return {
     clientId: unassigned ? unassigned.id : "",
     projectId: "",
+    hubTaskId: "",
     legacyClientLabel: task.client ?? task.clientName ?? "",
     routedToUnassigned: true,
   };
@@ -208,12 +223,12 @@ export type TaskEntryUpdatePayload = Omit<TaskEntryPayload, "client" | "project"
 
 /** Build the full `task_entries` payload for a **create** request — every field, including assignment. */
 export function buildTaskEntryCreatePayload(task: TaskView, ctx: HubEntryContext): TaskEntryPayload {
-  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects);
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
   return {
     task_id: task.id,
     client: assignment.clientId,
     project: assignment.projectId,
-    task: "",
+    task: assignment.hubTaskId,
     started_at: toPbDate(task.startedAt),
     ended_at: toPbDate(task.endedAt),
     wall_ms: task.wallMs,

@@ -281,3 +281,83 @@ test("readDisk tolerates malformed JSON and a structurally invalid snapshot", ()
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+const TASKS = [{ id: "t1", title: "Fix the thing", projectId: "p1", status: "open" as const }];
+
+test("an old cache file written before hub task linking (no tasks field) still reads", () => {
+  const dir = makeDir();
+  try {
+    const filePath = join(dir, "catalog.json");
+    writeFileSync(filePath, JSON.stringify({ fetchedAt: 1000, url: "https://pb.example.com", clients: CLIENTS, projects: PROJECTS }));
+    const catalog = new CachedCatalog({
+      filePath,
+      url: "https://pb.example.com",
+      clock: new FakeClock(0),
+      fetchCatalog: async () => ({ clients: [], projects: [] }),
+    });
+
+    const snapshot = catalog.read();
+    assert.equal(snapshot?.tasks, undefined);
+    assert.deepEqual(snapshot, { fetchedAt: 1000, url: "https://pb.example.com", clients: CLIENTS, projects: PROJECTS });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a cache file with a valid tasks array reads it back", () => {
+  const dir = makeDir();
+  try {
+    const filePath = join(dir, "catalog.json");
+    writeFileSync(filePath, JSON.stringify({ fetchedAt: 1000, url: "https://pb.example.com", clients: CLIENTS, projects: PROJECTS, tasks: TASKS }));
+    const catalog = new CachedCatalog({
+      filePath,
+      url: "https://pb.example.com",
+      clock: new FakeClock(0),
+      fetchCatalog: async () => ({ clients: [], projects: [] }),
+    });
+
+    assert.deepEqual(catalog.read()?.tasks, TASKS);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a cache file with a malformed tasks field is rejected, like any other malformed field", () => {
+  const dir = makeDir();
+  try {
+    const filePath = join(dir, "catalog.json");
+    writeFileSync(
+      filePath,
+      JSON.stringify({ fetchedAt: 1000, url: "https://pb.example.com", clients: CLIENTS, projects: PROJECTS, tasks: [{ noId: true }] }),
+    );
+    const catalog = new CachedCatalog({
+      filePath,
+      url: "https://pb.example.com",
+      clock: new FakeClock(0),
+      fetchCatalog: async () => ({ clients: [], projects: [] }),
+    });
+
+    assert.equal(catalog.read(), undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("refresh threads tasks from fetchCatalog through to the snapshot", async () => {
+  const dir = makeDir();
+  try {
+    const catalog = new CachedCatalog({
+      filePath: join(dir, "catalog.json"),
+      url: "https://pb.example.com",
+      clock: new FakeClock(1000),
+      fetchCatalog: async () => ({ clients: CLIENTS, projects: PROJECTS, tasks: TASKS }),
+    });
+
+    const snapshot = await catalog.refresh();
+
+    assert.deepEqual(snapshot?.tasks, TASKS);
+    assert.deepEqual(catalog.read()?.tasks, TASKS);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

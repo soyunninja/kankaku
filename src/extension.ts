@@ -240,6 +240,7 @@ export default function kankaku(pi: ExtensionAPI): void {
         client,
         clients: snapshot?.clients ?? [],
         projects: snapshot?.projects ?? [],
+        tasks: snapshot?.tasks ?? [],
         machine: machineName,
         promptMode: syncConfig.promptMode,
         syncRecords: syncConfig.syncRecords,

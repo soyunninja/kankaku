@@ -266,6 +266,12 @@ test("computeTaskContentHash does not depend on assignment fields (client/projec
   assert.equal(computeTaskContentHash(unassignedTask), computeTaskContentHash(assignedTask));
 });
 
+test("computeTaskContentHash does not depend on hubTaskId (assignment field; linking/unlinking a hub task never triggers a resync by itself)", () => {
+  const unlinkedTask = makeTask("a", 0, 10);
+  const linkedTask = makeTask("a", 0, 10, { hubTaskId: "task-1", hubTaskTitle: "Fix the thing" });
+  assert.equal(computeTaskContentHash(unlinkedTask), computeTaskContentHash(linkedTask));
+});
+
 test("pruneHashes (G2) keeps a hash for a task that fell out of the revisit window, as long as the task itself still exists — pruning by window is exactly the bug that made every old task look permanently changed", () => {
   const oldTask = makeTask("old", 0, 10);
   const recentTask = makeTask("recent", 100000, 100010);

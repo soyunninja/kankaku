@@ -11,7 +11,7 @@ import {
 import type { HubEntryContext } from "../src/domain/hub-entry.ts";
 import type { TaskView } from "../src/domain/task-view.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
-import type { Client, Project } from "../src/domain/work-target.ts";
+import type { Client, HubTask, Project } from "../src/domain/work-target.ts";
 
 function iso(secondsFromEpoch: number): string {
   return new Date(secondsFromEpoch * 1000).toISOString();
@@ -68,9 +68,13 @@ const unassigned: Client = { id: "client-unassigned", name: "Sin determinar", co
 const project: Project = { id: "project-1", name: "Portal", clientId: "client-1", repoPaths: [], active: true };
 const otherClientProject: Project = { id: "project-2", name: "Other", clientId: "client-other", repoPaths: [], active: true };
 
+const hubTask: HubTask = { id: "task-1", title: "Fix the thing", projectId: "project-1", status: "open" };
+const otherProjectTask: HubTask = { id: "task-2", title: "Cross-project", projectId: "project-2", status: "open" };
+
 const ctx: HubEntryContext = {
   clients: [client, unassigned],
   projects: [project, otherClientProject],
+  tasks: [hubTask, otherProjectTask],
   machine: "laptop",
   promptMode: "none",
   agent: "pi",
@@ -81,45 +85,82 @@ const ctx: HubEntryContext = {
 
 test("resolveTaskAssignment links a task whose clientId still exists in the catalog", () => {
   const task = makeTask({ clientId: "client-1", clientName: "Acme", projectId: "project-1", projectName: "Portal" });
-  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects);
-  assert.deepEqual(assignment, { clientId: "client-1", projectId: "project-1", legacyClientLabel: "", routedToUnassigned: false });
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
+  assert.deepEqual(assignment, { clientId: "client-1", projectId: "project-1", hubTaskId: "", legacyClientLabel: "", routedToUnassigned: false });
 });
 
 test("resolveTaskAssignment drops the project relation when it belongs to a different client", () => {
   const task = makeTask({ clientId: "client-1", projectId: "project-2" });
-  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects);
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
   assert.equal(assignment.projectId, "");
   assert.equal(assignment.clientId, "client-1");
 });
 
 test("resolveTaskAssignment drops the project relation when the project no longer exists", () => {
   const task = makeTask({ clientId: "client-1", projectId: "does-not-exist" });
-  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects);
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
   assert.equal(assignment.projectId, "");
 });
 
 test("resolveTaskAssignment routes a task with no clientId to the unassigned client, using the free-text client label", () => {
   const task = makeTask({ client: "cajamar" });
-  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects);
-  assert.deepEqual(assignment, { clientId: "client-unassigned", projectId: "", legacyClientLabel: "cajamar", routedToUnassigned: true });
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
+  assert.deepEqual(assignment, {
+    clientId: "client-unassigned",
+    projectId: "",
+    hubTaskId: "",
+    legacyClientLabel: "cajamar",
+    routedToUnassigned: true,
+  });
 });
 
 test("resolveTaskAssignment routes a task whose clientId no longer resolves to the unassigned client", () => {
   const task = makeTask({ clientId: "deleted-client", clientName: "Old Name" });
-  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects);
-  assert.deepEqual(assignment, { clientId: "client-unassigned", projectId: "", legacyClientLabel: "Old Name", routedToUnassigned: true });
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
+  assert.deepEqual(assignment, {
+    clientId: "client-unassigned",
+    projectId: "",
+    hubTaskId: "",
+    legacyClientLabel: "Old Name",
+    routedToUnassigned: true,
+  });
 });
 
 test("resolveTaskAssignment prefers the free-text client label over clientName when both are present", () => {
   const task = makeTask({ client: "cjamar", clientName: "Old Name" });
-  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects);
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
   assert.equal(assignment.legacyClientLabel, "cjamar");
 });
 
 test("resolveTaskAssignment leaves legacyClientLabel empty when neither client nor clientName is present", () => {
   const task = makeTask({});
-  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects);
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
   assert.equal(assignment.legacyClientLabel, "");
+});
+
+test("resolveTaskAssignment links hubTaskId when the task's hubTaskId resolves to a task of the assigned project", () => {
+  const task = makeTask({ clientId: "client-1", projectId: "project-1", hubTaskId: "task-1" });
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
+  assert.equal(assignment.hubTaskId, "task-1");
+});
+
+test("resolveTaskAssignment drops hubTaskId when the hub task belongs to a different project than the assigned one", () => {
+  const task = makeTask({ clientId: "client-1", projectId: "project-1", hubTaskId: "task-2" });
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
+  assert.equal(assignment.hubTaskId, "");
+});
+
+test("resolveTaskAssignment drops hubTaskId when the hub task id no longer exists", () => {
+  const task = makeTask({ clientId: "client-1", projectId: "project-1", hubTaskId: "does-not-exist" });
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
+  assert.equal(assignment.hubTaskId, "");
+});
+
+test("resolveTaskAssignment routes hubTaskId to empty when the client falls to unassigned, even with a valid hubTaskId", () => {
+  const task = makeTask({ hubTaskId: "task-1" });
+  const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
+  assert.equal(assignment.hubTaskId, "");
+  assert.equal(assignment.routedToUnassigned, true);
 });
 
 test("applyPromptPrivacy: none omits the prompt entirely", () => {
@@ -181,7 +222,7 @@ test("buildTaskEntryCreatePayload maps every field, in the contract's date forma
 
 test("buildTaskEntryCreatePayload omits agent_version/plugin_version when not known, but always sends agent/plugin", () => {
   const task = makeTask({});
-  const payload = buildTaskEntryCreatePayload(task, { clients: [], projects: [], machine: "laptop", promptMode: "none", agent: "pi", plugin: "kankaku" });
+  const payload = buildTaskEntryCreatePayload(task, { clients: [], projects: [], tasks: [], machine: "laptop", promptMode: "none", agent: "pi", plugin: "kankaku" });
   assert.equal(payload.agent, "pi");
   assert.equal(payload.plugin, "kankaku");
   assert.equal("agent_version" in payload, false);
@@ -235,10 +276,22 @@ test("computeSubagentLinkage: unlinked when there are fewer joined children than
 
 test("buildTaskEntryCreatePayload sends empty relation strings, not omitted or null, when unresolved", () => {
   const task = makeTask({});
-  const payload = buildTaskEntryCreatePayload(task, { clients: [], projects: [], machine: "laptop", promptMode: "none", agent: "pi", plugin: "kankaku" });
+  const payload = buildTaskEntryCreatePayload(task, { clients: [], projects: [], tasks: [], machine: "laptop", promptMode: "none", agent: "pi", plugin: "kankaku" });
   assert.equal(payload.client, "");
   assert.equal(payload.project, "");
   assert.equal(payload.task, "");
+});
+
+test("buildTaskEntryCreatePayload sends task: <id> when the task's hubTaskId resolves against ctx.tasks", () => {
+  const task = makeTask({ clientId: "client-1", projectId: "project-1", hubTaskId: "task-1" });
+  const payload = buildTaskEntryCreatePayload(task, ctx);
+  assert.equal(payload.task, "task-1");
+});
+
+test("buildTaskEntryUpdatePayload never sends task, even when the TaskView carries a valid hubTaskId", () => {
+  const task = makeTask({ clientId: "client-1", projectId: "project-1", hubTaskId: "task-1" });
+  const update = buildTaskEntryUpdatePayload(task, ctx);
+  assert.equal(Object.prototype.hasOwnProperty.call(update, "task"), false);
 });
 
 test("buildTaskEntryCreatePayload sends session_id/session_name as empty strings, not undefined, when absent", () => {

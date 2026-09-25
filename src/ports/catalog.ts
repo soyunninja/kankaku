@@ -1,11 +1,13 @@
-import type { Client, Project } from "../domain/work-target.ts";
+import type { Client, HubTask, Project } from "../domain/work-target.ts";
 
-/** A cached read of the hub's clients/projects, plus when and against which hub URL it was fetched. */
+/** A cached read of the hub's clients/projects/tasks, plus when and against which hub URL it was fetched. */
 export interface CatalogSnapshot {
   fetchedAt: number;
   url: string;
   clients: Client[];
   projects: Project[];
+  /** Optional because a cache written by an older build (before hub task linking) never had this field; a missing value reads as "no tasks known yet." */
+  tasks?: HubTask[];
 }
 
 /**

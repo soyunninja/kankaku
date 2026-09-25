@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { formatWorkTargetLabel, resolveWorkTarget, resolveWorkTargetSource } from "../src/domain/work-target.ts";
-import type { Client, Project } from "../src/domain/work-target.ts";
+import type { Client, HubTask, Project } from "../src/domain/work-target.ts";
 
 const ACME: Client = { id: "c-acme", name: "Acme", code: "acme", active: true };
 const GLOBEX: Client = { id: "c-globex", name: "Globex", code: "globex", active: true };
@@ -166,4 +166,88 @@ test("formatWorkTargetLabel shows client only, or client and project", () => {
     formatWorkTargetLabel({ clientId: "c", clientCode: "acme", clientName: "Acme", projectId: "p", projectName: "Portal" }),
     "Acme · Portal",
   );
+});
+
+test("formatWorkTargetLabel appends the hub task title when set", () => {
+  assert.equal(
+    formatWorkTargetLabel({
+      clientId: "c",
+      clientCode: "acme",
+      clientName: "Acme",
+      projectId: "p",
+      projectName: "Portal",
+      hubTaskId: "t-1",
+      hubTaskTitle: "Fix the thing",
+    }),
+    "Acme · Portal › Fix the thing",
+  );
+});
+
+const FIX_THE_THING: HubTask = { id: "t-1", title: "Fix the thing", projectId: "p-portal", status: "open" };
+const OTHER_PROJECT_TASK: HubTask = { id: "t-2", title: "Cross-project", projectId: "p-api", status: "open" };
+const TASKS = [FIX_THE_THING, OTHER_PROJECT_TASK];
+
+test("a session candidate's hubTaskId is kept when the task exists and belongs to the resolved project", () => {
+  const target = resolveWorkTarget({
+    session: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-1" },
+    cwd: "/nowhere",
+    clients: CLIENTS,
+    projects: PROJECTS,
+    tasks: TASKS,
+  });
+
+  assert.equal(target?.hubTaskId, "t-1");
+  assert.equal(target?.hubTaskTitle, "Fix the thing");
+});
+
+test("a session candidate's hubTaskId is dropped when the task belongs to a different project", () => {
+  const target = resolveWorkTarget({
+    session: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-2" },
+    cwd: "/nowhere",
+    clients: CLIENTS,
+    projects: PROJECTS,
+    tasks: TASKS,
+  });
+
+  assert.equal(target?.projectId, "p-portal");
+  assert.equal(target?.hubTaskId, undefined);
+  assert.equal(target?.hubTaskTitle, undefined);
+});
+
+test("a session candidate's hubTaskId is dropped when the task id no longer exists", () => {
+  const target = resolveWorkTarget({
+    session: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "does-not-exist" },
+    cwd: "/nowhere",
+    clients: CLIENTS,
+    projects: PROJECTS,
+    tasks: TASKS,
+  });
+
+  assert.equal(target?.hubTaskId, undefined);
+});
+
+test("a target with no project never carries a hubTaskId, even if the candidate has one", () => {
+  const target = resolveWorkTarget({
+    session: { clientId: "c-acme", hubTaskId: "t-1" },
+    cwd: "/nowhere",
+    clients: CLIENTS,
+    projects: PROJECTS,
+    tasks: TASKS,
+  });
+
+  assert.equal(target?.projectId, undefined);
+  assert.equal(target?.hubTaskId, undefined);
+});
+
+test("a task of any status (including done) still resolves", () => {
+  const done: HubTask = { id: "t-3", title: "Done task", projectId: "p-portal", status: "done" };
+  const target = resolveWorkTarget({
+    session: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-3" },
+    cwd: "/nowhere",
+    clients: CLIENTS,
+    projects: PROJECTS,
+    tasks: [done],
+  });
+
+  assert.equal(target?.hubTaskId, "t-3");
 });

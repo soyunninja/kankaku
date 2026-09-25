@@ -17,6 +17,7 @@ import type { WorkRecord } from "../src/domain/work-record.ts";
 const CTX: HubEntryContext = {
   clients: [],
   projects: [],
+  tasks: [],
   machine: "test-machine",
   promptMode: "none",
   agent: "pi",

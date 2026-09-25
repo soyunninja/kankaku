@@ -168,6 +168,10 @@ export interface WorkRecordMetadata {
   projectId?: string;
   /** Hub project display name, denormalised alongside `projectId`. */
   projectName?: string;
+  /** Hub `tasks` record id linked for this session (`/kankaku task pick`), when one is active. See `domain/work-target.ts#HubTask`. */
+  hubTaskId?: string;
+  /** Hub task title, denormalised alongside `hubTaskId`. */
+  hubTaskTitle?: string;
   /** This machine's hostname, or `KANKAKU_MACHINE`, set only when the hub is configured. */
   machine?: string;
   /**
@@ -267,6 +271,8 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     (record["clientName"] === undefined || typeof record["clientName"] === "string") &&
     (record["projectId"] === undefined || typeof record["projectId"] === "string") &&
     (record["projectName"] === undefined || typeof record["projectName"] === "string") &&
+    (record["hubTaskId"] === undefined || typeof record["hubTaskId"] === "string") &&
+    (record["hubTaskTitle"] === undefined || typeof record["hubTaskTitle"] === "string") &&
     (record["machine"] === undefined || typeof record["machine"] === "string") &&
     (record["roleConfidence"] === undefined || record["roleConfidence"] === "uncertain") &&
     (record["orchestratorRef"] === undefined || isOrchestratorRef(record["orchestratorRef"])) &&

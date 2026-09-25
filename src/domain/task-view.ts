@@ -36,6 +36,10 @@ export interface TaskView {
   projectId?: string;
   /** Hub project display name, from the orchestrator record only. */
   projectName?: string;
+  /** Hub task record id, from the orchestrator record only. See `domain/work-target.ts#HubTask`. */
+  hubTaskId?: string;
+  /** Hub task title, from the orchestrator record only. */
+  hubTaskTitle?: string;
   /**
    * Per-tag total milliseconds across the orchestrator and every subagent,
    * summed rather than unioned: unlike `wallMs`, segment intervals are not
@@ -368,6 +372,8 @@ function buildTaskView(orchestrator: WorkRecord, subagents: WorkRecord[]): TaskV
     ...(orchestrator.clientName !== undefined ? { clientName: orchestrator.clientName } : {}),
     ...(orchestrator.projectId !== undefined ? { projectId: orchestrator.projectId } : {}),
     ...(orchestrator.projectName !== undefined ? { projectName: orchestrator.projectName } : {}),
+    ...(orchestrator.hubTaskId !== undefined ? { hubTaskId: orchestrator.hubTaskId } : {}),
+    ...(orchestrator.hubTaskTitle !== undefined ? { hubTaskTitle: orchestrator.hubTaskTitle } : {}),
     project: orchestrator.project,
     prompt: orchestrator.prompt,
     startedAt: orchestrator.startedAt,

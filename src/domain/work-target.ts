@@ -32,6 +32,19 @@ export interface Project {
   active: boolean;
 }
 
+/**
+ * A hub `tasks` row: something kankaku can link a session's `task_entries`
+ * row to (`task_entries.task`), never create. See `domain/hub-entry.ts` for
+ * the create-only assignment rule this feeds.
+ */
+export interface HubTask {
+  id: string;
+  title: string;
+  projectId: string;
+  status: "open" | "doing" | "done";
+  externalRef?: string;
+}
+
 export interface WorkTarget {
   clientId: string;
   clientCode: string;
@@ -39,12 +52,23 @@ export interface WorkTarget {
   projectId?: string;
   projectCode?: string;
   projectName?: string;
+  /** Hub `tasks` record id, kept only when it belongs to `projectId`. See {@link resolveWorkTarget}. */
+  hubTaskId?: string;
+  /** Denormalised alongside `hubTaskId` for display. */
+  hubTaskTitle?: string;
 }
 
 /** ids picked from the session, or from the project's `.kankaku/config.json`. */
 export interface WorkTargetCandidate {
   clientId: string;
   projectId?: string;
+  /**
+   * A hub task the user picked for this session (`/kankaku task pick`).
+   * Only ever set on the session-level candidate — the project config file
+   * and `repoPaths` matching never carry one (task linking is session-only,
+   * see AGENTS.md).
+   */
+  hubTaskId?: string;
 }
 
 /**
@@ -63,6 +87,8 @@ export interface ResolveWorkTargetInput {
   cwd: string;
   clients: Client[];
   projects: Project[];
+  /** The hub's known tasks, to validate a candidate's `hubTaskId` against. Defaults to `[]` so existing callers compile unchanged. */
+  tasks?: HubTask[];
 }
 
 export type WorkTargetSourceName = "session" | "project" | "repoPaths";
@@ -81,7 +107,18 @@ function findUsableProject(projects: Project[], projectId: string, clientId: str
   return project;
 }
 
-function buildTarget(client: Client, project: Project | undefined): WorkTarget {
+/**
+ * A hub task usable as a link target: exists and belongs to `projectId`.
+ * Any {@link HubTask.status} is accepted — a task marked `done` mid-session
+ * keeps linking — only the project match matters here.
+ */
+function findUsableTask(tasks: HubTask[], taskId: string, projectId: string): HubTask | undefined {
+  const task = tasks.find((candidate) => candidate.id === taskId);
+  if (!task || task.projectId !== projectId) return undefined;
+  return task;
+}
+
+function buildTarget(client: Client, project: Project | undefined, task: HubTask | undefined): WorkTarget {
   return {
     clientId: client.id,
     clientCode: client.code,
@@ -93,6 +130,7 @@ function buildTarget(client: Client, project: Project | undefined): WorkTarget {
           projectName: project.name,
         }
       : {}),
+    ...(task !== undefined ? { hubTaskId: task.id, hubTaskTitle: task.title } : {}),
   };
 }
 
@@ -101,13 +139,17 @@ function buildTarget(client: Client, project: Project | undefined): WorkTarget {
  * file) into a target, or `undefined` when the client id does not resolve
  * to a usable client. A projectId that does not resolve to a usable
  * project of that client is dropped — the client-only target is still
- * returned — rather than failing the whole candidate.
+ * returned — rather than failing the whole candidate. A `hubTaskId` is
+ * kept only when it resolves to a task of the resolved project; a target
+ * with no project never carries one.
  */
-function resolveCandidate(candidate: WorkTargetCandidate, clients: Client[], projects: Project[]): WorkTarget | undefined {
+function resolveCandidate(candidate: WorkTargetCandidate, clients: Client[], projects: Project[], tasks: HubTask[]): WorkTarget | undefined {
   const client = findUsableClient(clients, candidate.clientId);
   if (!client) return undefined;
   const project = candidate.projectId !== undefined ? findUsableProject(projects, candidate.projectId, client.id) : undefined;
-  return buildTarget(client, project);
+  const task =
+    project !== undefined && candidate.hubTaskId !== undefined ? findUsableTask(tasks, candidate.hubTaskId, project.id) : undefined;
+  return buildTarget(client, project, task);
 }
 
 /** The longest-matching active project whose `repoPaths` contains `cwd`, exactly or as an ancestor directory. */
@@ -139,10 +181,11 @@ function isCwdWithin(cwd: string, repoPath: string): boolean {
 /** Which source (if any) {@link resolveWorkTarget} would use, computed independently so callers can display it. */
 export function resolveWorkTargetSource(input: ResolveWorkTargetInput): WorkTargetSourceName | undefined {
   const { session } = input;
+  const tasks = input.tasks ?? [];
   if (session === "skipped") return undefined;
-  if (session !== undefined && resolveCandidate(session, input.clients, input.projects) !== undefined) return "session";
+  if (session !== undefined && resolveCandidate(session, input.clients, input.projects, tasks) !== undefined) return "session";
 
-  if (input.project !== undefined && resolveCandidate(input.project, input.clients, input.projects) !== undefined) return "project";
+  if (input.project !== undefined && resolveCandidate(input.project, input.clients, input.projects, tasks) !== undefined) return "project";
 
   const matched = matchByRepoPath(input.cwd, input.projects);
   if (matched && findUsableClient(input.clients, matched.clientId)) return "repoPaths";
@@ -158,28 +201,34 @@ export function resolveWorkTargetSource(input: ResolveWorkTargetInput): WorkTarg
  */
 export function resolveWorkTarget(input: ResolveWorkTargetInput): WorkTarget | undefined {
   const { session } = input;
+  const tasks = input.tasks ?? [];
   if (session === "skipped") return undefined;
 
   if (session !== undefined) {
-    const resolved = resolveCandidate(session, input.clients, input.projects);
+    const resolved = resolveCandidate(session, input.clients, input.projects, tasks);
     if (resolved) return resolved;
   }
 
   if (input.project !== undefined) {
-    const resolved = resolveCandidate(input.project, input.clients, input.projects);
+    const resolved = resolveCandidate(input.project, input.clients, input.projects, tasks);
     if (resolved) return resolved;
   }
 
   const matched = matchByRepoPath(input.cwd, input.projects);
   if (matched) {
     const client = findUsableClient(input.clients, matched.clientId);
-    if (client) return buildTarget(client, matched);
+    if (client) return buildTarget(client, matched, undefined);
   }
 
   return undefined;
 }
 
-/** `<clientName>` or `<clientName> · <projectName>` — the display label used by the status bar and the "remember" prompt. */
+/**
+ * `<clientName>`, `<clientName> · <projectName>`, or with a linked hub task
+ * appended as `... › <hubTaskTitle>` — the display label used by the
+ * status bar and the "remember" prompt.
+ */
 export function formatWorkTargetLabel(target: WorkTarget): string {
-  return target.projectName ? `${target.clientName} · ${target.projectName}` : target.clientName;
+  const base = target.projectName ? `${target.clientName} · ${target.projectName}` : target.clientName;
+  return target.hubTaskTitle ? `${base} › ${target.hubTaskTitle}` : base;
 }

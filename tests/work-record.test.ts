@@ -113,6 +113,16 @@ test("isWorkRecord rejects a record with a non-string hub metadata field", () =>
   assert.equal(isWorkRecord({ ...makeRecord(), machine: 42 }), false);
 });
 
+test("isWorkRecord accepts a record with string hubTaskId/hubTaskTitle, and one without them", () => {
+  assert.equal(isWorkRecord(makeRecord({ hubTaskId: "t-1", hubTaskTitle: "Fix the thing" })), true);
+  assert.equal(isWorkRecord(makeRecord()), true);
+});
+
+test("isWorkRecord rejects a non-string hubTaskId or hubTaskTitle", () => {
+  assert.equal(isWorkRecord({ ...makeRecord(), hubTaskId: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), hubTaskTitle: 42 }), false);
+});
+
 test("SUBAGENT-REQ-016: isWorkRecord accepts a record with a subagent-profile 'profile' field, without a schema bump", () => {
   assert.equal(isWorkRecord(makeRecord({ profile: "gentle-pi" })), true);
 });

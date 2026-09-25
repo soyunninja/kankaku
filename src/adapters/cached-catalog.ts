@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Client, Project } from "../domain/work-target.ts";
+import type { Client, HubTask, Project } from "../domain/work-target.ts";
 import type { Clock } from "../ports/clock.ts";
 import type { Catalog, CatalogSnapshot } from "../ports/catalog.ts";
 import { OWNER_DIR_MODE, OWNER_FILE_MODE } from "./file-modes.ts";
@@ -16,6 +16,10 @@ function isProjectArray(value: unknown): value is Project[] {
   return Array.isArray(value) && value.every((item) => item && typeof item === "object" && typeof (item as Project).id === "string");
 }
 
+function isHubTaskArray(value: unknown): value is HubTask[] {
+  return Array.isArray(value) && value.every((item) => item && typeof item === "object" && typeof (item as HubTask).id === "string");
+}
+
 function isCatalogSnapshot(value: unknown): value is CatalogSnapshot {
   if (!value || typeof value !== "object") return false;
   const record = value as Record<string, unknown>;
@@ -23,7 +27,8 @@ function isCatalogSnapshot(value: unknown): value is CatalogSnapshot {
     typeof record["fetchedAt"] === "number" &&
     typeof record["url"] === "string" &&
     isClientArray(record["clients"]) &&
-    isProjectArray(record["projects"])
+    isProjectArray(record["projects"]) &&
+    (record["tasks"] === undefined || isHubTaskArray(record["tasks"]))
   );
 }
 
@@ -35,8 +40,13 @@ export interface CachedCatalogDeps {
   clock: Clock;
   /** Cache TTL in ms. Defaults to 6 hours. */
   ttlMs?: number;
-  /** Fetch a fresh `{ clients, projects }` pair, e.g. `createPocketBaseCatalogFetcher(...)`. */
-  fetchCatalog: (signal?: AbortSignal) => Promise<{ clients: Client[]; projects: Project[] }>;
+  /**
+   * Fetch a fresh `{ clients, projects, tasks }` triple, e.g.
+   * `createPocketBaseCatalogFetcher(...)`. `tasks` is optional here (unlike
+   * on the real PocketBase fetcher) so a test double that only cares about
+   * clients/projects keeps compiling unchanged.
+   */
+  fetchCatalog: (signal?: AbortSignal) => Promise<{ clients: Client[]; projects: Project[]; tasks?: HubTask[] }>;
 }
 
 /**
@@ -73,8 +83,14 @@ export class CachedCatalog implements Catalog {
 
   async refresh(signal?: AbortSignal): Promise<CatalogSnapshot | undefined> {
     try {
-      const { clients, projects } = await this.deps.fetchCatalog(signal);
-      const snapshot: CatalogSnapshot = { fetchedAt: this.deps.clock.now(), url: this.deps.url, clients, projects };
+      const { clients, projects, tasks } = await this.deps.fetchCatalog(signal);
+      const snapshot: CatalogSnapshot = {
+        fetchedAt: this.deps.clock.now(),
+        url: this.deps.url,
+        clients,
+        projects,
+        ...(tasks !== undefined ? { tasks } : {}),
+      };
       this.writeDisk(snapshot);
       this.memo = snapshot;
       this.memoized = true;
