@@ -227,8 +227,9 @@ Read `README.md` for behaviour and the record schema before changing code.
   (`adapters/session-dir.ts#readNonDefaultSessionDir`, a guarded duck-typed
   call — `usesDefaultSessionDir` is not part of the `ReadonlySessionManager`
   type `ctx.sessionManager` carries, so an older pi version degrades to "no
-  sessionDir," never a crash). Local-only: never sent to the hub today (no
-  field for it yet — see README "Roadmap" for the recommended migration).
+  sessionDir," never a crash). Sent to the hub as `session_dir` on every
+  sync (a measurement field, present on create and update — see README
+  "Hub (PocketBase)" > "Sync" > "Session directory").
 - `client` (billing target) resolves session > `KANKAKU_CLIENT` env >
   project `config.json`, via the pure `domain/client-label.ts#resolveClient`;
   a subagent record never carries its own `client` — only the task view
