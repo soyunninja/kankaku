@@ -18,6 +18,13 @@ Read `README.md` for behaviour and the record schema before changing code.
   status, `session-client.ts` for the session billing-client override,
   `session-target.ts` and `target-picker.ts` for the hub client/project
   picker, and `kankaku-command.ts` for the `/kankaku` command), the
+  `/kankaku` overlay panel (`adapters/panel/`: the shell
+  `kankaku-panel.ts`, `panel-items.ts`, `panel-lines.ts`, `panel-theme.ts`,
+  and one file per section under `panel/screens/`, driven by the pure,
+  never-publicly-exported `domain/panel-model.ts` for its navigation/row
+  models; `adapters/report-views.ts` and `adapters/hub-actions.ts` are
+  shared between the panel's screens and `kankaku-command.ts`'s own
+  subcommand handlers so neither ever drifts from the other), the
   filesystem (`jsonl-work-log.ts`, `lazy-jsonl-work-log.ts`,
   `project-config.ts`, `cached-catalog.ts`, `hub-credentials.ts`,
   `sync-state-store.ts`), version resolution (`agent-info.ts`, pi's and

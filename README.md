@@ -687,17 +687,53 @@ the future, this is the signal that would surface it.
 
 ## The `/kankaku` command
 
-Run `/kankaku` inside pi to see today's totals (work, waiting, record count)
-per role, plus a union-based tasks segment. Each totals line also shows
-`cache hit NN%` when tokens were recorded: the share of prompt input tokens
-served from the provider's prompt cache, cache reads over input plus cache
-reads plus cache writes; the segment is omitted, not shown as `0%`, when no
-tokens were recorded. In the interactive TUI the report
-is appended to the chat transcript as a durable card that is never sent to
-the LLM; without a UI (print or RPC mode) it falls back to a notification.
-Arguments are whitespace-separated and order-insensitive:
+`/kankaku` with no arguments, run inside pi's TUI, opens an overlay panel
+modelled on pi's own `/settings` (the same pi-tui `SettingsList`/
+`SelectList` widgets, the same keys) from which every kankaku view and
+action is reachable:
 
-- `/kankaku` — today's role totals and tasks segment, each with its estimated cost.
+- **Target** — billing client, project, hub task, and the legacy label
+  (see "Billing labels" and "Hub (PocketBase)" below). The Task row lists
+  the open/doing hub tasks of the current project; picking one links the
+  session, exactly like `/kankaku task pick` below — **session-only**,
+  never persisted (see "Linking to a hub task").
+- **Report** — today/all totals, tasks, sessions, clients, and projects:
+  the same five views `/kankaku`'s subcommands produce.
+- **Sync** (hub only) — status, sync now, sync all, backfill, and a
+  catalog refresh.
+- **Export** — write today's or every task as csv/json.
+- **Doctor** — orphan/uncertain subagent counts and ancestor-detection
+  availability.
+- **About** — versions, the resolved `KANKAKU_DIR`, the hub URL, and every
+  env-only setting, read-only.
+
+Keys: `↑↓` move, `Enter` open a section or select a value, `Esc` go back
+(or close the panel at the root), `q` close from anywhere. Mouse: the
+footer hints and list rows are clickable, but only in pi's fullscreen
+mode — pi does not dispatch mouse events in its regular (non-fullscreen)
+mode, so there the panel is keyboard-only.
+
+Every subcommand below is unchanged, and is exactly what headless (print
+or RPC) mode still uses — `/kankaku` there keeps showing today's totals
+directly, never the panel, since there is no UI to open one in. Run
+`/kankaku <subcommand>` (with arguments) in the TUI to skip the panel and
+go straight to that subcommand's output, exactly as before the panel
+existed.
+
+Plain `/kankaku` (headless, or any subcommand below) shows today's totals
+(work, waiting, record count) per role, plus a union-based tasks segment.
+Each totals line also shows `cache hit NN%` when tokens were recorded: the
+share of prompt input tokens served from the provider's prompt cache, cache
+reads over input plus cache reads plus cache writes; the segment is
+omitted, not shown as `0%`, when no tokens were recorded. In the
+interactive TUI the report is appended to the chat transcript as a durable
+card that is never sent to the LLM; without a UI (print or RPC mode) it
+falls back to a notification. Arguments are whitespace-separated and
+order-insensitive:
+
+- `/kankaku` (headless only — the TUI opens the panel instead, whose
+  Report screen defaults to the same view) — today's role totals and
+  tasks segment, each with its estimated cost.
 - `/kankaku all` — same, but across every record.
 - `/kankaku tasks` — one line per task (time, union wall/work, cost,
   subagent count, truncated prompt) for the **current pi session**. Add `all` for
@@ -834,6 +870,12 @@ task view exposes it from the orchestrator record only.
 The status bar shows `💼 <client> · <project>` (or just `💼 <client>` without
 a project) in place of the legacy client label, both idle and during a run.
 
+Mid-session, the `/kankaku` panel's Target screen (see "The `/kankaku`
+command" above) is the interactive way to change the client or project
+without going through `/kankaku target pick`'s picker dialog — it edits the
+same session-level target, applies through the same `SessionTarget`, and
+has its own "Remember" row for `<KANKAKU_DIR>/config.json`.
+
 ### Linking to a hub task
 
 `/kankaku task` (or `/kankaku task pick`) links the current session to one
@@ -860,6 +902,12 @@ records never carry a linked task, exactly like `clientId`/`projectId` —
 the task view exposes it from the orchestrator record only, and
 `formatWorkTargetLabel` appends it to the status-bar/report label as
 `<client> · <project> › <task title>`.
+
+The `/kankaku` panel's Target screen's Task row is the interactive
+equivalent of `/kankaku task pick`/`clear`: it lists the same open/doing
+tasks, applies the link through the same `SessionTarget.setTask`, and
+stays just as session-only — picking a task there is never persisted to
+`config.json` either.
 
 ### Caching and offline behaviour
 

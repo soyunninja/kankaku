@@ -3,6 +3,24 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **The `/kankaku` overlay panel**: `/kankaku` with no arguments, in the
+  TUI, now opens a settings-like panel (pi-tui's own `SettingsList`/
+  `SelectList` widgets, the same keys pi's `/settings` uses) with sections
+  for Target, Report, Sync (hub only), Export, Doctor and About — every
+  existing view and action reachable from one place, keyboard-driven
+  always and mouse-clickable in pi's fullscreen mode. Every subcommand
+  below stays unchanged and is what headless (print/RPC) mode still uses.
+  See README "The `/kankaku` command". Internally, the report views
+  (`adapters/report-views.ts`), the doctor line-building
+  (`kankaku-command.ts#buildDoctorLines`), and the hub-facing
+  sync/backfill/catalog line-building (`adapters/hub-actions.ts`, new)
+  were each extracted into one shared function so the panel and the
+  `/kankaku` subcommands can never drift from each other.
+
 ## 0.6.5 — 2026-09-25
 
 ### Added
