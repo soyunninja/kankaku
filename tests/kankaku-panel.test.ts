@@ -100,7 +100,7 @@ test("root renders the panel title and root footer hints (esc close, no q)", () 
   const component = getComponent()! as TestComponent;
 
   const lines = component.render(80);
-  assert.ok(lines[0]!.startsWith("╭─ kankaku"));
+  assert.ok(lines[0]!.startsWith("╭─ >_ kankaku"));
   const footer = lines.at(-2)!;
   assert.match(footer, /↑↓ move/);
   assert.match(footer, /enter open/);
@@ -117,7 +117,7 @@ test("the panel is drawn inside a rounded frame with one column of inner padding
   const lines = component.render(width);
 
   // Top border carries the title.
-  assert.ok(lines[0]!.startsWith("╭─ kankaku"));
+  assert.ok(lines[0]!.startsWith("╭─ >_ kankaku"));
   assert.ok(lines[0]!.endsWith("╮"));
 
   // Every line, including the borders, is exactly `width` columns wide.
@@ -165,7 +165,7 @@ test("a terminal narrower than 8 columns renders unframed instead of throwing", 
 
   assert.doesNotThrow(() => component.render(6));
   const lines = component.render(6);
-  assert.equal(lines[0], "kankaku");
+  assert.equal(lines[0], ">_ kankaku");
   assert.ok(!lines.some((line) => line.includes("╭") || line.includes("╮") || line.includes("╰") || line.includes("╯")));
 });
 
@@ -181,7 +181,7 @@ test("root menu omits hubOnly rows (sync) when the hub is not configured, in ord
   component.handleInput(DOWN); // target -> report
   component.handleInput(ENTER);
   const lines = component.render(80);
-  assert.ok(lines[0]!.startsWith("╭─ kankaku · Report"));
+  assert.ok(lines[0]!.startsWith("╭─ >_ kankaku · Report"));
   assert.equal(lines.some((line) => line.includes("report body")), true);
 });
 
@@ -196,14 +196,14 @@ test("enter on a root menu item pushes that screen; escape goes back to root (bo
   component.handleInput(DOWN); // target (topmost, no factory registered) -> report
   component.handleInput(ENTER);
   let lines = component.render(80);
-  assert.ok(lines[0]!.startsWith("╭─ kankaku · Report"));
+  assert.ok(lines[0]!.startsWith("╭─ >_ kankaku · Report"));
   const footer = lines.at(-2)!;
   assert.match(footer, /esc\/← back/);
   assert.match(footer, /q close/);
 
   component.handleInput(ESCAPE);
   lines = component.render(80);
-  assert.ok(lines[0]!.startsWith("╭─ kankaku "));
+  assert.ok(lines[0]!.startsWith("╭─ >_ kankaku "));
 });
 
 test("escape on a body with handleInput but no capture flag goes back; the shell never forwards it and never relies on the body's onCancel", () => {
@@ -218,7 +218,7 @@ test("escape on a body with handleInput but no capture flag goes back; the shell
 
   assert.deepEqual(report.inputs, []); // never forwarded
   // The shell popped the screen itself, not the body's own onCancel wiring.
-  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku "));
+  assert.ok(component.render(80)[0]!.startsWith("╭─ >_ kankaku "));
 });
 
 test("escape is forwarded to the body while PanelHost.setBodyCapturesEscape(true) is set, and does not navigate", () => {
@@ -235,7 +235,7 @@ test("escape is forwarded to the body while PanelHost.setBodyCapturesEscape(true
   component.handleInput(ESCAPE);
   assert.deepEqual(report.inputs, [ESCAPE]);
   // Still on "Report": the body captured escape, so the shell did not navigate.
-  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku · Report"));
+  assert.ok(component.render(80)[0]!.startsWith("╭─ >_ kankaku · Report"));
 });
 
 test("left arrow on a screen with no capture flag goes back, like escape", () => {
@@ -249,7 +249,7 @@ test("left arrow on a screen with no capture flag goes back, like escape", () =>
   component.handleInput(LEFT);
 
   assert.deepEqual(report.inputs, []);
-  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku "));
+  assert.ok(component.render(80)[0]!.startsWith("╭─ >_ kankaku "));
 });
 
 test("left arrow at root closes the panel, like escape", async () => {
@@ -274,7 +274,7 @@ test("left arrow with the capture flag set forwards the escape sequence to the b
 
   component.handleInput(LEFT);
   assert.deepEqual(report.inputs, [ESCAPE]); // translated to the escape sequence
-  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku · Report"));
+  assert.ok(component.render(80)[0]!.startsWith("╭─ >_ kankaku · Report"));
 });
 
 test("escape on a placeholder body with no handleInput (e.g. 'coming soon') pops the screen itself", () => {
@@ -286,7 +286,7 @@ test("escape on a placeholder body with no handleInput (e.g. 'coming soon') pops
   assert.ok(component.render(80).some((line) => line.includes("coming soon")));
 
   component.handleInput(ESCAPE);
-  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku "));
+  assert.ok(component.render(80)[0]!.startsWith("╭─ >_ kankaku "));
 });
 
 test("a screen with no registered factory renders a 'coming soon' placeholder", () => {
@@ -405,7 +405,7 @@ test("PanelHost.push/back/close let a registered screen navigate the panel itsel
 
   component.handleInput(ENTER); // hubConfigured:true -> first root item is "target"
   const host = target.getHost()!;
-  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku · Target"));
+  assert.ok(component.render(80)[0]!.startsWith("╭─ >_ kankaku · Target"));
 
   host.close();
   await donePromise;
@@ -424,7 +424,7 @@ test("down arrow moves the root selection before enter opens it", () => {
   component.handleInput(DOWN);
   component.handleInput(ENTER);
   const lines = component.render(80);
-  assert.ok(lines[0]!.startsWith("╭─ kankaku · Doctor"));
+  assert.ok(lines[0]!.startsWith("╭─ >_ kankaku · Doctor"));
 
   component.handleInput(UP); // no-op: doctor's stub body ignores unrecognised input, proving it was forwarded, not swallowed
   assert.deepEqual(doctor.inputs, [UP]);
@@ -473,7 +473,7 @@ test("createPanelComponent renders standalone, without going through openKankaku
   }) as TestComponent;
 
   const lines = component.render(80);
-  assert.ok(lines[0]!.startsWith("╭─ kankaku "));
+  assert.ok(lines[0]!.startsWith("╭─ >_ kankaku "));
 
   component.handleInput(ESCAPE);
   assert.equal(doneResult, undefined);

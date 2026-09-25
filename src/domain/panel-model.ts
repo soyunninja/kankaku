@@ -83,10 +83,13 @@ const SCREEN_TITLES: Record<Exclude<PanelScreenId, "root">, string> = {
   about: "About",
 };
 
-/** `kankaku` at root, `kankaku · <Screen>` on every other screen. */
+/** The prompt glyph that opens every panel title, the owner's mark for kankaku. */
+export const PANEL_TITLE_PREFIX = ">_";
+
+/** `>_ kankaku` at root, `>_ kankaku · <Screen>` on every other screen. */
 export function panelTitle(screen: PanelScreenId): string {
-  if (screen === "root") return "kankaku";
-  return `kankaku · ${SCREEN_TITLES[screen]}`;
+  if (screen === "root") return `${PANEL_TITLE_PREFIX} kankaku`;
+  return `${PANEL_TITLE_PREFIX} kankaku · ${SCREEN_TITLES[screen]}`;
 }
 
 /** One clickable/keyboard hint shown in the panel's footer. */

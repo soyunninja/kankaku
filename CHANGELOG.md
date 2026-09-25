@@ -8,7 +8,8 @@ follow semver. Dates are the day the version was cut.
 ### Changed
 
 - **The `/kankaku` panel is framed**: a rounded border in the theme's
-  `border` colour carries the panel title, with one column of inner
+  `border` colour carries the panel title (now `>_ kankaku`, with the
+  prompt glyph in front), with one column of inner
   padding, so the overlay reads as one card like pi's own bordered
   components. Mouse hit-testing in fullscreen accounts for the frame.
 

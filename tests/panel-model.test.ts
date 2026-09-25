@@ -75,15 +75,15 @@ test("navBack at root reports closed: true and leaves the stack unchanged", () =
   assert.deepEqual(nav.stack, ["root"]);
 });
 
-test("panelTitle renders 'kankaku' at root and 'kankaku · <Screen>' elsewhere", () => {
+test("panelTitle renders '>_ kankaku' at root and '>_ kankaku · <Screen>' elsewhere", () => {
   const expectations: Record<PanelScreenId, string> = {
-    root: "kankaku",
-    target: "kankaku · Target",
-    report: "kankaku · Report",
-    sync: "kankaku · Sync",
-    export: "kankaku · Export",
-    doctor: "kankaku · Doctor",
-    about: "kankaku · About",
+    root: ">_ kankaku",
+    target: ">_ kankaku · Target",
+    report: ">_ kankaku · Report",
+    sync: ">_ kankaku · Sync",
+    export: ">_ kankaku · Export",
+    doctor: ">_ kankaku · Doctor",
+    about: ">_ kankaku · About",
   };
   for (const [screen, title] of Object.entries(expectations)) {
     assert.equal(panelTitle(screen as PanelScreenId), title);
