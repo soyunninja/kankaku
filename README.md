@@ -114,7 +114,9 @@ remains valid.
 `clientId`, `clientName`, `projectId`, `projectName` and `machine` are only
 present once a hub is configured (see "Hub (PocketBase)"); every report and
 export written before this feature, or by a user without a hub, is
-unaffected.
+unaffected. `hubTaskId`/`hubTaskTitle` are set alongside them only when a
+hub task is linked to the session (`/kankaku task pick`) — see "Linking to
+a hub task" below.
 
 `sessionDir` is present only when pi's session manager reports a
 *non-default* session directory (`--session-dir`, or a resumed session
@@ -719,6 +721,9 @@ The following are available only when a hub is configured (see "Hub
   produced it. `/kankaku target pick` runs the picker again (works
   mid-session; the new target applies to records settled afterwards).
   `/kankaku target clear` clears the session-level target.
+- `/kankaku task` (or `/kankaku task pick`) — link this session to an
+  open/doing hub task of the effective project. `/kankaku task clear`
+  drops the link. See "Linking to a hub task" below.
 - `/kankaku catalog refresh` — force a catalog refresh and report the
   client/project counts.
 - `/kankaku projects` — one line per project (work/waiting/wall time, cost,
@@ -825,6 +830,33 @@ task view exposes it from the orchestrator record only.
 The status bar shows `💼 <client> · <project>` (or just `💼 <client>` without
 a project) in place of the legacy client label, both idle and during a run.
 
+### Linking to a hub task
+
+`/kankaku task` (or `/kankaku task pick`) links the current session to one
+of the effective project's existing hub `tasks` rows: a `ctx.ui.select`
+picker lists the project's `open`/`doing` tasks, sorted by title (colliding
+titles are disambiguated with the task's external reference, or its id).
+`/kankaku task clear` drops the link, keeping the rest of the session
+target. kankaku never creates a task from pi — this only links to one
+that already exists in the hub.
+
+The link is **session-only**: unlike `clientId`/`projectId`, it is never
+persisted to `<KANKAKU_DIR>/config.json`, and it is never asked for at
+`session_start` — you always link a task explicitly, with `/kankaku task`.
+Any target change (`/kankaku target pick`, `/kankaku target clear`, or the
+legacy `/kankaku client <name>`) drops the linked task, since a new client
+or project makes the old task's link meaningless. A task whose project no
+longer matches the effective project (e.g. after a target change or a
+reassignment in the hub) is also dropped by the domain resolver, never
+silently linked across projects. A task already marked `done` when linked
+keeps linking for the rest of the session — only the picker itself hides
+`done` tasks, so you cannot accidentally pick a closed one, but finishing
+the picked task in the hub mid-session does not break the link. Subagent
+records never carry a linked task, exactly like `clientId`/`projectId` —
+the task view exposes it from the orchestrator record only, and
+`formatWorkTargetLabel` appends it to the status-bar/report label as
+`<client> · <project> › <task title>`.
+
 ### Caching and offline behaviour
 
 The catalog (clients/projects) is cached machine-wide at
@@ -905,10 +937,13 @@ web app) can move a task from one client/project to another directly in
 PocketBase — for example, moving a "Sin determinar" row to its real
 client once you have identified it. A later re-sync of that same task
 **must never undo that**: on create kankaku sends the full row, including
-`client`/`project`/`legacy_client_label`; on every subsequent update it
-sends measurement fields only (`wall_ms`, `cost`, `status`, ...) and never
-touches assignment fields again. If you need kankaku itself to change a
-task's assignment, do it in the web app, not by re-syncing.
+`client`/`project`/`task`/`legacy_client_label`; on every subsequent update
+it sends measurement fields only (`wall_ms`, `cost`, `status`, ...) and
+never touches assignment fields again. `task` (the linked `tasks` relation)
+is create-only for the exact same reason: reassigning which task a row
+belongs to in the web app is never undone by a later sync. If you need
+kankaku itself to change a task's assignment, do it in the web app, not by
+re-syncing.
 
 **Historical ("Sin determinar") records.** A record with no `clientId`, or
 whose `clientId` no longer resolves in the catalog, is routed to the hub's
@@ -1252,8 +1287,10 @@ notice; import only `kankaku/domain`, `kankaku/ports`, or `kankaku/hub`.
   is not; the compiled entry points are today consumed as a library, not a
   binary.
 - Linking a `task_entries` row to an existing `tasks` record (phase 3 in the
-  hub's own data model) — kankaku never invents tasks; it would only ever
-  link to one created in the manager.
+  hub's own data model) has shipped: `/kankaku task pick`/`clear` (see
+  "Linking to a hub task" above). Creating a task from pi
+  (`/kankaku task new`) is deliberately not included — kankaku never
+  invents tasks; it only ever links to one already created in the manager.
 - Generic subagent detection (phase 6): 6a fixed the two correctness bugs
   described in "Subagents" above (a phantom-orchestrator double count; a
   gentle-pi cross-worktree child's work going missing). 6b added the

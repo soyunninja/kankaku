@@ -3,6 +3,18 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **Link a session to an existing hub task** (`/kankaku task pick`/`clear`):
+  the picker lists the effective project's open/doing `tasks` rows, the
+  link is session-only (never persisted to `config.json`, never prompted at
+  `session_start`, dropped by any target change), and `task_entries.task`
+  is sent on create only — reassigning the link in the hub's web app is
+  never undone by a later sync, exactly like `client`/`project`. kankaku
+  still never creates a task from pi. See README "Linking to a hub task".
+
 ## 0.6.0 — 2026-09-24
 
 ### Added

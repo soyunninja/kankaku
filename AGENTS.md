@@ -245,6 +245,14 @@ Read `README.md` for behaviour and the record schema before changing code.
   valid against `CLIENT_PATTERN`, or omitted rather than breaking the
   record) so every existing report/export keeps grouping correctly. See
   README "Hub (PocketBase)".
+- A linked hub task (`hubTaskId`/`hubTaskTitle`, `/kankaku task pick`) is
+  **session-only** — never written to `config.json`, never prompted at
+  `session_start` — and validated against the resolved project by the same
+  pure `domain/work-target.ts#resolveWorkTarget` (a task whose project no
+  longer matches is dropped, never linked across projects). Sync sends
+  `task_entries.task` on create only, exactly like `client`/`project` (see
+  `domain/hub-entry.ts#resolveTaskAssignment`) — a reassignment made in the
+  hub's web app is never undone by a later sync.
 - Hub sync (phase 2, `domain/hub-entry.ts`, `domain/sync-plan.ts`,
   `adapters/sync-runner.ts`) uploads `buildTasks` output — the aggregation
   rule (D6 in `kankaku-pocketbase-proposal.md`) is never re-implemented
