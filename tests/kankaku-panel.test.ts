@@ -3,6 +3,7 @@ import { test } from "node:test";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { createPanelComponent, openKankakuPanel } from "../src/adapters/panel/kankaku-panel.ts";
 import type { PanelHost } from "../src/adapters/panel/kankaku-panel.ts";
 import { DOWN, ENTER, ESCAPE, fakeTheme, fakeTui, UP } from "./helpers/panel-fakes.ts";
@@ -99,12 +100,73 @@ test("root renders the panel title and root footer hints (esc close, no q)", () 
   const component = getComponent()! as TestComponent;
 
   const lines = component.render(80);
-  assert.equal(lines[0], "kankaku");
-  const footer = lines.at(-1)!;
+  assert.ok(lines[0]!.startsWith("╭─ kankaku"));
+  const footer = lines.at(-2)!;
   assert.match(footer, /↑↓ move/);
   assert.match(footer, /enter open/);
   assert.match(footer, /esc close/);
   assert.doesNotMatch(footer, /q close/);
+});
+
+test("the panel is drawn inside a rounded frame with one column of inner padding", () => {
+  const { ctx, getComponent } = makeCtx();
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: {} });
+  const component = getComponent()! as TestComponent;
+
+  const width = 80;
+  const lines = component.render(width);
+
+  // Top border carries the title.
+  assert.ok(lines[0]!.startsWith("╭─ kankaku"));
+  assert.ok(lines[0]!.endsWith("╮"));
+
+  // Every line, including the borders, is exactly `width` columns wide.
+  for (const line of lines) {
+    assert.equal(visibleWidth(line), width);
+  }
+
+  // Every inner line (everything but the top/bottom border) is padded
+  // between the frame's left/right border and one column of padding.
+  for (const line of lines.slice(1, -1)) {
+    assert.ok(line.startsWith("│ "), `expected "${line}" to start with "│ "`);
+    assert.ok(line.endsWith(" │"), `expected "${line}" to end with " │"`);
+  }
+
+  // The last line is the bottom border.
+  const last = lines.at(-1)!;
+  assert.ok(last.startsWith("╰"));
+  assert.ok(last.endsWith("╯"));
+});
+
+test("the body is rendered at innerWidth = width - 4, not the full frame width", () => {
+  const { ctx, getComponent } = makeCtx();
+  let capturedWidth: number | undefined;
+  const factory = (_host: PanelHost): Component => ({
+    render: (w: number) => {
+      capturedWidth = w;
+      return ["report body"];
+    },
+    invalidate: () => {},
+  });
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: factory } });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(DOWN); // target (no factory) -> report
+  component.handleInput(ENTER);
+  component.render(80);
+
+  assert.equal(capturedWidth, 76);
+});
+
+test("a terminal narrower than 8 columns renders unframed instead of throwing", () => {
+  const { ctx, getComponent } = makeCtx();
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: {} });
+  const component = getComponent()! as TestComponent;
+
+  assert.doesNotThrow(() => component.render(6));
+  const lines = component.render(6);
+  assert.equal(lines[0], "kankaku");
+  assert.ok(!lines.some((line) => line.includes("╭") || line.includes("╮") || line.includes("╰") || line.includes("╯")));
 });
 
 test("root menu omits hubOnly rows (sync) when the hub is not configured, in order", () => {
@@ -119,8 +181,8 @@ test("root menu omits hubOnly rows (sync) when the hub is not configured, in ord
   component.handleInput(DOWN); // target -> report
   component.handleInput(ENTER);
   const lines = component.render(80);
-  assert.equal(lines[0], "kankaku · Report");
-  assert.equal(lines.some((line) => line === "report body"), true);
+  assert.ok(lines[0]!.startsWith("╭─ kankaku · Report"));
+  assert.equal(lines.some((line) => line.includes("report body")), true);
 });
 
 test("enter on a root menu item pushes that screen; escape goes back to root (body wires escape to host.back())", () => {
@@ -134,14 +196,14 @@ test("enter on a root menu item pushes that screen; escape goes back to root (bo
   component.handleInput(DOWN); // target (topmost, no factory registered) -> report
   component.handleInput(ENTER);
   let lines = component.render(80);
-  assert.equal(lines[0], "kankaku · Report");
-  const footer = lines.at(-1)!;
+  assert.ok(lines[0]!.startsWith("╭─ kankaku · Report"));
+  const footer = lines.at(-2)!;
   assert.match(footer, /esc back/);
   assert.match(footer, /q close/);
 
   component.handleInput(ESCAPE);
   lines = component.render(80);
-  assert.equal(lines[0], "kankaku");
+  assert.ok(lines[0]!.startsWith("╭─ kankaku "));
 });
 
 test("escape is forwarded to a body that implements handleInput; the shell never pops on its own", () => {
@@ -157,7 +219,7 @@ test("escape is forwarded to a body that implements handleInput; the shell never
   assert.deepEqual(report.inputs, [ESCAPE]);
   // The screen must still be "Report": the shell forwarded escape instead
   // of popping the stack itself.
-  assert.equal(component.render(80)[0], "kankaku · Report");
+  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku · Report"));
 });
 
 test("escape on a placeholder body with no handleInput (e.g. 'coming soon') pops the screen itself", () => {
@@ -169,7 +231,7 @@ test("escape on a placeholder body with no handleInput (e.g. 'coming soon') pops
   assert.ok(component.render(80).some((line) => line.includes("coming soon")));
 
   component.handleInput(ESCAPE);
-  assert.equal(component.render(80)[0], "kankaku");
+  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku "));
 });
 
 test("a screen with no registered factory renders a 'coming soon' placeholder", () => {
@@ -214,16 +276,18 @@ test("keys other than escape/q/arrows/enter are forwarded to the body", () => {
   assert.deepEqual(report.inputs, ["x"]);
 });
 
-test("a click on the footer's 'esc' hint span closes the panel", async () => {
+test("a click on the footer's 'esc' hint span closes the panel (coordinates include the frame's left border and padding)", async () => {
   const { ctx, getComponent } = makeCtx();
   const donePromise = openKankakuPanel(ctx, { hubConfigured: false, screens: {} });
   const component = getComponent()! as TestComponent;
 
   const lines = component.render(80);
-  const footerRow = lines.length - 1;
+  // The last line is the bottom border; the footer hints line is just above it.
+  const footerRow = lines.length - 2;
   const footerLine = lines[footerRow]!;
   const x = footerLine.indexOf("esc");
   assert.ok(x >= 0, "the footer must render an 'esc' hint");
+  assert.ok(x >= 2, "the hint's column must already include the frame's left border + padding");
 
   component.handleMouse(clickEvent(x, footerRow));
   await donePromise;
@@ -235,7 +299,7 @@ test("hovering the footer's 'esc' hint highlights it on the next render", () => 
   const component = getComponent()! as TestComponent;
 
   const lines = component.render(80);
-  const footerRow = lines.length - 1;
+  const footerRow = lines.length - 2;
   const x = lines[footerRow]!.indexOf("esc");
 
   component.handleMouse(moveEvent(x, footerRow));
@@ -243,7 +307,7 @@ test("hovering the footer's 'esc' hint highlights it on the next render", () => 
   assert.match(after[footerRow]!, /\[esc close\]/);
 });
 
-test("a mouse event outside the footer row is delegated to the body", () => {
+test("a mouse click on a body row is delegated to the body with frame-shifted coordinates", () => {
   const { ctx, getComponent } = makeCtx();
   const report = stubScreen("report body");
   void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
@@ -251,8 +315,31 @@ test("a mouse event outside the footer row is delegated to the body", () => {
 
   component.handleInput(DOWN); // target (no factory) -> report
   component.handleInput(ENTER); // push report; body is now the stub
-  component.handleMouse(clickEvent(0, 0)); // title row, never the footer
+  const lines = component.render(80);
+  const bodyRow = lines.findIndex((line) => line.includes("report body"));
+  assert.ok(bodyRow >= 0, "the body row must be found in the rendered frame");
+
+  component.handleMouse(clickEvent(5, bodyRow));
   assert.equal(report.mouseEvents.length, 1);
+  const event = report.mouseEvents[0]!;
+  // Top border (1) + blank inner line (1) = 2 rows above the body; left
+  // border "│" + one padding space = 2 columns to its left.
+  assert.equal(event.y, bodyRow - 2);
+  assert.equal(event.x, 5 - 2);
+  assert.equal(event.width, 76); // innerWidth = width(80) - 4
+});
+
+test("a mouse click outside the body rows (the frame border or blank padding) is not delegated", () => {
+  const { ctx, getComponent } = makeCtx();
+  const report = stubScreen("report body");
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(DOWN); // target (no factory) -> report
+  component.handleInput(ENTER); // push report; body is now the stub
+  component.render(80);
+  component.handleMouse(clickEvent(0, 0)); // top border row, not the body
+  assert.equal(report.mouseEvents.length, 0);
 });
 
 test("PanelHost.push/back/close let a registered screen navigate the panel itself", async () => {
@@ -263,7 +350,7 @@ test("PanelHost.push/back/close let a registered screen navigate the panel itsel
 
   component.handleInput(ENTER); // hubConfigured:true -> first root item is "target"
   const host = target.getHost()!;
-  assert.equal(component.render(80)[0], "kankaku · Target");
+  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku · Target"));
 
   host.close();
   await donePromise;
@@ -282,7 +369,7 @@ test("down arrow moves the root selection before enter opens it", () => {
   component.handleInput(DOWN);
   component.handleInput(ENTER);
   const lines = component.render(80);
-  assert.equal(lines[0], "kankaku · Doctor");
+  assert.ok(lines[0]!.startsWith("╭─ kankaku · Doctor"));
 
   component.handleInput(UP); // no-op: doctor's stub body ignores unrecognised input, proving it was forwarded, not swallowed
   assert.deepEqual(doctor.inputs, [UP]);
@@ -318,7 +405,7 @@ test("footer shows the search hint when the current body is searchable", () => {
 
   component.handleInput(DOWN); // target (no factory) -> report
   component.handleInput(ENTER);
-  const footer = component.render(80).at(-1)!;
+  const footer = component.render(80).at(-2)!;
   assert.match(footer, /\/ search/);
 });
 
@@ -331,7 +418,7 @@ test("createPanelComponent renders standalone, without going through openKankaku
   }) as TestComponent;
 
   const lines = component.render(80);
-  assert.equal(lines[0], "kankaku");
+  assert.ok(lines[0]!.startsWith("╭─ kankaku "));
 
   component.handleInput(ESCAPE);
   assert.equal(doneResult, undefined);

@@ -12,7 +12,7 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
-import { Key, matchesKey, SelectList, Text, visibleWidth } from "@earendil-works/pi-tui";
+import { Key, matchesKey, SelectList, Text, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 import type { SelectItem } from "@earendil-works/pi-tui";
 import { footerHints, navBack, navCurrent, navPush, navRoot, panelTitle, rootMenu } from "../../domain/panel-model.ts";
 import type { PanelHint, PanelNav, PanelScreenId } from "../../domain/panel-model.ts";
@@ -53,6 +53,47 @@ interface HintSpan {
 }
 
 const HINT_SEPARATOR = " · ";
+
+/**
+ * Below this width the frame (border + one column of inner padding) no
+ * longer leaves room for any content, so `render` falls back to the
+ * unframed layout instead of throwing (see `KankakuPanelComponent#render`).
+ */
+const MIN_FRAME_WIDTH = 8;
+
+/** Columns the frame's left border ("│") and its one column of padding occupy, left of every inner/body row. */
+const FRAME_LEFT_PADDING = 2;
+
+/**
+ * Wraps `content` between the frame's left/right border (`│ ... │`),
+ * padding/truncating it to `innerWidth` first — ANSI-safe, via pi-tui's
+ * `truncateToWidth` (never raw string length; see the module doc).
+ */
+function frameLine(theme: Theme, content: string, innerWidth: number): string {
+  const left = theme.fg("border", "│ ");
+  const right = theme.fg("border", " │");
+  const padded = truncateToWidth(content, innerWidth, "…", true);
+  return `${left}${padded}${right}`;
+}
+
+/**
+ * The framed top border: `╭─ <title> ` then a `─` fill, then `╮`, sized to
+ * `width`. `titleStyled` keeps its own styling (bold/accent, applied by the
+ * caller); it is itself truncated (ANSI-aware) if the title cannot fit.
+ */
+function frameTop(theme: Theme, titleStyled: string, width: number): string {
+  const available = Math.max(0, width - 5); // "╭─ " + " " + "╮"
+  const title = truncateToWidth(titleStyled, available, "…", false);
+  const fillLen = Math.max(0, available - visibleWidth(title));
+  const left = theme.fg("border", "╭─ ");
+  const fill = theme.fg("border", `${"─".repeat(fillLen)}╮`);
+  return `${left}${title} ${fill}`;
+}
+
+/** The framed bottom border: `╰` + a `─` fill + `╯`, sized to `width`. */
+function frameBottom(theme: Theme, width: number): string {
+  return theme.fg("border", `╰${"─".repeat(Math.max(0, width - 2))}╯`);
+}
 
 /** Placeholder body for a screen id with no registered factory yet (P2–P4 fill these in). */
 function comingSoonBody(theme: Theme): PanelBody {
@@ -110,6 +151,13 @@ class KankakuPanelComponent implements Component {
   /** -1 until the first `render()`, so a mouse event that arrives before any render never mismatches row 0 for the footer. */
   private footerRowIndex = -1;
   private hoveredHintIndex: number | undefined;
+  /** Whether the last `render()` drew the frame (`width >= MIN_FRAME_WIDTH`) or fell back to the unframed layout. */
+  private framed = false;
+  /** -1 until the first `render()` draws the frame; the absolute row index of the body's first rendered line. */
+  private bodyRowStart = -1;
+  private bodyRowCount = 0;
+  /** The width last passed to `this.body.render(...)` (`width` unframed, `width - 4` framed), for shifted mouse events. */
+  private bodyWidth = 0;
 
   constructor(tui: TUI, theme: Theme, deps: KankakuPanelDeps, done: (result: void) => void) {
     this.tui = tui;
@@ -181,17 +229,67 @@ class KankakuPanelComponent implements Component {
 
   render(width: number): string[] {
     const screen = navCurrent(this.nav);
-    const lines: string[] = [];
-    lines.push(this.theme.bold(this.theme.fg("accent", panelTitle(screen))));
-    lines.push("");
-    lines.push(...this.body.render(width));
+    const titleStyled = this.theme.bold(this.theme.fg("accent", panelTitle(screen)));
+    this.hints = footerHints(screen, { searchable: this.body.searchable ?? false });
+
+    if (width < MIN_FRAME_WIDTH) {
+      return this.renderUnframed(width, titleStyled);
+    }
+    return this.renderFramed(width, titleStyled, screen);
+  }
+
+  /** Legacy, unframed layout: title, body at `width`, footer — used when `width` is too narrow to fit a frame (see `MIN_FRAME_WIDTH`). */
+  private renderUnframed(width: number, titleStyled: string): string[] {
+    this.framed = false;
+    const lines: string[] = [titleStyled, ""];
+
+    const bodyLines = this.body.render(width);
+    this.bodyRowStart = lines.length;
+    this.bodyRowCount = bodyLines.length;
+    this.bodyWidth = width;
+    lines.push(...bodyLines);
     lines.push("");
 
-    this.hints = footerHints(screen, { searchable: this.body.searchable ?? false });
     const { line, spans } = renderFooter(this.hints, this.theme, this.hoveredHintIndex);
     this.hintSpans = spans;
     this.footerRowIndex = lines.length;
     lines.push(line);
+
+    return lines;
+  }
+
+  /**
+   * Rounded frame around the panel (see the module's "no padding/border"
+   * feature doc, `odd/tasks/kankaku-panel.md`): a `╭─ <title> ─…─╮` top
+   * border, one blank inner line, the body rendered at `innerWidth`
+   * (`width - 4`), a blank inner line, the footer hints, and a `╰─…─╯`
+   * bottom border. Every inner line is `│ <content> │`.
+   */
+  private renderFramed(width: number, titleStyled: string, screen: PanelScreenId): string[] {
+    this.framed = true;
+    const innerWidth = width - 4;
+    const lines: string[] = [];
+
+    lines.push(frameTop(this.theme, titleStyled, width));
+    lines.push(frameLine(this.theme, "", innerWidth));
+
+    const bodyLines = this.body.render(innerWidth);
+    this.bodyRowStart = lines.length;
+    this.bodyRowCount = bodyLines.length;
+    this.bodyWidth = innerWidth;
+    for (const bodyLine of bodyLines) lines.push(frameLine(this.theme, bodyLine, innerWidth));
+
+    lines.push(frameLine(this.theme, "", innerWidth));
+
+    const { line, spans } = renderFooter(this.hints, this.theme, this.hoveredHintIndex);
+    // The footer's own hit-test spans are local to its (unframed) content;
+    // shift them by the left border + padding so they match the actual
+    // rendered column once wrapped in `frameLine`.
+    this.hintSpans = spans.map((span) => ({ start: span.start + FRAME_LEFT_PADDING, end: span.end + FRAME_LEFT_PADDING }));
+    this.footerRowIndex = lines.length;
+    lines.push(frameLine(this.theme, line, innerWidth));
+
+    lines.push(frameBottom(this.theme, width));
 
     return lines;
   }
@@ -225,7 +323,21 @@ class KankakuPanelComponent implements Component {
     if (event.y === this.footerRowIndex) {
       return this.handleFooterMouse(event);
     }
-    return this.body.handleMouse?.(event);
+    if (!this.framed) {
+      // Legacy, unframed layout: any non-footer row delegates as-is.
+      return this.body.handleMouse?.(event);
+    }
+    const bodyRowEnd = this.bodyRowStart + this.bodyRowCount;
+    if (event.y < this.bodyRowStart || event.y >= bodyRowEnd) {
+      // Frame border or blank padding row: nothing to delegate to.
+      return undefined;
+    }
+    return this.body.handleMouse?.({
+      ...event,
+      x: event.x - FRAME_LEFT_PADDING,
+      y: event.y - this.bodyRowStart,
+      width: this.bodyWidth,
+    });
   }
 
   private handleFooterMouse(event: TuiMouseEvent): TuiMouseEventResult | undefined {

@@ -3,6 +3,15 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Changed
+
+- **The `/kankaku` panel is framed**: a rounded border in the theme's
+  `border` colour carries the panel title, with one column of inner
+  padding, so the overlay reads as one card like pi's own bordered
+  components. Mouse hit-testing in fullscreen accounts for the frame.
+
 ## 0.7.0 — 2026-09-25
 
 ### Added

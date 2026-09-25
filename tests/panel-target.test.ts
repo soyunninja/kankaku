@@ -480,17 +480,17 @@ test("escape inside the task submenu closes the submenu and keeps the Target scr
   const panel = createPanelComponent(fakeTui(), fakeTheme(), { hubConfigured: true, screens: { target: factory } }, () => {}) as TestPanelComponent;
 
   panel.handleInput(ENTER); // root -> target (topmost when hubConfigured)
-  assert.equal(panel.render(80)[0], "kankaku · Target");
+  assert.ok(panel.render(80)[0]!.startsWith("╭─ kankaku · Target"));
 
   panel.handleInput(DOWN); // client -> project
   panel.handleInput(DOWN); // project -> task
   panel.handleInput(ENTER); // open the task submenu (2 open tasks for p-portal)
 
   panel.handleInput(ESCAPE); // closes only the submenu
-  assert.equal(panel.render(80)[0], "kankaku · Target");
+  assert.ok(panel.render(80)[0]!.startsWith("╭─ kankaku · Target"));
 
   panel.handleInput(ESCAPE); // now goes back to root
-  assert.equal(panel.render(80)[0], "kankaku");
+  assert.ok(panel.render(80)[0]!.startsWith("╭─ kankaku "));
 });
 
 test("no hub configured (no sessionTarget): only the legacy row is shown", () => {
