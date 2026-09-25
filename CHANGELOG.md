@@ -3,7 +3,7 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
-## Unreleased
+## 0.6.5 — 2026-09-25
 
 ### Added
 
