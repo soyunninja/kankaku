@@ -99,6 +99,8 @@ class ReportScreenComponent implements Component {
           this.deps.pinReport(this.report);
           return ["pinned to the chat transcript"];
         },
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.host.requestRender(),
       }),
     ];

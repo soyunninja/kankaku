@@ -235,10 +235,25 @@ class TargetScreenComponent implements Component {
     return { id: row.id, label: row.label, currentValue: row.value, ...(row.description !== undefined ? { description: row.description } : {}) };
   }
 
+  /**
+   * Wraps a row's submenu factory so opening it sets
+   * `PanelHost.setBodyCapturesEscape(true)` (the shell forwards Escape/←
+   * to this screen instead of popping it while the submenu — or the
+   * legacy-label `Input`, which also uses this via `buildLegacySubmenu` —
+   * is open) and clears it again right before the submenu's own `done` is
+   * invoked, on every close path (a pick, "— use defaults —"/"— none —",
+   * cancel, or a disabled note closing on any key).
+   */
   private rowItem(row: PanelRow, submenu: (done: (selectedValue?: string, options?: { navigateTo?: string }) => void) => Component): SettingItem {
     return {
       ...this.plainItem(row),
-      submenu: (_currentValue, done) => submenu(done),
+      submenu: (_currentValue, done) => {
+        this.host.setBodyCapturesEscape(true);
+        return submenu((selectedValue, options) => {
+          this.host.setBodyCapturesEscape(false);
+          done(selectedValue, options);
+        });
+      },
     };
   }
 
@@ -320,6 +335,8 @@ class TargetScreenComponent implements Component {
         const saved = this.deps.sessionTarget?.rememberTarget() ?? false;
         return [saved ? "saved clientId/projectId to config.json" : "nothing to save"];
       },
+      onOpen: () => this.host.setBodyCapturesEscape(true),
+      onClose: () => this.host.setBodyCapturesEscape(false),
       onDone: () => this.host.requestRender(),
     });
     return { ...item, currentValue: row.value };

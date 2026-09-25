@@ -70,6 +70,8 @@ class ExportScreenComponent implements Component {
           this.lastNote = `wrote ${path}`;
           return [this.lastNote];
         },
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.host.requestRender(),
       }),
       actionItem(this.settingsTheme, {
@@ -79,6 +81,8 @@ class ExportScreenComponent implements Component {
           this.deps.pinReport({ title: "export", lines: [this.lastNote] });
           return ["pinned to the chat transcript"];
         },
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.host.requestRender(),
       }),
     ];

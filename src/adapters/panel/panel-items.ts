@@ -18,6 +18,10 @@ export interface ActionItemOptions {
   run: () => string[] | Promise<string[]>;
   /** Called once `run()` settles (success or error), so the caller can re-render — this component has no `host` reference of its own. */
   onDone?: () => void;
+  /** Called synchronously when the submenu component is created (the action starts running). */
+  onOpen?: () => void;
+  /** Called right before `done(...)` is invoked on close (Enter or Escape), so the caller can, e.g., clear `PanelHost.setBodyCapturesEscape`. */
+  onClose?: () => void;
 }
 
 class ActionItemComponent implements Component {
@@ -35,6 +39,7 @@ class ActionItemComponent implements Component {
     this.theme = theme;
     this.options = options;
     this.done = done;
+    this.options.onOpen?.();
     void this.start();
   }
 
@@ -58,6 +63,7 @@ class ActionItemComponent implements Component {
 
   handleInput(data: string): void {
     if (matchesKey(data, Key.enter) || matchesKey(data, Key.escape)) {
+      this.options.onClose?.();
       // Keep the cursor on the row that opened this action — the caller
       // (the enclosing SettingsList) restores selection to it by id.
       this.done(undefined, { navigateTo: this.options.id });

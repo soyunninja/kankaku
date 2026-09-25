@@ -6,7 +6,7 @@ import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earend
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { createPanelComponent, openKankakuPanel } from "../src/adapters/panel/kankaku-panel.ts";
 import type { PanelHost } from "../src/adapters/panel/kankaku-panel.ts";
-import { DOWN, ENTER, ESCAPE, fakeTheme, fakeTui, UP } from "./helpers/panel-fakes.ts";
+import { DOWN, ENTER, ESCAPE, fakeTheme, fakeTui, LEFT, UP } from "./helpers/panel-fakes.ts";
 
 /** The panel component always implements `handleInput`/`handleMouse`; narrows past `Component`'s optional signatures for test call sites. */
 type TestComponent = Component & {
@@ -198,7 +198,7 @@ test("enter on a root menu item pushes that screen; escape goes back to root (bo
   let lines = component.render(80);
   assert.ok(lines[0]!.startsWith("╭─ kankaku · Report"));
   const footer = lines.at(-2)!;
-  assert.match(footer, /esc back/);
+  assert.match(footer, /esc\/← back/);
   assert.match(footer, /q close/);
 
   component.handleInput(ESCAPE);
@@ -206,9 +206,9 @@ test("enter on a root menu item pushes that screen; escape goes back to root (bo
   assert.ok(lines[0]!.startsWith("╭─ kankaku "));
 });
 
-test("escape is forwarded to a body that implements handleInput; the shell never pops on its own", () => {
+test("escape on a body with handleInput but no capture flag goes back; the shell never forwards it and never relies on the body's onCancel", () => {
   const { ctx, getComponent } = makeCtx();
-  const report = stubScreen("report body"); // swallows escape, never calls host.back()
+  const report = stubScreen("report body"); // would swallow escape if it ever reached it
   void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
   const component = getComponent()! as TestComponent;
 
@@ -216,9 +216,64 @@ test("escape is forwarded to a body that implements handleInput; the shell never
   component.handleInput(ENTER); // push report
   component.handleInput(ESCAPE);
 
+  assert.deepEqual(report.inputs, []); // never forwarded
+  // The shell popped the screen itself, not the body's own onCancel wiring.
+  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku "));
+});
+
+test("escape is forwarded to the body while PanelHost.setBodyCapturesEscape(true) is set, and does not navigate", () => {
+  const { ctx, getComponent } = makeCtx();
+  const report = stubScreen("report body");
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(DOWN); // target (no factory) -> report
+  component.handleInput(ENTER); // push report
+  const host = report.getHost()!;
+  host.setBodyCapturesEscape(true);
+
+  component.handleInput(ESCAPE);
   assert.deepEqual(report.inputs, [ESCAPE]);
-  // The screen must still be "Report": the shell forwarded escape instead
-  // of popping the stack itself.
+  // Still on "Report": the body captured escape, so the shell did not navigate.
+  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku · Report"));
+});
+
+test("left arrow on a screen with no capture flag goes back, like escape", () => {
+  const { ctx, getComponent } = makeCtx();
+  const report = stubScreen("report body");
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(DOWN); // target (no factory) -> report
+  component.handleInput(ENTER); // push report
+  component.handleInput(LEFT);
+
+  assert.deepEqual(report.inputs, []);
+  assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku "));
+});
+
+test("left arrow at root closes the panel, like escape", async () => {
+  const { ctx, getComponent } = makeCtx();
+  const donePromise = openKankakuPanel(ctx, { hubConfigured: false, screens: {} });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(LEFT);
+  await donePromise;
+});
+
+test("left arrow with the capture flag set forwards the escape sequence to the body", () => {
+  const { ctx, getComponent } = makeCtx();
+  const report = stubScreen("report body");
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(DOWN); // target (no factory) -> report
+  component.handleInput(ENTER); // push report
+  const host = report.getHost()!;
+  host.setBodyCapturesEscape(true);
+
+  component.handleInput(LEFT);
+  assert.deepEqual(report.inputs, [ESCAPE]); // translated to the escape sequence
   assert.ok(component.render(80)[0]!.startsWith("╭─ kankaku · Report"));
 });
 

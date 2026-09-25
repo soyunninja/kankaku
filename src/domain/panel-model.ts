@@ -97,9 +97,9 @@ export interface PanelHint {
 
 /**
  * The footer hint row for a screen: navigation hints, an optional search
- * hint when the current body supports it, and how Escape/`q` behave — back
- * at root closes the panel outright, so root shows only `esc close`; every
- * other screen shows both `esc back` and `q close`.
+ * hint when the current body supports it, and how Escape/left arrow/`q`
+ * behave — back at root closes the panel outright, so root shows only
+ * `esc close`; every other screen shows both `esc/← back` and `q close`.
  */
 export function footerHints(screen: PanelScreenId, options: { searchable: boolean }): PanelHint[] {
   const hints: PanelHint[] = [{ key: "↑↓", label: "move" }];
@@ -113,7 +113,7 @@ export function footerHints(screen: PanelScreenId, options: { searchable: boolea
 
   hints.push({ key: "enter", label: "select" });
   if (options.searchable) hints.push({ key: "/", label: "search" });
-  hints.push({ key: "esc", label: "back" }, { key: "q", label: "close" });
+  hints.push({ key: "esc/←", label: "back" }, { key: "q", label: "close" });
   return hints;
 }
 

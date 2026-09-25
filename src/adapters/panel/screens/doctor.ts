@@ -47,6 +47,8 @@ class DoctorScreenComponent implements Component {
           this.deps.pinReport({ title: "doctor", lines: this.lines });
           return ["pinned to the chat transcript"];
         },
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.host.requestRender(),
       }),
       actionItem(this.settingsTheme, {
@@ -56,6 +58,8 @@ class DoctorScreenComponent implements Component {
           this.lines = buildDoctorLines(this.deps.commandDeps, this.deps.ctx);
           return ["refreshed"];
         },
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.host.requestRender(),
       }),
     ];

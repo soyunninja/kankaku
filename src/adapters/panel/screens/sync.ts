@@ -60,18 +60,24 @@ class SyncScreenComponent implements Component {
         id: "sync-now",
         label: "Sync now",
         run: async () => formatSyncSummaryLines(await this.deps.sync.run({})),
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.refreshStatus(),
       }),
       actionItem(this.settingsTheme, {
         id: "sync-all",
         label: "Sync all",
         run: async () => formatSyncSummaryLines(await this.deps.sync.run({ full: true })),
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.refreshStatus(),
       }),
       actionItem(this.settingsTheme, {
         id: "backfill",
         label: "Backfill",
         run: async () => formatBackfillLines(await this.deps.sync.run({ full: true })),
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.refreshStatus(),
       }),
     ];
@@ -83,6 +89,8 @@ class SyncScreenComponent implements Component {
           id: "catalog-refresh",
           label: "Refresh catalog",
           run: async () => formatCatalogRefreshLines(await catalog.refresh()),
+          onOpen: () => this.host.setBodyCapturesEscape(true),
+          onClose: () => this.host.setBodyCapturesEscape(false),
           onDone: () => this.refreshStatus(),
         }),
       );
@@ -96,6 +104,8 @@ class SyncScreenComponent implements Component {
           this.deps.pinReport({ title: STATUS_TITLE, lines: this.statusLines });
           return ["pinned to the chat transcript"];
         },
+        onOpen: () => this.host.setBodyCapturesEscape(true),
+        onClose: () => this.host.setBodyCapturesEscape(false),
         onDone: () => this.host.requestRender(),
       }),
     );

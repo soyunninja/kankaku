@@ -133,6 +133,52 @@ test("Escape also closes the submenu, keeping the cursor on this row via navigat
   assert.deepEqual(calls, [[undefined, { navigateTo: "remember" }]]);
 });
 
+test("onOpen fires when the submenu component is created", () => {
+  let onOpenCalls = 0;
+  const item = actionItem(fakeTheme(), {
+    id: "remember",
+    label: "Remember",
+    run: () => [],
+    onOpen: () => {
+      onOpenCalls++;
+    },
+  });
+
+  assert.equal(onOpenCalls, 0);
+  item.submenu!("", () => {});
+  assert.equal(onOpenCalls, 1);
+});
+
+test("onClose fires right before done(...) on Enter", () => {
+  const calls: string[] = [];
+  const item = actionItem(fakeTheme(), {
+    id: "remember",
+    label: "Remember",
+    run: () => [],
+    onClose: () => calls.push("close"),
+  });
+  const component = item.submenu!("", () => calls.push("done"));
+
+  component.handleInput!("\r");
+
+  assert.deepEqual(calls, ["close", "done"]);
+});
+
+test("onClose fires right before done(...) on Escape", () => {
+  const calls: string[] = [];
+  const item = actionItem(fakeTheme(), {
+    id: "remember",
+    label: "Remember",
+    run: () => [],
+    onClose: () => calls.push("close"),
+  });
+  const component = item.submenu!("", () => calls.push("done"));
+
+  component.handleInput!("\x1b");
+
+  assert.deepEqual(calls, ["close", "done"]);
+});
+
 test("a key other than Enter/Escape does not close the submenu", () => {
   const calls: unknown[] = [];
   const item = actionItem(fakeTheme(), { id: "remember", label: "Remember", run: () => [] });

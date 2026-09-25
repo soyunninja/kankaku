@@ -38,6 +38,19 @@ export interface PanelHost {
    * `screens/target.ts`'s legacy-label submenu).
    */
   setBodyWantsText(flag: boolean): void;
+  /**
+   * Set (or clear) whether the current body owns Escape (a submenu or text
+   * field is open and must see it before the shell does — e.g. the target
+   * screen's client/project/task submenus, its legacy-label `Input`, or an
+   * `actionItem`'s result view). The shell owns Escape (and left arrow) by
+   * default and pops the current screen itself: it never relies on
+   * pi-tui's `SettingsList`/`SelectList` `onCancel` firing on its own,
+   * since that path does not reliably fire in the real TUI (see
+   * `KankakuPanelComponent#handleInput`). A screen must reset this to
+   * `false` when the thing that captured Escape closes (see
+   * `screens/target.ts` and every `actionItem` call site).
+   */
+  setBodyCapturesEscape(flag: boolean): void;
 }
 
 export interface KankakuPanelDeps {
@@ -146,6 +159,8 @@ class KankakuPanelComponent implements Component {
   private body: PanelBody;
   /** Set via `PanelHost.setBodyWantsText` by a screen that owns a text field (e.g. the target screen's legacy-label `Input`), so `q` types instead of closing. */
   private bodyWantsText = false;
+  /** Set via `PanelHost.setBodyCapturesEscape` by a screen whose body must see Escape/← itself (an open submenu or text field) before the shell pops the screen. */
+  private bodyCapturesEscape = false;
   private hints: PanelHint[] = [];
   private hintSpans: HintSpan[] = [];
   /** -1 until the first `render()`, so a mouse event that arrives before any render never mismatches row 0 for the footer. */
@@ -174,6 +189,9 @@ class KankakuPanelComponent implements Component {
       setBodyWantsText: (flag) => {
         this.bodyWantsText = flag;
       },
+      setBodyCapturesEscape: (flag) => {
+        this.bodyCapturesEscape = flag;
+      },
     };
     this.nav = navRoot();
     this.body = this.createBody("root");
@@ -196,6 +214,7 @@ class KankakuPanelComponent implements Component {
     this.nav = navPush(this.nav, id);
     this.body = this.createBody(id);
     this.bodyWantsText = false;
+    this.bodyCapturesEscape = false;
     this.hoveredHintIndex = undefined;
     this.tui.requestRender();
   }
@@ -210,6 +229,7 @@ class KankakuPanelComponent implements Component {
     this.nav = nav;
     this.body = this.createBody(navCurrent(nav));
     this.bodyWantsText = false;
+    this.bodyCapturesEscape = false;
     this.hoveredHintIndex = undefined;
     this.tui.requestRender();
   }
@@ -295,18 +315,29 @@ class KankakuPanelComponent implements Component {
   }
 
   handleInput(data: string): void {
+    // The shell owns Escape and left arrow itself; it never relies on
+    // pi-tui's `SettingsList`/`SelectList` calling `onCancel` on its own
+    // (via `getKeybindings().matches(data, "tui.select.cancel")`) — that
+    // path does not reliably fire in the real TUI, which is the bug this
+    // guards against. Only when the current body has explicitly captured
+    // Escape (`PanelHost.setBodyCapturesEscape(true)` — an open submenu or
+    // text field that must see the key itself, e.g. the target screen's
+    // client/project/task submenus or its legacy-label `Input`) is the key
+    // forwarded; otherwise the shell pops the current screen directly.
     if (matchesKey(data, Key.escape)) {
-      // Forward escape to the body when it can handle input itself (a real
-      // `SettingsList`/`SelectList`-backed screen): pi-tui's own
-      // `SettingsList.handleInput`/`SelectList.handleInput` already close an
-      // open submenu on escape and fall through to the body's own
-      // `onCancel` only once no submenu remains — wired to `host.back()` by
-      // every real screen (the root `SelectList`, the target screen). Only
-      // a body with no `handleInput` at all (the placeholder "coming soon"
-      // `Text`, or a read-only note like the subagent target screen) has no
-      // way to react, so the shell pops the stack itself in that case.
-      if (this.body.handleInput) {
-        this.body.handleInput(data);
+      if (this.bodyCapturesEscape) {
+        this.body.handleInput?.(data);
+      } else {
+        this.goBack();
+      }
+      return;
+    }
+    if (matchesKey(data, Key.left)) {
+      if (this.bodyCapturesEscape) {
+        // Translate to the escape sequence so a captured body (which only
+        // ever wires up Escape, not left arrow) closes exactly as it would
+        // on Escape.
+        this.body.handleInput?.("\x1b");
       } else {
         this.goBack();
       }
@@ -353,7 +384,9 @@ class KankakuPanelComponent implements Component {
 
     if (event.type === "click" && event.button === "left" && hitIndex !== -1) {
       const hint = this.hints[hitIndex]!;
-      if (hint.key === "esc") {
+      // "esc" at root, "esc/←" on every other screen (see `footerHints`) —
+      // `goBack()` already closes the panel outright when at root.
+      if (hint.key.startsWith("esc")) {
         this.goBack();
         return { handled: true };
       }

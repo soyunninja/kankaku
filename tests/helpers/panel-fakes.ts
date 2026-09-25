@@ -12,6 +12,7 @@ import type { PanelScreenId } from "../../src/domain/panel-model.ts";
 
 export const UP = "\x1b[A";
 export const DOWN = "\x1b[B";
+export const LEFT = "\x1b[D";
 export const ENTER = "\r";
 export const ESCAPE = "\x1b";
 
@@ -47,6 +48,7 @@ export interface FakeHost extends PanelHost {
   closeCalls: number;
   renderRequests: number;
   bodyWantsText: boolean;
+  bodyCapturesEscape: boolean;
 }
 
 export function fakeHost(overrides: Partial<Pick<PanelHost, "theme" | "tui">> = {}): FakeHost {
@@ -58,6 +60,7 @@ export function fakeHost(overrides: Partial<Pick<PanelHost, "theme" | "tui">> = 
     closeCalls: 0,
     renderRequests: 0,
     bodyWantsText: false,
+    bodyCapturesEscape: false,
     push: (id) => host.pushed.push(id),
     back: () => {
       host.backCalls++;
@@ -70,6 +73,9 @@ export function fakeHost(overrides: Partial<Pick<PanelHost, "theme" | "tui">> = 
     },
     setBodyWantsText: (flag) => {
       host.bodyWantsText = flag;
+    },
+    setBodyCapturesEscape: (flag) => {
+      host.bodyCapturesEscape = flag;
     },
   };
   return host;

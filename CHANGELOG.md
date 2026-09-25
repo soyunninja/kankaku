@@ -12,6 +12,18 @@ follow semver. Dates are the day the version was cut.
   padding, so the overlay reads as one card like pi's own bordered
   components. Mouse hit-testing in fullscreen accounts for the frame.
 
+### Fixed
+
+- **`Esc` (and now `←`) go back in the `/kankaku` panel regardless of
+  pi-tui's list cancel handling**: the panel shell now owns Escape and
+  left arrow itself and pops the current screen directly, instead of
+  forwarding the key and relying on `SettingsList`/`SelectList` calling
+  `onCancel` on its own — a path that does not reliably fire in the real
+  TUI. A submenu or text field that is still open (the target screen's
+  client/project/task submenus, its legacy-label input, or an action's
+  result view) still receives Escape/← first and closes itself before the
+  shell takes over.
+
 ## 0.7.0 — 2026-09-25
 
 ### Added

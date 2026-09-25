@@ -114,11 +114,11 @@ test("footerHints at root includes the search hint when searchable", () => {
   );
 });
 
-test("footerHints on a non-root screen: move, select, esc back, q close (no search)", () => {
+test("footerHints on a non-root screen: move, select, esc/← back, q close (no search)", () => {
   const hints = footerHints("report", { searchable: false });
   assert.deepEqual(
     hints.map((hint) => hint.key),
-    ["↑↓", "enter", "esc", "q"],
+    ["↑↓", "enter", "esc/←", "q"],
   );
   assert.deepEqual(
     hints.map((hint) => hint.label),
@@ -130,7 +130,7 @@ test("footerHints on a non-root screen includes the search hint when searchable"
   const hints = footerHints("sync", { searchable: true });
   assert.deepEqual(
     hints.map((hint) => hint.key),
-    ["↑↓", "enter", "/", "esc", "q"],
+    ["↑↓", "enter", "/", "esc/←", "q"],
   );
 });
 

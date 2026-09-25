@@ -707,8 +707,8 @@ action is reachable:
 - **About** — versions, the resolved `KANKAKU_DIR`, the hub URL, and every
   env-only setting, read-only.
 
-Keys: `↑↓` move, `Enter` open a section or select a value, `Esc` go back
-(or close the panel at the root), `q` close from anywhere. Mouse: the
+Keys: `↑↓` move, `Enter` open a section or select a value, `Esc` or `←` go
+back (or close the panel at the root), `q` close from anywhere. Mouse: the
 footer hints and list rows are clickable, but only in pi's fullscreen
 mode — pi does not dispatch mouse events in its regular (non-fullscreen)
 mode, so there the panel is keyboard-only.
