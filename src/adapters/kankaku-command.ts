@@ -2,8 +2,7 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { isValidClient } from "../domain/client-label.ts";
-import { exportRows, toCsv, toJson } from "../domain/export.ts";
-import { buildTasks, detectSameProcessOverlaps, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
+import { detectSameProcessOverlaps, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import { findAmbiguousToolNames } from "../domain/subagent-profile.ts";
 import type { SubagentProfile } from "../domain/subagent-profile.ts";
@@ -12,8 +11,8 @@ import type { SyncState } from "../domain/sync-plan.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { Catalog } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
-import { buildClientsView, buildProjectsView, buildSessionsView, buildSummaryView, buildTasksView } from "./report-views.ts";
-import { localDay } from "./report.ts";
+import { buildSyncStatusLines, formatBackfillLines, formatCatalogRefreshLines, formatSyncSummaryLines } from "./hub-actions.ts";
+import { buildClientsView, buildExportContent, buildProjectsView, buildSessionsView, buildSummaryView, buildTasksView } from "./report-views.ts";
 import type { SyncSummary, SyncTrigger } from "./sync-runner.ts";
 import type { SessionClient } from "./session-client.ts";
 import { readNonDefaultSessionDir } from "./session-dir.ts";
@@ -527,36 +526,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
         notifyError(ctx, new Error("hub unreachable; catalog not refreshed"));
         return;
       }
-      showReport(ctx, {
-        title: "catalog",
-        lines: [`refreshed: ${snapshot.clients.length} client(s), ${snapshot.projects.length} project(s)`],
-      });
+      showReport(ctx, { title: "catalog", lines: formatCatalogRefreshLines(snapshot) });
       return;
     }
 
     notifyError(ctx, new Error(`unknown catalog subcommand: ${rest.join(" ")}`));
-  }
-
-  /** Render a {@link SyncSummary} as report lines: counts, any stop reason, the new watermark, and the unassigned breakdown. */
-  function formatSyncSummary(summary: SyncSummary): string[] {
-    const lines = [`uploaded ${summary.uploaded}, updated ${summary.updated}, skipped ${summary.skipped}, failed ${summary.failed.length}`];
-
-    if (summary.locked) lines.push("another sync is already in progress; nothing was attempted");
-    if (summary.error) lines.push(`stopped early: ${summary.error}`);
-    if (summary.syncedThrough) lines.push(`synced through ${summary.syncedThrough}`);
-
-    const unassignedEntries = Object.entries(summary.unassigned).sort(([a], [b]) => a.localeCompare(b));
-    if (unassignedEntries.length > 0) {
-      lines.push("unassigned (Sin determinar):");
-      for (const [label, count] of unassignedEntries) lines.push(`  ${label}: ${count}`);
-    }
-
-    if (summary.failed.length > 0) {
-      lines.push("failed:");
-      for (const entry of summary.failed) lines.push(`  ${entry.id}: ${entry.reason}`);
-    }
-
-    return lines;
   }
 
   /** Handle `/kankaku sync [all|status]`; `rest` excludes the leading `sync` token. */
@@ -568,13 +542,7 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     }
 
     if (rest.length === 1 && rest[0] === "status") {
-      const { state, pending, staleOutsideWindow } = sync.status();
-      const lines = [state?.syncedThrough ? `synced through ${state.syncedThrough}` : "never synced", `pending: ${pending}`];
-      if (staleOutsideWindow > 0) {
-        lines.push(`${staleOutsideWindow} task(s) never synced fall outside the sync window — run '/kankaku sync all' to upload them`);
-      }
-      if (state?.lastError) lines.push(`last error: ${state.lastError.message} (at ${state.lastError.at})`);
-      showReport(ctx, { title: "sync status", lines });
+      showReport(ctx, { title: "sync status", lines: buildSyncStatusLines(sync.status()) });
       return;
     }
 
@@ -585,7 +553,7 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
 
     const full = rest[0] === "all";
     const summary = await sync.run({ full });
-    showReport(ctx, { title: full ? "sync (all)" : "sync", lines: formatSyncSummary(summary) });
+    showReport(ctx, { title: full ? "sync (all)" : "sync", lines: formatSyncSummaryLines(summary) });
   }
 
   /** Handle `/kankaku backfill`: a full sync, reported as the "Sin determinar" breakdown that needs reassigning in the web. */
@@ -597,18 +565,7 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     }
 
     const summary = await sync.run({ full: true });
-    const unassignedEntries = Object.entries(summary.unassigned).sort(([a], [b]) => a.localeCompare(b));
-
-    const lines =
-      unassignedEntries.length > 0
-        ? [
-            ...unassignedEntries.map(([label, count]) => `${label}: ${count} task(s) -> Sin determinar`),
-            "reassign these in the hub web app's unassigned queue",
-          ]
-        : ["no unassigned tasks"];
-
-    if (summary.error) lines.push(`stopped early: ${summary.error}`);
-    showReport(ctx, { title: "backfill", lines });
+    showReport(ctx, { title: "backfill", lines: formatBackfillLines(summary) });
   }
 
   /**
@@ -629,14 +586,9 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
 
     const all = rest.includes("all");
     const format: "csv" | "json" = rest.includes("json") ? "json" : "csv";
-    const records = log.readAll();
-    const today = localDay(new Date().toISOString());
-    const tasks = buildTasks(records).filter((task) => all || localDay(task.startedAt) === today);
-    const rows = exportRows(tasks);
-    const content = format === "json" ? toJson(rows) : toCsv(rows);
-    const name = `tasks-${all ? "all" : today}.${format}`;
+    const { name, content, rowCount } = buildExportContent(log.readAll(), { format, all });
     const path = deps.writeExportFile(name, content);
-    showReport(ctx, { title: "export", lines: [`wrote ${rows.length} row(s) to ${path}`] });
+    showReport(ctx, { title: "export", lines: [`wrote ${rowCount} row(s) to ${path}`] });
   }
 
   pi.registerCommand("kankaku", {

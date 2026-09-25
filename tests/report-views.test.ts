@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { buildClientsView, buildProjectsView, buildSessionsView, buildSummaryView, buildTasksView } from "../src/adapters/report-views.ts";
+import { buildClientsView, buildExportContent, buildProjectsView, buildSessionsView, buildSummaryView, buildTasksView } from "../src/adapters/report-views.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 
 function makeRecord(overrides: Partial<WorkRecord> = {}): WorkRecord {
@@ -88,4 +88,30 @@ test("buildTasksView scopes to every session when no sessionId is available", ()
 
   const report = buildTasksView(records, { all: false, sessionId: undefined });
   assert.equal(report.title, "tasks (every session)");
+});
+
+test("buildExportContent names the file by range/format and renders csv/json content with the row count", () => {
+  const today = new Date().toISOString();
+  const records = [makeRecord({ startedAt: today, settledAt: today, prompt: "today's task" })];
+
+  const csvResult = buildExportContent(records, { format: "csv", all: false });
+  assert.match(csvResult.name, /^tasks-\d{4}-\d{2}-\d{2}\.csv$/);
+  assert.match(csvResult.content, /today's task/);
+  assert.equal(csvResult.rowCount, 1);
+
+  const jsonResult = buildExportContent(records, { format: "json", all: true });
+  assert.equal(jsonResult.name, "tasks-all.json");
+  const parsed = JSON.parse(jsonResult.content) as unknown[];
+  assert.equal(parsed.length, 1);
+  assert.equal(jsonResult.rowCount, 1);
+});
+
+test("buildExportContent filters to today's local day unless all is set", () => {
+  const records = [makeRecord({ startedAt: "2020-01-01T00:00:00.000Z", settledAt: "2020-01-01T00:00:05.000Z" })];
+
+  const todayResult = buildExportContent(records, { format: "csv", all: false });
+  assert.equal(todayResult.rowCount, 0);
+
+  const allResult = buildExportContent(records, { format: "csv", all: true });
+  assert.equal(allResult.rowCount, 1);
 });

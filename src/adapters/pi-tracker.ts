@@ -18,7 +18,9 @@ import type { KankakuCommandDeps, SyncCommandDeps } from "./kankaku-command.ts";
 import { openKankakuPanel } from "./panel/kankaku-panel.ts";
 import { createAboutScreen } from "./panel/screens/about.ts";
 import { createDoctorScreen } from "./panel/screens/doctor.ts";
+import { createExportScreen } from "./panel/screens/export.ts";
 import { createReportScreen } from "./panel/screens/report.ts";
+import { createSyncScreen } from "./panel/screens/sync.ts";
 import { createTargetScreen } from "./panel/screens/target.ts";
 import type { SyncTrigger } from "./sync-runner.ts";
 
@@ -347,6 +349,25 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
             agentVersion: deps.agentVersion,
             pluginVersion: deps.pluginVersion,
             hubUrl: deps.hubUrl,
+          }),
+          // Present only when the hub is configured — mirrors `sync`'s own
+          // hub-only root-menu row (`domain/panel-model.ts#rootMenu`).
+          ...(deps.sync
+            ? {
+                sync: createSyncScreen({
+                  sync: deps.sync,
+                  catalog: deps.catalog,
+                  ctx,
+                  refreshIdleStatus,
+                  pinReport: (report) => appendReportEntry(pi, ctx, report),
+                }),
+              }
+            : {}),
+          export: createExportScreen({
+            log,
+            writeExportFile: deps.writeExportFile,
+            ctx,
+            pinReport: (report) => appendReportEntry(pi, ctx, report),
           }),
         },
       }),

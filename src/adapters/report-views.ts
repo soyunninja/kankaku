@@ -7,6 +7,7 @@
  * exact same lines — neither ever re-implements the other's logic.
  */
 import { buildSessions, buildTasks } from "../domain/task-view.ts";
+import { exportRows, toCsv, toJson } from "../domain/export.ts";
 import type { WorkRecord } from "../domain/work-record.ts";
 import type { KankakuReportData } from "./kankaku-command.ts";
 import { countUncertain, formatClients, formatProjects, formatReport, formatSessions, formatTasks, localDay, summarize, summarizeByClient, summarizeByProject } from "./report.ts";
@@ -68,4 +69,30 @@ export function buildTasksView(records: WorkRecord[], options: TasksViewOptions)
   const scoped = all || !sessionId;
   const tasks = buildTasks(records).filter((task) => scoped || task.sessionId === sessionId);
   return { title: scoped ? "tasks (every session)" : "tasks (this session)", lines: formatTasks(tasks).split("\n") };
+}
+
+/** {@link buildExportContent}'s options: `format` picks csv/json, `all` includes every day instead of just today's local day (mirrors every other view except `buildTasksView`). */
+export interface ExportContentOptions {
+  format: "csv" | "json";
+  all: boolean;
+}
+
+/**
+ * `/kankaku export [csv|json] [all]`'s file content: the flat export rows
+ * for today's (or every) task, rendered as csv or json, with the file name
+ * `/kankaku export` and the panel's export screen (`panel/screens/
+ * export.ts`) both use. Extracted from `kankaku-command.ts`'s
+ * `handleExportCommand` (see odd/tasks/kankaku-panel.md P4) so the
+ * subcommand and the panel never drift. `rowCount` is exposed only for the
+ * subcommand's "wrote N row(s) to <path>" confirmation line — the panel's
+ * own confirmation is simpler ("wrote <path>").
+ */
+export function buildExportContent(records: WorkRecord[], options: ExportContentOptions): { name: string; content: string; rowCount: number } {
+  const { format, all } = options;
+  const today = localDay(new Date().toISOString());
+  const tasks = buildTasks(records).filter((task) => all || localDay(task.startedAt) === today);
+  const rows = exportRows(tasks);
+  const content = format === "json" ? toJson(rows) : toCsv(rows);
+  const name = `tasks-${all ? "all" : today}.${format}`;
+  return { name, content, rowCount: rows.length };
 }
