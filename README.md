@@ -41,6 +41,37 @@ trusted, which a subagent child may not inherit.
 
 To try it without installing: `pi -e /absolute/path/to/kankaku`.
 
+## Quick start
+
+Once installed, kankaku records every prompt on its own; there is nothing
+to start. Inside pi's TUI, type `/kankaku` to open the panel, the one
+place everything is managed from:
+
+```
+╭─ >_ kankaku ─────────────────────────────────────────╮
+│                                                      │
+│ → Target        Billing client, project, hub task    │
+│   Report        Today/all totals, tasks, sessions    │
+│   Sync          Status, sync now, sync all, backfill │
+│   Export        Write today's or every task as csv   │
+│   Doctor        Orphan/uncertain subagent counts     │
+│   About         Versions, KANKAKU_DIR, hub URL       │
+│                                                      │
+│ ↑↓ move · enter open · esc close                     │
+╰──────────────────────────────────────────────────────╯
+```
+
+- **Target** is where you pick the client and project the time is billed
+  to and, with a hub, the task you are working on right now.
+- **Report** shows today's work, waiting and cost, per task or grouped by
+  client or project.
+- **Sync** pushes the consolidated tasks to your hub when one is configured.
+
+Every panel action is also a subcommand (`/kankaku tasks`, `/kankaku sync`,
+…) for scripts and headless runs — see "The `/kankaku` command" below. The
+footer clock (`🕒 03:12 · acme`) shows the running prompt's elapsed time
+and billing client while an agent works.
+
 ## Record schema
 
 Each line in `worklog.jsonl` is one JSON object:
