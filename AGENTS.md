@@ -24,9 +24,10 @@ extension has one. Instead:
   resulting `WorkRecordCore`. No wall-clock time and no live process state
   is read during replay.
 - **Small per-session state.** `<KANKAKU_DIR>/claude/<session_id>.state.json`
-  (`src/session-state.ts`) holds `pid`, `parentPid`, `cwd`, the currently
-  open prompt (if any) and the last cost the statusline reported. It is
-  rewritten atomically (tmp file + rename) on every change.
+  (`src/session-state.ts`) holds `pid`, `parentPid`, `cwd` and the currently
+  open prompt (if any). It is rewritten atomically (tmp file + rename) on
+  every change, and **only a hook ever writes it** — the statusline only
+  reads it (see "Cost" below; T7, `odd/tasks/hook-tracking.md`).
 - **Light hooks vs. heavy hooks.** `PreToolUse`, `PostToolUse`,
   `PermissionRequest`, `SubagentStart`, `SubagentStop` and `UserPromptSubmit`
   only append one event line and touch a couple of state fields; they must
@@ -34,17 +35,27 @@ extension has one. Instead:
   `SessionEnd` are the only handlers that load `replay.ts`, `record.ts` and
   `kankaku/hub` — always through a dynamic `import()`, never a top-level one
   — because only they need to replay a prompt or write to `worklog.jsonl`.
-- **Cost.** Claude Code hooks never receive token counts or cost. The
-  statusline command (`src/statusline.ts`, built on the pure
-  `src/statusline-core.ts`) is the only source: it reads `cost.total_cost_usd`
-  from its stdin JSON on every render and merges it into the session's state
-  file. `Stop` computes a prompt's cost as the delta between the total at
-  `UserPromptSubmit` and the total the statusline last reported, waiting
-  briefly (poll, bounded) for a fresh-enough statusline write.
+- **Cost lives under HOME, never a project (T7).** Claude Code hooks never
+  receive token counts or cost. The statusline command (`src/statusline.ts`,
+  built on the pure `src/statusline-core.ts`) is the only source: it reads
+  `cost.total_cost_usd` from its stdin JSON on every render and writes it to
+  `~/.kankaku/claude/cost/<session_id>.json` (`src/cost-store.ts`) — never to
+  a project's state file. This matters because the `statusLine` entry lives
+  in `~/.claude/settings.json`, so the statusline command runs on *every*
+  Claude Code session on the machine, plugin loaded or not; a
+  project-relative cost file would litter whatever project happened to be
+  open. `src/cost-store.ts` imports only node builtins, so it stays off the
+  light-hook `kankaku` import ban below. `UserPromptSubmit` reads the cost
+  file for the baseline (`promptOpen.costAtStart`); `Stop` polls it (bounded)
+  for a fresh-enough write and computes the delta; `SessionEnd` deletes it;
+  `SessionStart` (non-`compact`) sweeps cost files older than 7 days
+  (`sweepStaleCostFiles`).
 - **Crash recovery.** `src/inflight-recovery.ts#recoverStaleSessions`, run at
   `SessionStart`, scans every other session's state file: a dead pid with an
-  open prompt becomes one `interrupted` record; a dead pid's files are always
-  cleaned up. `SessionEnd` does the same for the session it belongs to.
+  open prompt becomes one `interrupted` record; a dead pid's files (state,
+  events, cost) are always cleaned up. A non-positive `pid` counts as dead
+  regardless of `isAlive`'s answer — see "Rules" below. `SessionEnd` does the
+  same for the session it belongs to.
 
 ## Files
 
@@ -60,11 +71,15 @@ extension has one. Instead:
   replayed `WorkRecordCore`.
 - `src/paths.ts` — `resolvePaths`/`resolveKankakuDir`/`listStateFiles`: where
   everything lives under `<KANKAKU_DIR>/claude/`.
-- `src/session-state.ts` — `readState`/`writeState`/`updateState`/
-  `mergeCost`, the atomic per-session state file.
+- `src/session-state.ts` — `readState`/`writeState`/`updateState`, the
+  atomic per-session state file (no `cost` field since T7).
+- `src/cost-store.ts` — `readCost`/`writeCost`/`deleteCost`/
+  `sweepStaleCostFiles`, the per-session cost file under
+  `~/.kankaku/claude/cost/`. Node builtins only, no `kankaku` import.
 - `src/event-log.ts` — `appendEvent`/`readEventLog`/`dropSettledPrompts`.
 - `src/claude-pid.ts` — `resolveClaudePid` (ancestor walk via an injected
-  `ps` runner) and `isAlive`.
+  `ps` runner) and `isAlive` (`false` for any non-positive or non-integer
+  pid, without calling `process.kill`).
 - `src/inflight-recovery.ts` — `recoverStaleSessions`, crash recovery.
 - `src/handle-hook.ts` — `handleHook(input, deps)`, the pure dispatcher over
   injected fs/clock/sleep/log dependencies; one branch per hook event.
@@ -102,10 +117,23 @@ extension has one. Instead:
   rewritten or truncated; only the plugin's own per-session
   `*.events.jsonl` files are ever rewritten (via `dropSettledPrompts`, tmp +
   rename), to drop a settled prompt's events.
-- **The statusline touches only the `cost` field of a session's state
-  file.** `mergeCost` never overwrites a newer `cost` (last writer wins only
-  by `updatedAt`, not by call order), and never touches `pid`, `promptOpen`
-  or anything else a hook owns — see `src/session-state.ts`.
+- **The statusline never writes under a project.** It writes cost only
+  through `src/cost-store.ts#writeCost`, to
+  `~/.kankaku/claude/cost/<session_id>.json`; it only ever READS a project's
+  state file (for the open-prompt clock), and a missing state file renders
+  as `idle` rather than creating one. `writeCost` never overwrites a newer
+  cost (last writer wins only by `updatedAt`, not by call order). This is
+  the T7 fix: before it, the statusline is wired globally, so it used to run
+  in every session on the machine and litter whatever project was open with
+  a placeholder state file (`pid: 0`, `cwd: ""`) that `isAlive(0)` — via
+  `process.kill(0, 0)`, which signals the whole process GROUP — reported
+  alive forever, so recovery never swept it.
+- **A non-positive pid is always dead.** `isAlive` returns `false` for pid
+  `<= 0` (or non-integer) without calling `process.kill` at all, and
+  `recoverStaleSessions` treats `state.pid <= 0` as dead independently of
+  what `isAlive` reports — belt and suspenders against the exact T7 defect
+  above, so a future placeholder-shaped state file can never look alive
+  again through either path.
 
 ## Conventions (mirrored from kankaku)
 
@@ -139,6 +167,10 @@ sequencing this depends on):
 echo '{"session_id":"demo","cwd":"'$(mktemp -d)'","model":{"id":"claude-sonnet-5"},"cost":{"total_cost_usd":0.1234}}' | node src/statusline.ts
 node src/cli.ts setup
 ```
+
+This writes a real `demo.json` under your actual `~/.kankaku/claude/cost/`
+(T7: cost always lives under `HOME`, never a project) — override `HOME` to
+an isolated temp directory first if you want to avoid that.
 
 ## Git
 

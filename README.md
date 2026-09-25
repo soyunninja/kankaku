@@ -69,6 +69,13 @@ and paste the printed `statusLine` block into `~/.claude/settings.json`
 Without this step, kankaku-claude still records wall/waiting/work time, but
 every record's cost stays unset.
 
+Because this settings.json entry is global, the statusline command runs in
+every Claude Code session on the machine, plugin loaded or not — including
+projects that never installed kankaku-claude. It writes only to
+`~/.kankaku/claude/cost/<session_id>.json` (never under any project) and
+only reads a project's own state file, so an unrelated session never leaves
+anything behind in whatever project happens to be open.
+
 ## Commands
 
 - `/kankaku:report` — a report of recent work, grouped by day (wraps
@@ -91,7 +98,16 @@ last 7 days).
   `<KANKAKU_DIR>/claude/<session_id>.state.json` — kankaku-claude's own
   per-session working files (event log and small state file). These are
   implementation detail, not part of the shared worklog format, and are
-  cleaned up once a session ends.
+  cleaned up once a session ends. Only the hooks ever write this state file;
+  the statusline command only reads it (see below).
+- `~/.kankaku/claude/cost/<session_id>.json` — the per-session cost the
+  statusline last reported, **always under your home directory, never under
+  a project.** The statusline command is wired into `~/.claude/settings.json`
+  globally, so it runs on every Claude Code session on the machine; writing
+  cost next to a project's own state file would litter whatever project
+  happens to be open with another session's data. This directory is
+  owner-only (`0700`), each cost file is `0600`, and a file older than 7
+  days is swept on the next `SessionStart`.
 
 `KANKAKU_DIR` defaults to `.kankaku` (relative to the session's working
 directory); set the `KANKAKU_DIR` environment variable to use an absolute

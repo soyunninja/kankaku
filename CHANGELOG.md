@@ -26,3 +26,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     open prompt's elapsed clock and the current cost.
   - `node src/cli.ts report|status|setup` and the `/kankaku:report`,
     `/kankaku:status`, `/kankaku:setup` slash commands.
+
+### Fixed
+
+- T7: the statusline command is wired globally in `~/.claude/settings.json`,
+  so it runs in every Claude Code session on the machine, plugin loaded or
+  not. It used to write cost into the open project's own
+  `.kankaku/claude/<session_id>.state.json`, creating a placeholder file
+  (`pid: 0`, `cwd: ""`) in whatever project happened to be open and
+  recreating it after `SessionEnd` deleted it — and `isAlive(0)`
+  (`process.kill(0, 0)` signals the whole process GROUP) reported that
+  placeholder alive forever, so crash recovery never swept it.
+  - Cost now lives only under `~/.kankaku/claude/cost/<session_id>.json`
+    (`src/cost-store.ts`, new; node builtins only), never under a project.
+    The statusline only reads a project's state file, read-only, for the
+    open-prompt clock; a missing state file renders `kankaku idle` without
+    creating anything.
+  - `SessionState` no longer has a `cost` field; `mergeCost` is removed.
+  - `isAlive` returns `false` for any non-positive or non-integer pid
+    without calling `process.kill`; `recoverStaleSessions` treats
+    `pid <= 0` as dead independently of `isAlive`'s answer.
+  - `SessionEnd` also deletes the session's cost file; `SessionStart`
+    (non-`compact`) sweeps cost files older than 7 days.
+  - `node src/cli.ts status` reads cost from the cost file.
