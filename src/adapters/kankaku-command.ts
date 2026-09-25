@@ -175,6 +175,14 @@ export interface KankakuCommandDeps {
    * a caller has not wired this — back-compat with an older embedder.
    */
   subagentProfiles?: SubagentProfile[];
+  /**
+   * Opens the `/kankaku` overlay panel (`adapters/panel/kankaku-panel.ts`)
+   * when present. `/kankaku` with no arguments prefers this over the plain
+   * summary report whenever a UI is attached; absent (or without a UI),
+   * behaviour is unchanged — the summary report, exactly as before this
+   * panel existed.
+   */
+  openPanel?: (ctx: ExtensionContext) => Promise<void>;
 }
 
 export interface KankakuCommand {
@@ -706,6 +714,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
 
         if (tokens[0] === "doctor") {
           handleDoctorCommand(ctx);
+          return;
+        }
+
+        if (tokens.length === 0 && ctx.hasUI && deps.openPanel) {
+          await deps.openPanel(ctx);
           return;
         }
 

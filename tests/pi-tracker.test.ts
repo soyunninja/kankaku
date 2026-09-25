@@ -315,13 +315,14 @@ test("session_shutdown while idle appends nothing", async () => {
   assert.equal(log.records.length, 0);
 });
 
-test("registers a kankaku command that appends a durable summary entry", async () => {
+test("registers a kankaku command that appends a durable summary entry (headless: no UI, unchanged)", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
   const log = new FakeWorkLog();
   const pi = new FakePi();
   const notified: string[] = [];
-  const ctx = makeFakeCtx({ ui: { notify: (msg: string) => notified.push(msg), setStatus: () => {} } });
+  // hasUI: false — the panel (wired below) only ever opens with a UI attached; headless behaviour must stay byte-identical to before the panel existed.
+  const ctx = makeFakeCtx({ hasUI: false, ui: { notify: (msg: string) => notified.push(msg), setStatus: () => {} } });
 
   createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
 
@@ -329,11 +330,38 @@ test("registers a kankaku command that appends a durable summary entry", async (
   assert.ok(command);
   await command!.handler("", ctx);
 
+  assert.equal(pi.entries.length, 0);
+  assert.equal(notified.length, 1);
+  assert.match(notified[0]!, /today/);
+  assert.match(notified[0]!, /orchestrator/i);
+});
+
+test("'/kankaku' with no args opens the panel instead of the summary report when a UI is attached", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const notified: string[] = [];
+  let customCalls = 0;
+  const ctx = makeFakeCtx({
+    ui: {
+      notify: (msg: string) => notified.push(msg),
+      setStatus: () => {},
+      custom: async () => {
+        customCalls++;
+      },
+    },
+  });
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  const command = pi.commands.get("kankaku");
+  assert.ok(command);
+  await command!.handler("", ctx);
+
+  assert.equal(customCalls, 1);
+  assert.equal(pi.entries.length, 0);
   assert.equal(notified.length, 0);
-  assert.equal(pi.entries.length, 1);
-  const data = pi.entries[0]!.data as { title: string; lines: string[] };
-  assert.match(data.title, /today/);
-  assert.match(data.lines.join("\n"), /orchestrator/i);
 });
 
 test("a handler failure does not throw and notifies ui when available", async () => {

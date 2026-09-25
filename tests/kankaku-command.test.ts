@@ -167,6 +167,63 @@ test("the plain command shows a durable summary report when a UI is available, a
   assert.equal(notified.length, 1);
 });
 
+test("the plain command opens the panel instead of the summary report when hasUI and openPanel are both present", async () => {
+  const pi = new FakePi();
+  const opened: ExtensionContext[] = [];
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    openPanel: async (ctx) => {
+      opened.push(ctx);
+    },
+  });
+
+  const ctx = makeCtx();
+  await pi.commands.get("kankaku")!.handler("", ctx);
+  assert.equal(opened.length, 1);
+  assert.equal(opened[0], ctx);
+  assert.equal(pi.entries.length, 0, "no durable report entry should be appended when the panel opens instead");
+});
+
+test("the plain command still shows the summary report when openPanel is present but there is no UI (headless)", async () => {
+  const pi = new FakePi();
+  const opened: unknown[] = [];
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    openPanel: async () => {
+      opened.push(undefined);
+    },
+  });
+
+  const notified: string[] = [];
+  await pi.commands
+    .get("kankaku")!
+    .handler("", makeCtx({ hasUI: false, ui: { notify: (msg: string) => notified.push(msg), setStatus: () => {} } }));
+  assert.equal(opened.length, 0, "the panel must never open without a UI");
+  assert.equal(notified.length, 1);
+});
+
+test("a non-empty argument still runs its subcommand even when openPanel is present", async () => {
+  const pi = new FakePi();
+  const opened: unknown[] = [];
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    openPanel: async () => {
+      opened.push(undefined);
+    },
+  });
+
+  await pi.commands.get("kankaku")!.handler("doctor", makeCtx());
+  assert.equal(opened.length, 0);
+  assert.equal(pi.entries.length, 1);
+  assert.equal((pi.entries[0] as { data: { title: string } }).data.title, "doctor");
+});
+
 test("'doctor' reports orphan/uncertain counts and ancestor-detection availability, with no network call (SUBAGENT-REQ-017)", async () => {
   const pi = new FakePi();
   const log = new FakeWorkLog();
