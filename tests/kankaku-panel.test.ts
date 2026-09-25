@@ -5,11 +5,7 @@ import type { Theme } from "@earendil-works/pi-coding-agent";
 import type { Component, TUI, TuiMouseEvent, TuiMouseEventResult } from "@earendil-works/pi-tui";
 import { createPanelComponent, openKankakuPanel } from "../src/adapters/panel/kankaku-panel.ts";
 import type { PanelHost } from "../src/adapters/panel/kankaku-panel.ts";
-
-const UP = "\x1b[A";
-const DOWN = "\x1b[B";
-const ENTER = "\r";
-const ESCAPE = "\x1b";
+import { DOWN, ENTER, ESCAPE, fakeTheme, fakeTui, UP } from "./helpers/panel-fakes.ts";
 
 /** The panel component always implements `handleInput`/`handleMouse`; narrows past `Component`'s optional signatures for test call sites. */
 type TestComponent = Component & {
@@ -17,31 +13,6 @@ type TestComponent = Component & {
   handleMouse: NonNullable<Component["handleMouse"]>;
   dispose?(): void;
 };
-
-/** `fg`/`bold` pass text through unchanged; `inverse` wraps it so hover state is observable in rendered output. */
-function fakeTheme(): Theme {
-  return {
-    fg: (_role: string, text: string) => text,
-    bg: (_role: string, text: string) => text,
-    bold: (text: string) => text,
-    italic: (text: string) => text,
-    underline: (text: string) => text,
-    inverse: (text: string) => `[${text}]`,
-    strikethrough: (text: string) => text,
-  } as unknown as Theme;
-}
-
-function fakeTui(): TUI & { renderRequests: number } {
-  const tui = {
-    renderRequests: 0,
-    requestRender() {
-      tui.renderRequests++;
-    },
-    setFocus: () => {},
-    terminal: { columns: 100, rows: 40 },
-  };
-  return tui as unknown as TUI & { renderRequests: number };
-}
 
 /** A `factory(host) => Component` double that records every input/mouse call it receives. */
 function stubScreen(bodyLine: string) {
@@ -126,14 +97,16 @@ test("root renders the panel title and root footer hints (esc close, no q)", () 
   assert.doesNotMatch(footer, /q close/);
 });
 
-test("root menu omits hubOnly rows when the hub is not configured, in order", () => {
+test("root menu omits hubOnly rows (sync) when the hub is not configured, in order", () => {
   const { ctx, getComponent } = makeCtx();
   const target = stubScreen("target body");
   const report = stubScreen("report body");
   void openKankakuPanel(ctx, { hubConfigured: false, screens: { target: target.factory, report: report.factory } });
   const component = getComponent()! as TestComponent;
 
-  // First menu row (index 0) must be "report" (target is hubOnly and hub is not configured).
+  // Root order with hub not configured: target, report, export, doctor, about
+  // (target is not hub-only — only sync is, and it is omitted entirely).
+  component.handleInput(DOWN); // target -> report
   component.handleInput(ENTER);
   const lines = component.render(80);
   assert.equal(lines[0], "kankaku · Report");
@@ -146,7 +119,8 @@ test("enter on a root menu item pushes that screen; escape goes back to root", (
   void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
   const component = getComponent()! as TestComponent;
 
-  component.handleInput(ENTER); // selects the first (and, with hubConfigured:false, topmost) item: report
+  component.handleInput(DOWN); // target (topmost, no factory registered) -> report
+  component.handleInput(ENTER);
   let lines = component.render(80);
   assert.equal(lines[0], "kankaku · Report");
   const footer = lines.at(-1)!;
@@ -163,7 +137,7 @@ test("a screen with no registered factory renders a 'coming soon' placeholder", 
   void openKankakuPanel(ctx, { hubConfigured: false, screens: {} });
   const component = getComponent()! as TestComponent;
 
-  component.handleInput(ENTER); // first root item (report) has no factory registered
+  component.handleInput(ENTER); // first root item (target) has no factory registered
   const lines = component.render(80);
   assert.ok(lines.some((line) => line.includes("coming soon")));
 });
@@ -194,6 +168,7 @@ test("keys other than escape/q/arrows/enter are forwarded to the body", () => {
   void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
   const component = getComponent()! as TestComponent;
 
+  component.handleInput(DOWN); // target (no factory) -> report
   component.handleInput(ENTER); // push report; body is now the stub
   component.handleInput("x");
   assert.deepEqual(report.inputs, ["x"]);
@@ -234,6 +209,7 @@ test("a mouse event outside the footer row is delegated to the body", () => {
   void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory } });
   const component = getComponent()! as TestComponent;
 
+  component.handleInput(DOWN); // target (no factory) -> report
   component.handleInput(ENTER); // push report; body is now the stub
   component.handleMouse(clickEvent(0, 0)); // title row, never the footer
   assert.equal(report.mouseEvents.length, 1);
@@ -260,7 +236,8 @@ test("down arrow moves the root selection before enter opens it", () => {
   void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: report.factory, doctor: doctor.factory } });
   const component = getComponent()! as TestComponent;
 
-  // hubConfigured:false root order is: report, export, doctor, about.
+  // hubConfigured:false root order is: target, report, export, doctor, about.
+  component.handleInput(DOWN);
   component.handleInput(DOWN);
   component.handleInput(DOWN);
   component.handleInput(ENTER);
@@ -269,6 +246,40 @@ test("down arrow moves the root selection before enter opens it", () => {
 
   component.handleInput(UP); // no-op: doctor's stub body ignores unrecognised input, proving it was forwarded, not swallowed
   assert.deepEqual(doctor.inputs, [UP]);
+});
+
+test("PanelHost.setBodyWantsText(true) makes 'q' forward to the body instead of closing", async () => {
+  const { ctx, getComponent } = makeCtx();
+  const target = stubScreen("target body");
+  const donePromise = openKankakuPanel(ctx, { hubConfigured: true, screens: { target: target.factory } });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(ENTER); // hubConfigured:true -> first root item is "target"
+  const host = target.getHost()!;
+
+  host.setBodyWantsText(true);
+  component.handleInput("q");
+  assert.deepEqual(target.inputs, ["q"]);
+
+  host.setBodyWantsText(false);
+  component.handleInput("q");
+  await donePromise;
+});
+
+test("footer shows the search hint when the current body is searchable", () => {
+  const { ctx, getComponent } = makeCtx();
+  const searchableFactory = (_host: PanelHost): Component & { searchable?: boolean } => ({
+    render: () => ["report body"],
+    invalidate: () => {},
+    searchable: true,
+  });
+  void openKankakuPanel(ctx, { hubConfigured: false, screens: { report: searchableFactory } });
+  const component = getComponent()! as TestComponent;
+
+  component.handleInput(DOWN); // target (no factory) -> report
+  component.handleInput(ENTER);
+  const footer = component.render(80).at(-1)!;
+  assert.match(footer, /\/ search/);
 });
 
 test("createPanelComponent renders standalone, without going through openKankakuPanel", () => {

@@ -29,6 +29,15 @@ export interface PanelHost {
   back(): void;
   close(): void;
   requestRender(): void;
+  /**
+   * Set (or clear) whether the current body owns a text field (e.g. the
+   * target screen's legacy-label `Input`). While `true`, `q` is forwarded
+   * to the body like any other key instead of closing the panel — so
+   * typing the letter `q` into a text field never closes the overlay. A
+   * screen must reset this to `false` when its text field closes (see
+   * `screens/target.ts`'s legacy-label submenu).
+   */
+  setBodyWantsText(flag: boolean): void;
 }
 
 export interface KankakuPanelDeps {
@@ -94,7 +103,7 @@ class KankakuPanelComponent implements Component {
 
   private nav: PanelNav;
   private body: PanelBody;
-  /** Set by a future screen (P2+) that owns a text field, so `q` types instead of closing. Always `false` in P1: no screen sets it yet. */
+  /** Set via `PanelHost.setBodyWantsText` by a screen that owns a text field (e.g. the target screen's legacy-label `Input`), so `q` types instead of closing. */
   private bodyWantsText = false;
   private hints: PanelHint[] = [];
   private hintSpans: HintSpan[] = [];
@@ -114,6 +123,9 @@ class KankakuPanelComponent implements Component {
       back: () => this.goBack(),
       close: () => this.closePanel(),
       requestRender: () => this.tui.requestRender(),
+      setBodyWantsText: (flag) => {
+        this.bodyWantsText = flag;
+      },
     };
     this.nav = navRoot();
     this.body = this.createBody("root");

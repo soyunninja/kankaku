@@ -1,9 +1,13 @@
 /**
  * Pure model for the `/kankaku` panel (see odd/tasks/kankaku-panel.md): the
- * set of screens, the root menu, an immutable navigation stack, and the
- * title/footer-hint text every adapter screen renders from. No I/O, no pi
- * imports — see AGENTS.md "Architecture (hexagonal)".
+ * set of screens, the root menu, an immutable navigation stack, the
+ * title/footer-hint text every adapter screen renders from, and pure row
+ * builders (e.g. {@link buildTargetRows}) that turn kankaku state into row
+ * models for a screen's `SettingsList`. No I/O, no pi imports — see
+ * AGENTS.md "Architecture (hexagonal)".
  */
+
+import type { WorkTarget } from "./work-target.ts";
 
 export type PanelScreenId = "root" | "target" | "report" | "sync" | "export" | "doctor" | "about";
 
@@ -17,7 +21,9 @@ export interface PanelMenuItem {
 }
 
 const ROOT_MENU_ITEMS: PanelMenuItem[] = [
-  { id: "target", label: "Target", description: "Billing client, project, hub task, legacy label", hubOnly: true },
+  // Not hub-only: the legacy billing label (`/kankaku client <name>`) is
+  // set from this same screen and works with no hub configured at all.
+  { id: "target", label: "Target", description: "Billing client, project, hub task, legacy label", hubOnly: false },
   { id: "report", label: "Report", description: "Today/all totals, tasks, sessions, clients, projects", hubOnly: false },
   { id: "sync", label: "Sync", description: "Status, sync now, sync all, backfill, catalog refresh", hubOnly: true },
   { id: "export", label: "Export", description: "Write today's or every task as csv/json", hubOnly: false },
@@ -108,4 +114,92 @@ export function footerHints(screen: PanelScreenId, options: { searchable: boolea
   if (options.searchable) hints.push({ key: "/", label: "search" });
   hints.push({ key: "esc", label: "back" }, { key: "q", label: "close" });
   return hints;
+}
+
+/** One row of a `SettingsList`-backed screen (e.g. {@link buildTargetRows}'s output). */
+export interface PanelRow {
+  id: string;
+  label: string;
+  value: string;
+  description?: string;
+}
+
+const NONE_VALUE = "— none —";
+
+/** Pure input for {@link buildTargetRows}. */
+export interface TargetRowsInput {
+  /** Whether the hub (PocketBase) is configured; see `rootMenu`'s `target` row, which is offered either way. */
+  hubConfigured: boolean;
+  /** The current effective hub target, if any (`SessionTarget#effectiveTarget()`). */
+  target?: WorkTarget;
+  /** Which source produced {@link target} (already formatted by the caller as `"session" | "config" | "repoPaths"`), or `undefined` for none. */
+  source?: string;
+  /** The current effective legacy billing label (`SessionClient#effectiveClient()`), if any. */
+  legacyLabel?: string;
+  /** Which source produced {@link legacyLabel} (already formatted by the caller), or `undefined` for none. */
+  legacySource?: string;
+}
+
+/**
+ * Build the target screen's rows from kankaku's current billing-target
+ * state. Pure: the caller (`adapters/panel/screens/target.ts`) resolves
+ * `target`/`source`/`legacyLabel`/`legacySource` from `SessionTarget`/
+ * `SessionClient` and formats each source name as a plain string, so this
+ * function never depends on their concrete types.
+ *
+ * `client`/`project`/`task`/`source`/`remember` are included only when
+ * {@link TargetRowsInput.hubConfigured} is `true` — the panel's `target`
+ * screen is offered either way (see `rootMenu`), but those rows only make
+ * sense once a hub exists to resolve them against. `legacy` is always
+ * included: the legacy billing label works with no hub at all.
+ */
+export function buildTargetRows(input: TargetRowsInput): PanelRow[] {
+  const rows: PanelRow[] = [];
+  const target = input.target;
+  const hasClient = target !== undefined;
+  const hasProject = target !== undefined && target.projectId !== undefined;
+
+  if (input.hubConfigured) {
+    rows.push({
+      id: "client",
+      label: "Client",
+      value: hasClient ? `${target.clientName} (${target.clientCode})` : NONE_VALUE,
+    });
+
+    rows.push({
+      id: "project",
+      label: "Project",
+      value: hasProject ? (target.projectName ?? NONE_VALUE) : NONE_VALUE,
+      ...(hasClient ? {} : { description: "pick a client first" }),
+    });
+
+    rows.push({
+      id: "task",
+      label: "Task",
+      value: hasProject && target.hubTaskTitle !== undefined ? target.hubTaskTitle : NONE_VALUE,
+      ...(hasProject ? {} : { description: "pick a project first" }),
+    });
+
+    rows.push({
+      id: "source",
+      label: "Source",
+      value: input.source ?? "none",
+    });
+
+    rows.push({
+      id: "remember",
+      label: "Remember",
+      value: "save to config.json",
+      description: "Saves the client and project (never the linked task) to this repository's .kankaku/config.json.",
+    });
+  }
+
+  rows.push({
+    id: "legacy",
+    label: "Legacy label",
+    value: input.legacyLabel ?? NONE_VALUE,
+    description: `Source: ${input.legacySource ?? "none"}`,
+  });
+
+  return rows;
 }

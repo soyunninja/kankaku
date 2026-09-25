@@ -16,6 +16,7 @@ import { createStatusBar } from "./status-bar.ts";
 import { notifyError, registerKankakuCommand } from "./kankaku-command.ts";
 import type { SyncCommandDeps } from "./kankaku-command.ts";
 import { openKankakuPanel } from "./panel/kankaku-panel.ts";
+import { createTargetScreen } from "./panel/screens/target.ts";
 import type { SyncTrigger } from "./sync-runner.ts";
 
 export type { KankakuReportData } from "./kankaku-command.ts";
@@ -253,10 +254,12 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     resolveIdleClient: idleDisplayLabel,
   });
 
+  const refreshIdleStatus = (ctx: ExtensionContext) => statusBar.showIdle(ctx);
+
   const kankakuCommand = registerKankakuCommand(pi, {
     log,
     sessionClient,
-    refreshIdleStatus: (ctx) => statusBar.showIdle(ctx),
+    refreshIdleStatus,
     writeExportFile: deps.writeExportFile,
     sessionTarget: deps.sessionTarget,
     catalog: deps.catalog,
@@ -273,9 +276,25 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     subagentProfiles: deps.subagentProfiles,
     // The hub is configured exactly when a session target is wired (see
     // PiTrackerDeps.sessionTarget's doc comment): the panel's root menu
-    // uses the same signal to decide whether to offer target/sync (screens
-    // are filled in by later tasks; P1 wires navigation only).
-    openPanel: (ctx) => openKankakuPanel(ctx, { hubConfigured: deps.sessionTarget !== undefined, screens: {} }),
+    // uses the same signal to decide whether to offer `sync` — `target`
+    // itself is offered either way, since the legacy `/kankaku client
+    // <name>` label lives on that same screen and works with no hub at
+    // all (see `domain/panel-model.ts#rootMenu`'s `target` row).
+    openPanel: (ctx) =>
+      openKankakuPanel(ctx, {
+        hubConfigured: deps.sessionTarget !== undefined,
+        screens: {
+          target: createTargetScreen({
+            pi,
+            ctx,
+            role,
+            sessionTarget: deps.sessionTarget,
+            sessionClient,
+            catalog: deps.catalog,
+            refreshIdleStatus,
+          }),
+        },
+      }),
   });
 
   /** At most one quiet auto-sync failure notification per session; never notified on success. Shared by the fire-and-forget `triggerAutoSync` and the awaited shutdown sync below. */

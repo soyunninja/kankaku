@@ -81,6 +81,24 @@ export interface SessionTarget {
   pickTask(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void>;
   /** `/kankaku task clear`: drops the linked hub task, keeping the rest of the session target. A no-op when none is linked. */
   clearTask(pi: ExtensionAPI): void;
+  /**
+   * Set the linked hub task directly, bypassing the picker — the panel's
+   * target screen (`adapters/panel/screens/target.ts`) uses this once the
+   * user has already chosen a task from its own `SelectList`. Builds the
+   * session override from the current {@link effectiveTarget}'s candidate
+   * plus `hubTaskId` and appends the session entry, exactly like
+   * {@link pickTask}'s own persistence step. A no-op when there is no
+   * effective target with a project.
+   */
+  setTask(pi: ExtensionAPI, hubTaskId: string): void;
+  /**
+   * `/kankaku target remember` / the panel's "Remember" row: persists the
+   * current {@link effectiveTarget}'s `clientId`/`projectId` (never
+   * `hubTaskId` — task linking stays session-only) to the project's
+   * `.kankaku/config.json`. Returns `false`, without persisting anything,
+   * when there is no effective target.
+   */
+  rememberTarget(): boolean;
   /** Current effective target (session > project config > repoPaths), regardless of role. */
   effectiveTarget(): WorkTarget | undefined;
   /** Which source produced {@link effectiveTarget}. */
@@ -346,6 +364,22 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
     pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, {});
   }
 
+  function setTask(pi: ExtensionAPI, hubTaskId: string): void {
+    const target = effectiveTarget();
+    if (!target || target.projectId === undefined) return;
+
+    const ids: WorkTargetCandidate = { ...candidateFrom(target), hubTaskId };
+    sessionOverride = ids;
+    pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, entryDataFrom(ids));
+  }
+
+  function rememberTarget(): boolean {
+    const target = effectiveTarget();
+    if (!target) return false;
+    deps.persistProjectConfig(candidateFrom(target));
+    return true;
+  }
+
   async function pickTask(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void> {
     if (deps.role !== "orchestrator" || !ctx.hasUI) return;
 
@@ -364,9 +398,7 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
     }
     if (result.kind === "skipped") return;
 
-    const ids: WorkTargetCandidate = { ...candidateFrom(target), hubTaskId: result.task.id };
-    sessionOverride = ids;
-    pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, entryDataFrom(ids));
+    setTask(pi, result.task.id);
 
     const updated = effectiveTarget();
     if (updated) ctx.ui.notify(`kankaku: task set to ${formatWorkTargetLabel(updated)}`);
@@ -380,5 +412,20 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
     pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, entryDataFrom(rest));
   }
 
-  return { restore, ensurePicked, pick, setExplicit, clear, pickTask, clearTask, effectiveTarget, effectiveSource, runTarget, idleTarget, endRun };
+  return {
+    restore,
+    ensurePicked,
+    pick,
+    setExplicit,
+    clear,
+    pickTask,
+    clearTask,
+    setTask,
+    rememberTarget,
+    effectiveTarget,
+    effectiveSource,
+    runTarget,
+    idleTarget,
+    endRun,
+  };
 }

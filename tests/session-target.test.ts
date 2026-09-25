@@ -762,6 +762,92 @@ test("setExplicit never carries a hubTaskId forward, even after a previous pickT
   assert.deepEqual(pi.appended.at(-1), { customType: TARGET_ENTRY_TYPE, data: { clientId: "c-globex" } });
 });
 
+// --- setTask/rememberTarget (panel target screen, P2) ---
+
+test("setTask sets the session override with hubTaskId from the effective target and appends the entry", () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+
+  target.setTask(pi, "t-open");
+
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+  assert.deepEqual(pi.appended.at(-1), {
+    customType: TARGET_ENTRY_TYPE,
+    data: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-open" },
+  });
+});
+
+test("setTask is a no-op when there is no effective target", () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+
+  target.setTask(pi, "t-open");
+
+  assert.equal(pi.appended.length, 0);
+  assert.equal(target.effectiveTarget(), undefined);
+});
+
+test("setTask is a no-op when the effective target has no project", () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme" });
+  const appendedBefore = pi.appended.length;
+
+  target.setTask(pi, "t-open");
+
+  assert.equal(pi.appended.length, appendedBefore);
+  assert.equal(target.effectiveTarget()?.hubTaskId, undefined);
+});
+
+test("pickTask (the picker path) still works exactly as before, now implemented on top of setTask", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const { ctx } = makeCtx(true, ["Fix the thing"]);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+});
+
+test("rememberTarget persists the effective candidate without hubTaskId and returns true", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  let remembered: unknown;
+  const target = createSessionTarget(makeDeps({ catalog, persistProjectConfig: (ids) => { remembered = ids; } }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const { ctx } = makeCtx(true, ["Fix the thing"]);
+  await target.pickTask(pi, ctx);
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+
+  const result = target.rememberTarget();
+
+  assert.equal(result, true);
+  assert.deepEqual(remembered, { clientId: "c-acme", projectId: "p-portal" });
+});
+
+test("rememberTarget returns false when there is no effective target", () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  let persisted = false;
+  const target = createSessionTarget(makeDeps({ catalog, persistProjectConfig: () => { persisted = true; } }));
+
+  const result = target.rememberTarget();
+
+  assert.equal(result, false);
+  assert.equal(persisted, false);
+});
+
 test("pick (the target picker) never carries a hubTaskId forward either, and never persists one to the project config file", async () => {
   const catalog = new FakeCatalog();
   catalog.snapshot = SNAPSHOT;
