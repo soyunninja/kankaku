@@ -1,5 +1,5 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Client, Project, WorkTarget } from "../domain/work-target.ts";
+import type { Client, HubTask, Project, WorkTarget } from "../domain/work-target.ts";
 
 const SKIP_OPTION = "— skip —";
 const NO_PROJECT_OPTION = "(no project)";
@@ -79,4 +79,49 @@ export async function pickTarget(ctx: ExtensionContext, catalog: PickerCatalog):
   };
 
   return { kind: "picked", target };
+}
+
+export type PickHubTaskResult = { kind: "picked"; task: HubTask } | { kind: "skipped" } | { kind: "empty" };
+
+/**
+ * Build `label -> task` options for {@link pickHubTask}, sorted by title.
+ * When two tasks share the same title, disambiguate every colliding label
+ * with the task's `externalRef` when it has one, or its bare id otherwise —
+ * unlike {@link labelOptions}, a hub task has no `code`, and every task
+ * needs a disambiguator, not just the ones lucky enough to have one.
+ */
+function labelTaskOptions(tasks: HubTask[]): LabeledOption<HubTask>[] {
+  const sorted = [...tasks].sort((a, b) => a.title.localeCompare(b.title));
+  const titleCounts = new Map<string, number>();
+  for (const task of sorted) {
+    titleCounts.set(task.title, (titleCounts.get(task.title) ?? 0) + 1);
+  }
+
+  return sorted.map((task) => {
+    const collides = (titleCounts.get(task.title) ?? 0) > 1;
+    const label = collides ? `${task.title} (${task.externalRef ?? task.id})` : task.title;
+    return { label, item: task };
+  });
+}
+
+/**
+ * Run the hub-task picker (`ctx.ui.select`) for `projectId`'s open/doing
+ * tasks. Pure UI interaction: no network, no persistence — the caller
+ * (`session-target.ts#pickTask`) decides what to do with the result.
+ * `{ kind: "empty" }` is returned without ever prompting when the project
+ * has no open/doing task, so the caller can tell "nothing to pick from"
+ * apart from "the user skipped".
+ */
+export async function pickHubTask(ctx: ExtensionContext, tasks: HubTask[], projectId: string): Promise<PickHubTaskResult> {
+  const pickable = tasks.filter((task) => task.status !== "done" && task.projectId === projectId);
+  if (pickable.length === 0) return { kind: "empty" };
+
+  const taskOptions = labelTaskOptions(pickable);
+  const choice = await ctx.ui.select("kankaku — task", [...taskOptions.map((option) => option.label), SKIP_OPTION]);
+  if (choice === undefined || choice === SKIP_OPTION) return { kind: "skipped" };
+
+  const task = taskOptions.find((option) => option.label === choice)?.item;
+  if (!task) return { kind: "skipped" };
+
+  return { kind: "picked", task };
 }

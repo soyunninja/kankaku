@@ -1752,6 +1752,56 @@ test("buildRecord attaches clientId/clientName/projectId/projectName and machine
   assert.equal(record.machine, "laptop");
 });
 
+test("buildRecord attaches hubTaskId/hubTaskTitle when a hub task is linked to the session, and a subagent never carries them", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+
+  const catalog = new FakeCatalog();
+  catalog.snapshot = {
+    fetchedAt: 0,
+    url: "https://pb.example.com",
+    clients: [{ id: "c-acme", name: "Acme", code: "acme", active: true }],
+    projects: [{ id: "p-portal", name: "Portal", clientId: "c-acme", repoPaths: [], active: true }],
+    tasks: [{ id: "t-1", title: "Fix the thing", projectId: "p-portal", status: "open" }],
+  };
+  const sessionTarget = createSessionTarget({
+    role: "orchestrator",
+    catalog,
+    resolveProjectConfigIds: () => undefined,
+    persistProjectConfig: () => {},
+  });
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    sessionTarget,
+    machine: "laptop",
+  });
+
+  const ctx = makeFakeCtx({
+    sessionManager: {
+      getSessionId: () => "session-1",
+      getSessionFile: () => "/abs/project/path/.pi/sessions/session-1.json",
+      getEntries: () => [{ type: "custom", customType: "kankaku-target", data: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-1" } }],
+    },
+  });
+
+  await pi.fire("session_start", { type: "session_start", reason: "startup" }, ctx);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi" }, ctx);
+  clock.advanceTo(1000);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  const record = log.records[0]!;
+  assert.equal(record.hubTaskId, "t-1");
+  assert.equal(record.hubTaskTitle, "Fix the thing");
+});
+
 test("buildRecord omits every hub field for a subagent, even when a hub is configured for the process", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });

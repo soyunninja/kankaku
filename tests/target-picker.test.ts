@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { pickTarget } from "../src/adapters/target-picker.ts";
+import { pickHubTask, pickTarget } from "../src/adapters/target-picker.ts";
 import type { PickerCatalog } from "../src/adapters/target-picker.ts";
+import type { HubTask } from "../src/domain/work-target.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
 function makeCtx(responses: Array<string | undefined>): { ctx: ExtensionContext; calls: Array<{ title: string; options: string[] }> } {
@@ -106,4 +107,54 @@ test("colliding client names are disambiguated with their code", async () => {
 
   assert.deepEqual(calls[0]?.options, ["Acme (acme-es)", "Acme (acme-us)", "— skip —"]);
   assert.deepEqual(result, { kind: "picked", target: { clientId: "c2", clientCode: "acme-us", clientName: "Acme" } });
+});
+
+const PORTAL_TASKS: HubTask[] = [
+  { id: "t-open", title: "Fix the thing", projectId: "p-portal", status: "open" },
+  { id: "t-doing", title: "Ship it", projectId: "p-portal", status: "doing" },
+  { id: "t-done", title: "Old and done", projectId: "p-portal", status: "done" },
+  { id: "t-other-project", title: "Belongs elsewhere", projectId: "p-api", status: "open" },
+];
+
+test("pickHubTask lists only open/doing tasks of the given project, sorted by title, plus skip", async () => {
+  const { ctx, calls } = makeCtx(["— skip —"]);
+  await pickHubTask(ctx, PORTAL_TASKS, "p-portal");
+
+  assert.deepEqual(calls[0]?.options, ["Fix the thing", "Ship it", "— skip —"]);
+});
+
+test("pickHubTask returns the picked task", async () => {
+  const { ctx } = makeCtx(["Ship it"]);
+  const result = await pickHubTask(ctx, PORTAL_TASKS, "p-portal");
+
+  assert.deepEqual(result, { kind: "picked", task: PORTAL_TASKS[1] });
+});
+
+test("pickHubTask returns skipped when '— skip —' is chosen or the dialog is dismissed", async () => {
+  const skipped = await pickHubTask(makeCtx(["— skip —"]).ctx, PORTAL_TASKS, "p-portal");
+  assert.deepEqual(skipped, { kind: "skipped" });
+
+  const dismissed = await pickHubTask(makeCtx([undefined]).ctx, PORTAL_TASKS, "p-portal");
+  assert.deepEqual(dismissed, { kind: "skipped" });
+});
+
+test("pickHubTask returns empty (without prompting) when the project has no open/doing tasks", async () => {
+  const { ctx, calls } = makeCtx([]);
+  const result = await pickHubTask(ctx, PORTAL_TASKS, "p-empty");
+
+  assert.deepEqual(result, { kind: "empty" });
+  assert.equal(calls.length, 0);
+});
+
+test("pickHubTask disambiguates colliding titles with their externalRef, falling back to id", async () => {
+  const tasks: HubTask[] = [
+    { id: "t-1", title: "Fix", projectId: "p-portal", status: "open", externalRef: "JIRA-1" },
+    { id: "t-2", title: "Fix", projectId: "p-portal", status: "open", externalRef: "JIRA-2" },
+    { id: "t-3", title: "Ship", projectId: "p-portal", status: "open" },
+    { id: "t-4", title: "Ship", projectId: "p-portal", status: "open" },
+  ];
+  const { ctx, calls } = makeCtx(["— skip —"]);
+  await pickHubTask(ctx, tasks, "p-portal");
+
+  assert.deepEqual(calls[0]?.options, ["Fix (JIRA-1)", "Fix (JIRA-2)", "Ship (t-3)", "Ship (t-4)", "— skip —"]);
 });

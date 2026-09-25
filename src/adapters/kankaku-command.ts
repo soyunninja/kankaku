@@ -46,8 +46,9 @@ export function notifyError(ctx: ExtensionContext, error: unknown): void {
 
 const COMMAND_TOKENS = ["all", "tasks", "sessions", "client", "clients", "export", "doctor"];
 /** Only offered when the hub is configured, so completions are unchanged for users without one. */
-const HUB_COMMAND_TOKENS = ["target", "projects", "catalog", "sync", "backfill"];
+const HUB_COMMAND_TOKENS = ["target", "task", "projects", "catalog", "sync", "backfill"];
 const TARGET_TOKENS = ["pick", "clear"];
+const TASK_TOKENS = ["pick", "clear"];
 const CATALOG_TOKENS = ["refresh"];
 const SYNC_TOKENS = ["all", "status"];
 
@@ -328,6 +329,35 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
     notifyError(ctx, new Error(`unknown target subcommand: ${rest.join(" ")}`));
   }
 
+  /**
+   * Handle `/kankaku task [pick|clear]`; `rest` excludes the leading `task`
+   * token. Default (no args) is `pick`. `pickTask`/`clearTask`
+   * (`session-target.ts`) notify their own outcome directly, so this only
+   * dispatches and refreshes the idle status line.
+   */
+  async function handleTaskCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+    const sessionTarget = deps.sessionTarget;
+    if (!sessionTarget) {
+      notifyError(ctx, new Error("hub is not configured"));
+      return;
+    }
+
+    if (rest.length === 1 && rest[0] === "clear") {
+      sessionTarget.clearTask(pi);
+      deps.refreshIdleStatus(ctx);
+      showReport(ctx, { title: "task", lines: ["task link cleared for this session"] });
+      return;
+    }
+
+    if (rest.length === 0 || (rest.length === 1 && rest[0] === "pick")) {
+      await sessionTarget.pickTask(pi, ctx);
+      deps.refreshIdleStatus(ctx);
+      return;
+    }
+
+    notifyError(ctx, new Error(`unknown task subcommand: ${rest.join(" ")}`));
+  }
+
   /** Handle `/kankaku catalog refresh`; `rest` excludes the leading `catalog` token. */
   async function handleCatalogCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
     const catalog = deps.catalog;
@@ -598,6 +628,8 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       "'doctor' to report orphan/uncertain subagent counts and ancestor-detection availability (no network). " +
       "When a hub (PocketBase) is configured: 'target' to show the effective client/project and its source, " +
       "'target pick' to run the picker again, 'target clear' to clear the session target, " +
+      "'task' (or 'task pick') to link this session to an open/doing hub task of the effective project, " +
+      "'task clear' to drop the link, " +
       "'catalog refresh' to force a catalog refresh, 'projects' for per-project totals today ('projects all' for every day), " +
       "'sync' to push pending tasks to the hub ('sync all' for a full re-evaluation, 'sync status' for the watermark/pending count/last error), " +
       "'backfill' to run a full sync and report how many tasks went to Sin determinar, grouped by their old label. " +
@@ -614,6 +646,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       if (targetMatch) {
         const prefix = targetMatch[1] ?? "";
         return TARGET_TOKENS.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
+      }
+      const taskMatch = /^task\s+(\S*)$/.exec(argumentPrefix);
+      if (taskMatch) {
+        const prefix = taskMatch[1] ?? "";
+        return TASK_TOKENS.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value }));
       }
       const catalogMatch = /^catalog\s+(\S*)$/.exec(argumentPrefix);
       if (catalogMatch) {
@@ -644,6 +681,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
 
         if (tokens[0] === "target") {
           await handleTargetCommand(tokens.slice(1), ctx);
+          return;
+        }
+
+        if (tokens[0] === "task") {
+          await handleTaskCommand(tokens.slice(1), ctx);
           return;
         }
 

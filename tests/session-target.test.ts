@@ -13,6 +13,10 @@ const SNAPSHOT: CatalogSnapshot = {
     { id: "c-globex", name: "Globex", code: "globex", active: true },
   ],
   projects: [{ id: "p-portal", name: "Portal", clientId: "c-acme", repoPaths: ["/repos/portal"], active: true }],
+  tasks: [
+    { id: "t-open", title: "Fix the thing", projectId: "p-portal", status: "open" },
+    { id: "t-done", title: "Old and done", projectId: "p-portal", status: "done" },
+  ],
 };
 
 class FakeCatalog implements Catalog {
@@ -580,4 +584,198 @@ test("idleTarget reuses the run's cached project config read while one is held",
   target.runTarget();
   assert.equal(target.idleTarget()?.clientId, "c-acme");
   assert.equal(reads, 1);
+});
+
+// --- hub task linking (pickTask/clearTask) ---
+
+test("effectiveTarget resolves hubTaskId/hubTaskTitle from the catalog when the session override carries one", () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  // setExplicit never carries a hubTaskId; simulate a restored session entry that does.
+  target.restore(makeCtxWithEntries([{ type: "custom", customType: TARGET_ENTRY_TYPE, data: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-open" } }]));
+
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+  assert.equal(target.effectiveTarget()?.hubTaskTitle, "Fix the thing");
+});
+
+test("pickTask is a no-op for a subagent", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ role: "subagent", catalog }));
+  const pi = makeFakePi();
+  const { ctx, selectCalls, notified } = makeCtx(true, []);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(selectCalls.length, 0);
+  assert.equal(notified.length, 0);
+  assert.equal(pi.appended.length, 0);
+});
+
+test("pickTask is a no-op without a UI", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  const { ctx, selectCalls } = makeCtx(false, []);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(selectCalls.length, 0);
+});
+
+test("pickTask notifies to pick a client/project first when nothing is effective yet", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  const { ctx, notified, selectCalls } = makeCtx(true, []);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(selectCalls.length, 0);
+  assert.equal(notified.some(([message]) => message.includes("Pick a client and project first")), true);
+});
+
+test("pickTask notifies to pick a client/project first when a target resolves but has no project", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme" });
+  const { ctx, notified, selectCalls } = makeCtx(true, []);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(selectCalls.length, 0);
+  assert.equal(notified.some(([message]) => message.includes("Pick a client and project first")), true);
+});
+
+test("pickTask notifies 'no open tasks' when the effective project has none", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = { ...SNAPSHOT, tasks: [] };
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const { ctx, notified, selectCalls } = makeCtx(true, []);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(selectCalls.length, 0);
+  assert.equal(notified.some(([message]) => message.includes("No open tasks")), true);
+});
+
+test("pickTask sets the session override with hubTaskId, appends the session entry, and notifies the new label", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const { ctx, notified } = makeCtx(true, ["Fix the thing"]);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+  assert.deepEqual(pi.appended.at(-1), {
+    customType: TARGET_ENTRY_TYPE,
+    data: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-open" },
+  });
+  assert.equal(notified.some(([message]) => message.includes("Fix the thing")), true);
+});
+
+test("pickTask never persists to the project config file (task linking is session-only)", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  let persisted = false;
+  const target = createSessionTarget(makeDeps({ catalog, persistProjectConfig: () => { persisted = true; } }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const { ctx } = makeCtx(true, ["Fix the thing"]);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(persisted, false);
+});
+
+test("pickTask does nothing when the user skips the task picker", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const appendedBefore = pi.appended.length;
+  const { ctx } = makeCtx(true, ["— skip —"]);
+
+  await target.pickTask(pi, ctx);
+
+  assert.equal(pi.appended.length, appendedBefore);
+  assert.equal(target.effectiveTarget()?.hubTaskId, undefined);
+});
+
+test("clearTask does nothing when the session override has no hubTaskId", () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const appendedBefore = pi.appended.length;
+
+  target.clearTask(pi);
+
+  assert.equal(pi.appended.length, appendedBefore);
+});
+
+test("clearTask drops hubTaskId from the session override, keeping client/project, and appends the entry", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const { ctx } = makeCtx(true, ["Fix the thing"]);
+  await target.pickTask(pi, ctx);
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+
+  target.clearTask(pi);
+
+  assert.equal(target.effectiveTarget()?.hubTaskId, undefined);
+  assert.equal(target.effectiveTarget()?.projectId, "p-portal");
+  assert.deepEqual(pi.appended.at(-1), { customType: TARGET_ENTRY_TYPE, data: { clientId: "c-acme", projectId: "p-portal" } });
+});
+
+test("setExplicit never carries a hubTaskId forward, even after a previous pickTask (a target change drops the task)", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const { ctx } = makeCtx(true, ["Fix the thing"]);
+  await target.pickTask(pi, ctx);
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+
+  target.setExplicit(pi, { clientId: "c-globex" });
+
+  assert.equal(target.effectiveTarget()?.hubTaskId, undefined);
+  assert.deepEqual(pi.appended.at(-1), { customType: TARGET_ENTRY_TYPE, data: { clientId: "c-globex" } });
+});
+
+test("pick (the target picker) never carries a hubTaskId forward either, and never persists one to the project config file", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  let remembered: unknown;
+  const target = createSessionTarget(makeDeps({ catalog, persistProjectConfig: (ids) => { remembered = ids; } }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal" });
+  const { ctx: pickCtx } = makeCtx(true, ["Fix the thing"]);
+  await target.pickTask(pi, pickCtx);
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+
+  const { ctx: retargetCtx } = makeCtx(true, ["Acme", "Portal"], true);
+  await target.pick(pi, retargetCtx);
+
+  assert.equal(target.effectiveTarget()?.hubTaskId, undefined);
+  assert.equal(remembered !== undefined && remembered !== null && typeof remembered === "object" && "hubTaskId" in remembered, false);
 });

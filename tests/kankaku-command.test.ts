@@ -38,6 +38,7 @@ const SNAPSHOT: CatalogSnapshot = {
     { id: "c-globex", name: "Globex", code: "globex", active: true },
   ],
   projects: [{ id: "p-portal", name: "Portal", clientId: "c-acme", repoPaths: [], active: true }],
+  tasks: [{ id: "t-1", title: "Fix the thing", projectId: "p-portal", status: "open" }],
 };
 
 function makeRecord(overrides: Partial<WorkRecord> = {}): WorkRecord {
@@ -700,7 +701,7 @@ test("getArgumentCompletions includes target/projects/catalog only when the hub 
   const tokens = (await pi.commands.get("kankaku")!.getArgumentCompletions!("")) as Array<{ value: string }>;
   assert.deepEqual(
     tokens.map((t) => t.value).sort(),
-    ["all", "backfill", "catalog", "client", "clients", "doctor", "export", "projects", "sessions", "sync", "target", "tasks"],
+    ["all", "backfill", "catalog", "client", "clients", "doctor", "export", "projects", "sessions", "sync", "target", "task", "tasks"],
   );
 });
 
@@ -802,6 +803,135 @@ test("'target clear' clears the session target and refreshes the idle status", a
   assert.equal(refreshed, 1);
   const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
   assert.equal(data.lines[0], "target cleared for this session");
+});
+
+test("'task' (default pick) shows the hub-task picker and refreshes the idle status", async () => {
+  const pi = new FakePi();
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const sessionTarget = createSessionTarget({
+    role: "orchestrator",
+    catalog,
+    resolveProjectConfigIds: () => ({ clientId: "c-acme", projectId: "p-portal" }),
+    persistProjectConfig: () => {},
+  });
+  let refreshed = 0;
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {
+      refreshed += 1;
+    },
+    sessionTarget,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler("task", makeCtx({ ui: { notify: () => {}, setStatus: () => {}, select: async () => "Fix the thing" } }));
+
+  assert.equal(refreshed, 1);
+  assert.equal(sessionTarget.effectiveTarget()?.hubTaskId, "t-1");
+});
+
+test("'task pick' shows the hub-task picker explicitly", async () => {
+  const pi = new FakePi();
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const sessionTarget = createSessionTarget({
+    role: "orchestrator",
+    catalog,
+    resolveProjectConfigIds: () => ({ clientId: "c-acme", projectId: "p-portal" }),
+    persistProjectConfig: () => {},
+  });
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sessionTarget,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler("task pick", makeCtx({ ui: { notify: () => {}, setStatus: () => {}, select: async () => "Fix the thing" } }));
+
+  assert.equal(sessionTarget.effectiveTarget()?.hubTaskId, "t-1");
+});
+
+test("'task clear' drops the linked hub task and refreshes the idle status", async () => {
+  const pi = new FakePi();
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const sessionTarget = createSessionTarget({
+    role: "orchestrator",
+    catalog,
+    resolveProjectConfigIds: () => ({ clientId: "c-acme", projectId: "p-portal" }),
+    persistProjectConfig: () => {},
+  });
+  let refreshed = 0;
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {
+      refreshed += 1;
+    },
+    sessionTarget,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler("task pick", makeCtx({ ui: { notify: () => {}, setStatus: () => {}, select: async () => "Fix the thing" } }));
+  assert.equal(sessionTarget.effectiveTarget()?.hubTaskId, "t-1");
+
+  await pi.commands.get("kankaku")!.handler("task clear", makeCtx());
+
+  assert.equal(refreshed, 2);
+  assert.equal(sessionTarget.effectiveTarget()?.hubTaskId, undefined);
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.equal(data.lines[0], "task link cleared for this session");
+});
+
+test("'task' notifies 'hub is not configured' when no sessionTarget is present", async () => {
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler("task", makeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }));
+
+  assert.match(notified[0]?.message ?? "", /not configured/);
+});
+
+test("'task bogus' notifies an unknown-subcommand error", async () => {
+  const pi = new FakePi();
+  const catalog = new FakeCatalog();
+  const sessionTarget = createSessionTarget({
+    role: "orchestrator",
+    catalog,
+    resolveProjectConfigIds: () => undefined,
+    persistProjectConfig: () => {},
+  });
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sessionTarget,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler("task bogus", makeCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }));
+
+  assert.match(notified[0]?.message ?? "", /unknown task subcommand/);
 });
 
 test("'catalog refresh' reports client/project counts", async () => {

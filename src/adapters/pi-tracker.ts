@@ -386,6 +386,8 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
             clientName: target.clientName,
             ...(target.projectId !== undefined ? { projectId: target.projectId } : {}),
             ...(target.projectName !== undefined ? { projectName: target.projectName } : {}),
+            ...(target.hubTaskId !== undefined ? { hubTaskId: target.hubTaskId } : {}),
+            ...(target.hubTaskTitle !== undefined ? { hubTaskTitle: target.hubTaskTitle } : {}),
           }
         : {}),
       ...(deps.machine !== undefined ? { machine: deps.machine } : {}),
