@@ -50,8 +50,15 @@ export function runPsProcess(pid: number): PsInfo | undefined {
   }
 }
 
-/** `true` unless `process.kill(pid, 0)` throws with a code other than `EPERM`. */
+/**
+ * `true` unless `process.kill(pid, 0)` throws with a code other than
+ * `EPERM`. A non-positive or non-integer pid is always `false`, without
+ * calling `process.kill` at all: `pid` 0 signals the whole process GROUP
+ * (T7 — the defect that let a placeholder state file's `pid: 0` read back
+ * as alive forever).
+ */
 export function isAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;

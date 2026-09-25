@@ -38,9 +38,23 @@ function makeClock(): TestClock {
   };
 }
 
-function makeDeps(kankakuDir: string, clock: TestClock, overrides: Partial<HandleHookDeps> = {}): HandleHookDeps {
+interface TestDirs {
+  kankakuDir: string;
+  homeDir: string;
+}
+
+function makeDirs(): TestDirs {
+  return { kankakuDir: makeTmpDir(), homeDir: mkdtempSync(join(tmpdir(), "kankaku-claude-hook-home-")) };
+}
+
+function cleanupDirs(dirs: TestDirs): void {
+  rmSync(dirs.kankakuDir, { recursive: true, force: true });
+  rmSync(dirs.homeDir, { recursive: true, force: true });
+}
+
+function makeDeps(dirs: TestDirs, clock: TestClock, overrides: Partial<HandleHookDeps> = {}): HandleHookDeps {
   return {
-    env: { KANKAKU_DIR: kankakuDir },
+    env: { KANKAKU_DIR: dirs.kankakuDir, HOME: dirs.homeDir },
     now: clock.now,
     sleep: async (ms) => {
       clock.set(clock.now() + ms);
@@ -87,6 +101,7 @@ function lightPathModules(entry: string): string[] {
 test("static check: nothing on the light hook path (src/hook.ts and its transitive relative imports) has a top-level runtime import from kankaku", () => {
   const modules = lightPathModules(join(__dirname, "..", "src", "hook.ts"));
   assert.ok(modules.some((file) => file.endsWith("handle-hook.ts")), "the walk must reach handle-hook.ts");
+  assert.ok(modules.some((file) => file.endsWith("cost-store.ts")), "the walk must reach cost-store.ts");
   for (const file of modules) {
     const text = readFileSync(file, "utf8");
     for (const line of text.split("\n")) {
@@ -103,17 +118,17 @@ test("static check: nothing on the light hook path (src/hook.ts and its transiti
 });
 
 test("full prompt lifecycle: one completed record with a cost delta from a simulated statusline write", async () => {
-  const kankakuDir = makeTmpDir();
+  const dirs = makeDirs();
   const clock = makeClock();
-  const deps = makeDeps(kankakuDir, clock);
-  const { mergeCost } = await import("../src/session-state.ts");
+  const deps = makeDeps(dirs, clock);
+  const { writeCost } = await import("../src/cost-store.ts");
   const { resolvePaths } = await import("../src/paths.ts");
   try {
     clock.set(0);
     await handleHook(baseInput({ hook_event_name: "SessionStart", source: "startup" }), deps);
 
     const paths = resolvePaths({ env: deps.env, cwd: "/repo", sessionId: "session-1" });
-    mergeCost(paths.stateFile, { totalUsd: 0.1, updatedAt: 200 }); // pre-existing baseline
+    writeCost(deps.env, "session-1", { totalUsd: 0.1, updatedAt: 200 }); // pre-existing baseline
 
     clock.set(1000);
     await handleHook(baseInput({ hook_event_name: "UserPromptSubmit", prompt: "do the thing" }), deps);
@@ -137,12 +152,12 @@ test("full prompt lifecycle: one completed record with a cost delta from a simul
     await handleHook(baseInput({ hook_event_name: "PostToolUse", tool_use_id: "t2", tool_name: "Bash" }), deps);
 
     // Simulate the statusline writing a fresher cost between the last tool and Stop.
-    mergeCost(paths.stateFile, { totalUsd: 0.4, updatedAt: 4500 });
+    writeCost(deps.env, "session-1", { totalUsd: 0.4, updatedAt: 4500, model: "claude-opus-4" });
 
     clock.set(5000);
     await handleHook(baseInput({ hook_event_name: "Stop", stop_hook_active: false }), deps);
 
-    const records = readWorklog(kankakuDir);
+    const records = readWorklog(dirs.kankakuDir);
     assert.equal(records.length, 1);
     const record = records[0]!;
     assert.equal(isWorkRecord(record), true);
@@ -158,6 +173,7 @@ test("full prompt lifecycle: one completed record with a cost delta from a simul
     assert.equal(record.costObserved, true);
     assert.equal(record.sessionId, "session-1");
     assert.equal(record.project, "/repo");
+    assert.equal(record.model, "anthropic/claude-opus-4");
 
     // The events file dropped the settled prompt (the leading SessionStart
     // line, not part of any prompt group, is harmlessly kept).
@@ -170,15 +186,18 @@ test("full prompt lifecycle: one completed record with a cost delta from a simul
     // promptOpen cleared.
     const { readState } = await import("../src/session-state.ts");
     assert.equal(readState(paths.stateFile)?.promptOpen, null);
+
+    // Nothing but the project's own events/state files landed under the project.
+    assert.equal(existsSync(join(dirs.kankakuDir, "claude", "cost")), false);
   } finally {
-    rmSync(kankakuDir, { recursive: true, force: true });
+    cleanupDirs(dirs);
   }
 });
 
 test("a completed prompt with no cost write never gets costObserved", async () => {
-  const kankakuDir = makeTmpDir();
+  const dirs = makeDirs();
   const clock = makeClock();
-  const deps = makeDeps(kankakuDir, clock);
+  const deps = makeDeps(dirs, clock);
   try {
     clock.set(0);
     await handleHook(baseInput({ hook_event_name: "SessionStart", source: "startup" }), deps);
@@ -187,60 +206,115 @@ test("a completed prompt with no cost write never gets costObserved", async () =
     clock.set(2000);
     await handleHook(baseInput({ hook_event_name: "Stop", stop_hook_active: false }), deps);
 
-    const records = readWorklog(kankakuDir);
+    const records = readWorklog(dirs.kankakuDir);
     assert.equal(records.length, 1);
     assert.equal(records[0]?.costObserved, undefined);
   } finally {
-    rmSync(kankakuDir, { recursive: true, force: true });
+    cleanupDirs(dirs);
+  }
+});
+
+test("UserPromptSubmit sets promptOpen.costAtStart from the cost file, not the project state file", async () => {
+  const dirs = makeDirs();
+  const clock = makeClock();
+  const deps = makeDeps(dirs, clock);
+  const { writeCost } = await import("../src/cost-store.ts");
+  const { resolvePaths } = await import("../src/paths.ts");
+  const { readState } = await import("../src/session-state.ts");
+  try {
+    clock.set(0);
+    await handleHook(baseInput({ hook_event_name: "SessionStart", source: "startup" }), deps);
+    writeCost(deps.env, "session-1", { totalUsd: 0.25, updatedAt: 500 });
+
+    clock.set(1000);
+    await handleHook(baseInput({ hook_event_name: "UserPromptSubmit", prompt: "hi" }), deps);
+
+    const paths = resolvePaths({ env: deps.env, cwd: "/repo", sessionId: "session-1" });
+    assert.equal(readState(paths.stateFile)?.promptOpen?.costAtStart, 0.25);
+  } finally {
+    cleanupDirs(dirs);
   }
 });
 
 test("SessionStart recovers a dead session's open prompt as interrupted and cleans its files", async () => {
-  const kankakuDir = makeTmpDir();
+  const dirs = makeDirs();
   const clock = makeClock();
   const { writeState } = await import("../src/session-state.ts");
   const { appendEvent } = await import("../src/event-log.ts");
   const { resolvePaths } = await import("../src/paths.ts");
   try {
-    const deadPaths = resolvePaths({ env: { KANKAKU_DIR: kankakuDir }, cwd: "/repo", sessionId: "dead-session" });
+    const deadPaths = resolvePaths({ env: { KANKAKU_DIR: dirs.kankakuDir }, cwd: "/repo", sessionId: "dead-session" });
     writeState(deadPaths.stateFile, {
       pid: 424242,
       parentPid: 1,
       cwd: "/repo",
       startedAt: 100,
       promptOpen: { id: "p1", startedAt: 100, costAtStart: undefined },
-      cost: null,
       permissionOpen: null,
     });
     appendEvent(deadPaths.eventsFile, { ts: 100, event: "UserPromptSubmit", prompt: "cut off" });
     appendEvent(deadPaths.eventsFile, { ts: 200, event: "PreToolUse", toolUseId: "t1", toolName: "Read", toolInput: {} });
 
-    const deps = makeDeps(kankakuDir, clock, { isAlive: (pid) => pid !== 424242 });
+    const deps = makeDeps(dirs, clock, { isAlive: (pid) => pid !== 424242 });
     clock.set(5000);
     await handleHook(baseInput({ hook_event_name: "SessionStart", source: "startup" }), deps);
 
-    const records = readWorklog(kankakuDir);
+    const records = readWorklog(dirs.kankakuDir);
     assert.equal(records.length, 1);
     assert.equal(records[0]?.status, "interrupted");
     assert.equal(records[0]?.sessionId, "dead-session");
     assert.equal(existsSync(deadPaths.stateFile), false);
     assert.equal(existsSync(deadPaths.eventsFile), false);
 
-    const newPaths = resolvePaths({ env: { KANKAKU_DIR: kankakuDir }, cwd: "/repo", sessionId: "session-1" });
+    const newPaths = resolvePaths({ env: { KANKAKU_DIR: dirs.kankakuDir }, cwd: "/repo", sessionId: "session-1" });
     assert.equal(existsSync(newPaths.stateFile), true);
   } finally {
-    rmSync(kankakuDir, { recursive: true, force: true });
+    cleanupDirs(dirs);
   }
 });
 
-test("SessionEnd with an open prompt appends an interrupted record and deletes this session's files", async () => {
-  const kankakuDir = makeTmpDir();
+test("SessionStart (non-compact) sweeps cost files older than 7 days", async () => {
+  const dirs = makeDirs();
   const clock = makeClock();
-  const deps = makeDeps(kankakuDir, clock);
+  const { writeCost, costFile } = await import("../src/cost-store.ts");
+  try {
+    writeCost({ HOME: dirs.homeDir }, "stale-session", { totalUsd: 1, updatedAt: 0 });
+    const deps = makeDeps(dirs, clock);
+    clock.set(8 * 24 * 60 * 60 * 1000); // 8 days later
+    await handleHook(baseInput({ hook_event_name: "SessionStart", source: "startup" }), deps);
+
+    assert.equal(existsSync(costFile({ HOME: dirs.homeDir }, "stale-session")), false);
+  } finally {
+    cleanupDirs(dirs);
+  }
+});
+
+test("SessionStart with source compact does not sweep cost files", async () => {
+  const dirs = makeDirs();
+  const clock = makeClock();
+  const { writeCost, costFile } = await import("../src/cost-store.ts");
+  try {
+    writeCost({ HOME: dirs.homeDir }, "stale-session", { totalUsd: 1, updatedAt: 0 });
+    const deps = makeDeps(dirs, clock);
+    clock.set(8 * 24 * 60 * 60 * 1000);
+    await handleHook(baseInput({ hook_event_name: "SessionStart", source: "compact" }), deps);
+
+    assert.equal(existsSync(costFile({ HOME: dirs.homeDir }, "stale-session")), true);
+  } finally {
+    cleanupDirs(dirs);
+  }
+});
+
+test("SessionEnd with an open prompt appends an interrupted record and deletes this session's files, including its cost file", async () => {
+  const dirs = makeDirs();
+  const clock = makeClock();
+  const deps = makeDeps(dirs, clock);
   const { resolvePaths } = await import("../src/paths.ts");
+  const { writeCost, costFile } = await import("../src/cost-store.ts");
   try {
     clock.set(0);
     await handleHook(baseInput({ hook_event_name: "SessionStart", source: "startup" }), deps);
+    writeCost(deps.env, "session-1", { totalUsd: 0.1, updatedAt: 100, model: "claude-x" });
     clock.set(1000);
     await handleHook(baseInput({ hook_event_name: "UserPromptSubmit", prompt: "hi" }), deps);
     clock.set(1500);
@@ -252,14 +326,16 @@ test("SessionEnd with an open prompt appends an interrupted record and deletes t
     clock.set(2000);
     await handleHook(baseInput({ hook_event_name: "SessionEnd", reason: "exit" }), deps);
 
-    const records = readWorklog(kankakuDir);
+    const records = readWorklog(dirs.kankakuDir);
     assert.equal(records.length, 1);
     assert.equal(records[0]?.status, "interrupted");
+    assert.equal(records[0]?.model, "anthropic/claude-x");
 
-    const paths = resolvePaths({ env: { KANKAKU_DIR: kankakuDir }, cwd: "/repo", sessionId: "session-1" });
+    const paths = resolvePaths({ env: { KANKAKU_DIR: dirs.kankakuDir }, cwd: "/repo", sessionId: "session-1" });
     assert.equal(existsSync(paths.stateFile), false);
     assert.equal(existsSync(paths.eventsFile), false);
+    assert.equal(existsSync(costFile(deps.env, "session-1")), false);
   } finally {
-    rmSync(kankakuDir, { recursive: true, force: true });
+    cleanupDirs(dirs);
   }
 });

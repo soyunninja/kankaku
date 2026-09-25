@@ -7,23 +7,26 @@ export interface PromptOpenState {
   costAtStart: number | undefined;
 }
 
-export interface CostState {
-  totalUsd: number;
-  updatedAt: number;
-  model?: string;
-}
-
-/** `<claude/>/<session_id>.state.json` — small, rewritten atomically. */
+/**
+ * `<claude/>/<session_id>.state.json` — small, rewritten atomically. Cost is
+ * NOT a field here (since T7, `odd/tasks/hook-tracking.md`): it lives under
+ * `~/.kankaku/claude/cost/` (`src/cost-store.ts`), never in a project's
+ * state file — only the hooks write this file.
+ */
 export interface SessionState {
   pid: number;
   parentPid: number;
   cwd: string;
   startedAt: number;
   promptOpen: PromptOpenState | null;
-  cost: CostState | null;
   permissionOpen: number | null;
 }
 
+/**
+ * A legacy state file written before T7 may still carry a `cost` field; an
+ * extra field is harmless (never required, never round-tripped by
+ * `writeState`), so it is not rejected here.
+ */
 function isSessionState(value: unknown): value is SessionState {
   if (typeof value !== "object" || value === null) return false;
   const o = value as Record<string, unknown>;
@@ -33,7 +36,6 @@ function isSessionState(value: unknown): value is SessionState {
     typeof o.cwd === "string" &&
     typeof o.startedAt === "number" &&
     "promptOpen" in o &&
-    "cost" in o &&
     "permissionOpen" in o
   );
 }
@@ -66,29 +68,4 @@ export function writeState(file: string, state: SessionState): void {
 /** Read-modify-write: `fn` receives the current state (`undefined` if absent) and returns the next one. */
 export function updateState(file: string, fn: (state: SessionState | undefined) => SessionState): void {
   writeState(file, fn(readState(file)));
-}
-
-/**
- * Touches ONLY the `cost` field, never lowering `updatedAt`: a statusline
- * write that races with a hook's own state write is safe as long as both
- * writers only ever narrow their change to the field they own. When no
- * state file exists yet, creates a minimal shell (`pid`/`parentPid`
- * unresolved) — the next hook to run fills in the rest.
- */
-export function mergeCost(file: string, cost: CostState): void {
-  updateState(file, (state) => {
-    if (!state) {
-      return {
-        pid: 0,
-        parentPid: 0,
-        cwd: "",
-        startedAt: cost.updatedAt,
-        promptOpen: null,
-        cost,
-        permissionOpen: null,
-      };
-    }
-    if (state.cost && state.cost.updatedAt > cost.updatedAt) return state;
-    return { ...state, cost };
-  });
 }

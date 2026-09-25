@@ -6,18 +6,27 @@ import { readState } from "./session-state.ts";
 import { readEventLog } from "./event-log.ts";
 import { splitPrompts, replayPrompt } from "./replay.ts";
 import { buildClaudeRecord } from "./record.ts";
+import { readCost, deleteCost, type CostEnv } from "./cost-store.ts";
 
 export interface RecoverStaleSessionsInput {
   claudeDir: string;
   currentSessionId: string;
   isAlive: (pid: number) => boolean;
   now: number;
+  env: CostEnv;
 }
 
 /**
  * Crash recovery: for every other session's state file whose pid is dead,
  * replay its still-open prompt (if any) into an `interrupted` record, then
- * delete both of that session's files. A live session is left untouched.
+ * delete that session's files (state, events, cost). A live session is left
+ * untouched.
+ *
+ * A non-positive `pid` counts as dead regardless of what `isAlive` reports
+ * (T7: the pre-fix `mergeCost` placeholder carried `pid: 0`, and the old
+ * `isAlive(0)` — `process.kill(0, 0)` signals the whole process GROUP —
+ * reported it alive forever). Such a placeholder also carries `cwd: ""`; an
+ * open prompt with no cwd to attribute it to is discarded, not replayed.
  */
 export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkRecord[] {
   const records: WorkRecord[] = [];
@@ -34,20 +43,26 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
       safeUnlink(eventsFile);
       continue;
     }
-    if (input.isAlive(state.pid)) continue;
 
-    if (state.promptOpen) {
+    const dead = state.pid <= 0 || !input.isAlive(state.pid);
+    if (!dead) continue;
+
+    if (state.promptOpen && state.cwd !== "") {
       const events = readEventLog(eventsFile);
       const prompts = splitPrompts(events);
       const last = prompts[prompts.length - 1];
       if (last && last.open) {
         const core = replayPrompt(last, { settledAt: input.now });
-        if (core) records.push(buildClaudeRecord(core, state, sessionId));
+        if (core) {
+          const model = readCost(input.env, sessionId)?.model;
+          records.push(buildClaudeRecord(core, state, sessionId, model));
+        }
       }
     }
 
     safeUnlink(stateFile);
     safeUnlink(eventsFile);
+    deleteCost(input.env, sessionId);
   }
 
   return records;

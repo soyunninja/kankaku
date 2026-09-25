@@ -1,20 +1,27 @@
 import { resolvePaths } from "./paths.ts";
-import type { readState, mergeCost, PromptOpenState } from "./session-state.ts";
+import type { readState, PromptOpenState } from "./session-state.ts";
+import type { writeCost } from "./cost-store.ts";
 
 export interface StatuslineDeps {
   env: NodeJS.ProcessEnv;
-  /** Epoch ms; used to stamp a merged cost and to compute the open prompt's elapsed clock. */
+  /** Epoch ms; used to stamp a written cost and to compute the open prompt's elapsed clock. */
   now: () => number;
   readState: typeof readState;
-  mergeCost: typeof mergeCost;
+  writeCost: typeof writeCost;
 }
 
 /**
  * Renders the Claude Code statusline line. Never throws: any parsing or
- * I/O failure falls back to the bare `"kankaku"` string. Side effect: when
- * `input.cost.total_cost_usd` is a finite number, merges it (and the model
- * id, when present) into the session's state file — creating it when
- * absent — via `deps.mergeCost`, which touches only the `cost` field.
+ * I/O failure falls back to the bare `"kankaku"` string.
+ *
+ * Side effect: when `input.cost.total_cost_usd` is a finite number, writes
+ * it (and the model id, when present) to `~/.kankaku/claude/cost/<session_id>.json`
+ * via `deps.writeCost` — NEVER under the project (T7,
+ * `odd/tasks/hook-tracking.md`: the statusline command is wired globally in
+ * `~/.claude/settings.json`, so it runs in every session on the machine).
+ * The project's own state file (`<KANKAKU_DIR>/claude/<session_id>.state.json`)
+ * is only ever READ here, for the open-prompt clock, and is never created:
+ * a missing state file renders as `idle` rather than creating anything.
  */
 export function renderStatusline(input: unknown, deps: StatuslineDeps): string {
   try {
@@ -25,21 +32,20 @@ export function renderStatusline(input: unknown, deps: StatuslineDeps): string {
     const cwd = readStringField(workspace?.current_dir) ?? readStringField(input.cwd);
     if (!sessionId || !cwd) return "kankaku";
 
-    const paths = resolvePaths({ env: deps.env, cwd, sessionId });
-
     const cost = isPlainObject(input.cost) ? input.cost : undefined;
     const totalUsd = readFiniteNumberField(cost?.total_cost_usd);
     const model = isPlainObject(input.model) ? input.model : undefined;
     const modelId = readStringField(model?.id);
 
     if (totalUsd !== undefined) {
-      deps.mergeCost(paths.stateFile, {
+      deps.writeCost(deps.env, sessionId, {
         totalUsd,
         updatedAt: deps.now(),
         ...(modelId ? { model: modelId } : {}),
       });
     }
 
+    const paths = resolvePaths({ env: deps.env, cwd, sessionId });
     const state = deps.readState(paths.stateFile);
     const clock = formatClock(state?.promptOpen ?? null, deps.now());
 

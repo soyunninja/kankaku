@@ -2,6 +2,7 @@ import { basename, join } from "node:path";
 import { JsonlWorkLog } from "kankaku/hub";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";
 import { readState } from "./session-state.ts";
+import { readCost } from "./cost-store.ts";
 import { formatReport } from "./report.ts";
 
 export interface CliDeps {
@@ -61,18 +62,24 @@ function runStatus(deps: CliDeps): CliResult {
   }
   const lines = files
     .sort()
-    .map((file) => formatStatusLine(sessionIdFromStateFile(file), file, deps.isAlive));
+    .map((file) => formatStatusLine(sessionIdFromStateFile(file), file, deps.isAlive, deps.env));
   return { stdout: lines.join("\n") + "\n", exitCode: 0 };
 }
 
-function formatStatusLine(sessionId: string, stateFile: string, isAlive: (pid: number) => boolean): string {
+function formatStatusLine(
+  sessionId: string,
+  stateFile: string,
+  isAlive: (pid: number) => boolean,
+  env: NodeJS.ProcessEnv,
+): string {
   const state = readState(stateFile);
   if (!state) return `${sessionId}  (unreadable state)`;
   const aliveWord = isAlive(state.pid) ? "alive" : "dead";
   const promptWord = state.promptOpen
     ? `prompt open since ${new Date(state.promptOpen.startedAt).toISOString()}`
     : "idle";
-  const costWord = state.cost ? `$${state.cost.totalUsd.toFixed(2)}` : "-";
+  const cost = readCost(env, sessionId);
+  const costWord = cost ? `$${cost.totalUsd.toFixed(2)}` : "-";
   return `${sessionId}  pid ${state.pid} (${aliveWord})  ${promptWord}  cost ${costWord}`;
 }
 

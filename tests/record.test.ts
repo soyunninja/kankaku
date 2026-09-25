@@ -31,14 +31,13 @@ function state(overrides: Partial<SessionState> = {}): SessionState {
     cwd: "/repo",
     startedAt: 1000,
     promptOpen: null,
-    cost: null,
     permissionOpen: null,
     ...overrides,
   };
 }
 
 test("buildClaudeRecord attaches orchestrator metadata from the session state", () => {
-  const record = buildClaudeRecord(core(), state(), "session-1");
+  const record = buildClaudeRecord(core(), state(), "session-1", undefined);
   assert.equal(record.role, "orchestrator");
   assert.equal(record.pid, 111);
   assert.equal(record.parentPid, 222);
@@ -48,14 +47,10 @@ test("buildClaudeRecord attaches orchestrator metadata from the session state", 
   assert.equal(isWorkRecord(record), true);
 });
 
-test("buildClaudeRecord sets model to anthropic/<id> only when the statusline reported one", () => {
-  const withModel = buildClaudeRecord(
-    core(),
-    state({ cost: { totalUsd: 1, updatedAt: 1, model: "claude-opus-4" } }),
-    "session-1",
-  );
+test("buildClaudeRecord sets model to anthropic/<id> only when a model was passed in explicitly", () => {
+  const withModel = buildClaudeRecord(core(), state(), "session-1", "claude-opus-4");
   assert.equal(withModel.model, "anthropic/claude-opus-4");
 
-  const withoutModel = buildClaudeRecord(core(), state(), "session-1");
+  const withoutModel = buildClaudeRecord(core(), state(), "session-1", undefined);
   assert.equal(withoutModel.model, undefined);
 });

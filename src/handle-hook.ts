@@ -4,6 +4,7 @@ import { appendEvent, readEventLog, dropSettledPrompts } from "./event-log.ts";
 import { readState, writeState, updateState, type SessionState } from "./session-state.ts";
 import { resolveClaudePid, type PsInfo } from "./claude-pid.ts";
 import { splitPrompts, type PromptEvents } from "./prompts.ts";
+import { readCost, deleteCost, sweepStaleCostFiles } from "./cost-store.ts";
 import type { Event } from "./events.ts";
 import type { WorkLog } from "kankaku/ports";
 
@@ -47,13 +48,13 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
         ? { ts, event: "UserPromptSubmit", prompt, promptId }
         : { ts, event: "UserPromptSubmit", prompt };
       appendEvent(paths.eventsFile, event);
+      const costAtStart = readCost(deps.env, sessionId)?.totalUsd;
       updateState(paths.stateFile, (state) => ({
         pid: state?.pid ?? 0,
         parentPid: state?.parentPid ?? 0,
         cwd: state?.cwd || cwd,
         startedAt: state?.startedAt ?? ts,
-        cost: state?.cost ?? null,
-        promptOpen: { id: promptId ?? `${sessionId}:${ts}`, startedAt: ts, costAtStart: state?.cost?.totalUsd },
+        promptOpen: { id: promptId ?? `${sessionId}:${ts}`, startedAt: ts, costAtStart },
         permissionOpen: null,
       }));
       return;
@@ -83,7 +84,6 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
         cwd: state?.cwd || cwd,
         startedAt: state?.startedAt ?? ts,
         promptOpen: state?.promptOpen ?? null,
-        cost: state?.cost ?? null,
         permissionOpen: ts,
       }));
       return;
@@ -135,29 +135,30 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   const beforeStopTs = events.length >= 2 ? events[events.length - 2]!.ts : events[events.length - 1]?.ts ?? deps.now();
 
   const deadline = deps.now() + STOP_COST_WAIT_MAX_MS;
-  let state = readState(paths.stateFile);
-  while ((!state?.cost || state.cost.updatedAt < beforeStopTs) && deps.now() < deadline) {
+  let cost = readCost(deps.env, sessionId);
+  while ((!cost || cost.updatedAt < beforeStopTs) && deps.now() < deadline) {
     await deps.sleep(STOP_COST_WAIT_POLL_MS);
-    state = readState(paths.stateFile);
+    cost = readCost(deps.env, sessionId);
   }
 
   const prompts = splitPrompts(events);
   const last: PromptEvents | undefined = prompts[prompts.length - 1];
+  const state = readState(paths.stateFile);
   if (!last || !state) {
     if (!state) deps.stderr(`kankaku: no session state at Stop for ${sessionId}`);
     return;
   }
 
   const costAtStart = state.promptOpen?.costAtStart;
-  const totalUsd = state.cost?.totalUsd;
-  const cost =
+  const totalUsd = cost?.totalUsd;
+  const costDelta =
     typeof costAtStart === "number" && typeof totalUsd === "number"
       ? Math.max(0, Math.round((totalUsd - costAtStart) * 1e6) / 1e6) // micro-dollars: no binary float noise in the record
       : undefined;
 
-  const core = replayPrompt(last, { cost });
+  const core = replayPrompt(last, { cost: costDelta });
   if (core) {
-    const record = buildClaudeRecord(core, state, sessionId);
+    const record = buildClaudeRecord(core, state, sessionId, cost?.model);
     const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
     log.append(record);
   }
@@ -183,11 +184,13 @@ async function handleSessionStart(
       currentSessionId: sessionId,
       isAlive: deps.isAlive,
       now: deps.now(),
+      env: deps.env,
     });
     if (recovered.length > 0) {
       const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
       for (const record of recovered) log.append(record);
     }
+    sweepStaleCostFiles(deps.env, { now: deps.now() });
   }
 
   const existing = readState(paths.stateFile);
@@ -203,7 +206,6 @@ async function handleSessionStart(
     cwd,
     startedAt: ts,
     promptOpen: null,
-    cost: null,
     permissionOpen: null,
   };
   writeState(paths.stateFile, state);
@@ -221,13 +223,15 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, ts: num
     if (last) {
       const core = replayPrompt(last, { settledAt: ts });
       if (core) {
-        const record = buildClaudeRecord(core, state, sessionId);
+        const model = readCost(deps.env, sessionId)?.model;
+        const record = buildClaudeRecord(core, state, sessionId, model);
         const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
         log.append(record);
       }
     }
   }
   deleteSessionFiles(paths);
+  deleteCost(deps.env, sessionId);
 }
 
 function deleteSessionFiles(paths: ResolvedPaths): void {

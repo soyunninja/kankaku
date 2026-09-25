@@ -50,3 +50,48 @@ test("isAlive returns false for a pid that does not exist", () => {
   // alive, isAlive(process.pid) above still proves the true branch.
   assert.equal(isAlive(999_999), false);
 });
+
+test("isAlive returns false for pid 0 without calling process.kill (T7: process.kill(0, 0) signals the process group, not a single process)", () => {
+  const original = process.kill;
+  let called = false;
+  process.kill = ((...args: Parameters<typeof process.kill>) => {
+    called = true;
+    return original(...args);
+  }) as typeof process.kill;
+  try {
+    assert.equal(isAlive(0), false);
+    assert.equal(called, false);
+  } finally {
+    process.kill = original;
+  }
+});
+
+test("isAlive returns false for a negative pid without calling process.kill", () => {
+  const original = process.kill;
+  let called = false;
+  process.kill = ((...args: Parameters<typeof process.kill>) => {
+    called = true;
+    return original(...args);
+  }) as typeof process.kill;
+  try {
+    assert.equal(isAlive(-1), false);
+    assert.equal(called, false);
+  } finally {
+    process.kill = original;
+  }
+});
+
+test("isAlive returns false for a non-integer pid without calling process.kill", () => {
+  const original = process.kill;
+  let called = false;
+  process.kill = ((...args: Parameters<typeof process.kill>) => {
+    called = true;
+    return original(...args);
+  }) as typeof process.kill;
+  try {
+    assert.equal(isAlive(1.5), false);
+    assert.equal(called, false);
+  } finally {
+    process.kill = original;
+  }
+});

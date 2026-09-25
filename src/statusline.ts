@@ -1,5 +1,6 @@
 import { renderStatusline } from "./statusline-core.ts";
-import { readState, mergeCost } from "./session-state.ts";
+import { readState } from "./session-state.ts";
+import { writeCost } from "./cost-store.ts";
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -21,7 +22,7 @@ async function main(): Promise<void> {
     env: process.env,
     now: () => Date.now(),
     readState,
-    mergeCost,
+    writeCost,
   });
   process.stdout.write(`${line}\n`);
 }
