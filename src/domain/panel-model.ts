@@ -32,9 +32,10 @@ const ROOT_MENU_ITEMS: PanelMenuItem[] = [
 ];
 
 /**
- * The root menu's rows, in a fixed order. `hubOnly` rows (`target`, `sync`)
- * are omitted entirely when the hub is not configured, so the panel offers
- * exactly what `/kankaku` itself would today.
+ * The root menu's rows, in a fixed order. `hubOnly` rows (only `sync`;
+ * `target` is not hub-only — see `ROOT_MENU_ITEMS`'s comment) are omitted
+ * entirely when the hub is not configured, so the panel offers exactly what
+ * `/kankaku` itself would today.
  */
 export function rootMenu(options: { hubConfigured: boolean }): PanelMenuItem[] {
   return ROOT_MENU_ITEMS.filter((item) => options.hubConfigured || !item.hubOnly);
@@ -202,4 +203,65 @@ export function buildTargetRows(input: TargetRowsInput): PanelRow[] {
   });
 
   return rows;
+}
+
+/**
+ * Pure input for {@link buildAboutRows}. Every env-only value is passed in
+ * already extracted from `KankakuConfig` (see `config.ts`) rather than the
+ * config object itself: `KankakuConfig` lives outside `src/domain/`, and
+ * this module must import nothing but `src/domain/`/`src/ports/` (see
+ * AGENTS.md "Architecture (hexagonal)").
+ */
+export interface AboutRowsInput {
+  /** kankaku's own version (`adapters/agent-info.ts#resolvePluginVersion`). */
+  pluginVersion?: string;
+  /** pi's version (`adapters/agent-info.ts#resolveAgentVersion`). */
+  agentVersion?: string;
+  /** This session's resolved kankaku directory (`adapters/kankaku-dir.ts#resolveKankakuDir`). */
+  kankakuDir: string;
+  /** The hub (PocketBase) URL, when configured. */
+  hubUrl?: string;
+  /** `KankakuConfig.interactiveTools`. */
+  interactiveTools: string[];
+  /** `KankakuConfig.segmentRules.length`. */
+  segmentRuleCount: number;
+  /** `KankakuConfig.subagentProfiles`' ids. */
+  subagentProfileNames: string[];
+  /** `KankakuConfig.client`. */
+  client?: string;
+}
+
+/**
+ * Build the panel's `about` screen rows: versions, the resolved directory,
+ * the hub URL, and every env-only setting (`KANKAKU_INTERACTIVE_TOOLS`,
+ * `KANKAKU_SEGMENTS`, `KANKAKU_SUBAGENT_TOOLS`/`KANKAKU_SUBAGENT_CHILD_ENV`,
+ * `KANKAKU_CLIENT`) with its env var name as the row's description — every
+ * row is read-only (see `screens/about.ts`).
+ */
+export function buildAboutRows(input: AboutRowsInput): PanelRow[] {
+  return [
+    { id: "kankaku", label: "kankaku", value: input.pluginVersion ?? "unknown" },
+    { id: "pi", label: "pi", value: input.agentVersion ?? "unknown" },
+    { id: "directory", label: "Directory", value: input.kankakuDir },
+    { id: "hub", label: "Hub", value: input.hubUrl ?? "not configured" },
+    {
+      id: "interactive-tools",
+      label: "Interactive tools",
+      value: input.interactiveTools.length > 0 ? input.interactiveTools.join(", ") : NONE_VALUE,
+      description: "KANKAKU_INTERACTIVE_TOOLS",
+    },
+    {
+      id: "segments",
+      label: "Segments",
+      value: `${input.segmentRuleCount} rule(s)`,
+      description: "KANKAKU_SEGMENTS",
+    },
+    {
+      id: "subagent-profiles",
+      label: "Subagent profiles",
+      value: input.subagentProfileNames.length > 0 ? input.subagentProfileNames.join(", ") : NONE_VALUE,
+      description: "KANKAKU_SUBAGENT_TOOLS / KANKAKU_SUBAGENT_CHILD_ENV",
+    },
+    { id: "client", label: "Client", value: input.client ?? NONE_VALUE, description: "KANKAKU_CLIENT" },
+  ];
 }

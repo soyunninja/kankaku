@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { registerKankakuCommand } from "../src/adapters/kankaku-command.ts";
-import type { SyncCommandDeps } from "../src/adapters/kankaku-command.ts";
+import { appendReportEntry, buildDoctorLines, registerKankakuCommand } from "../src/adapters/kankaku-command.ts";
+import type { KankakuCommandDeps, SyncCommandDeps } from "../src/adapters/kankaku-command.ts";
 import { BUILTIN_SUBAGENT_PROFILES, buildConfiguredProfile } from "../src/domain/subagent-profile.ts";
 import type { SubagentProfile } from "../src/domain/subagent-profile.ts";
 import type { SyncState } from "../src/domain/sync-plan.ts";
@@ -619,6 +619,43 @@ test("'doctor' shows the session dir line only when the session manager reports 
   );
   const withoutDir = pi.entries.at(-1) as { data: { lines: string[] } };
   assert.ok(!withoutDir.data.lines.some((line) => line.startsWith("session dir")));
+});
+
+test("buildDoctorLines returns exactly the lines '/kankaku doctor' appends (guard against drift between the subcommand and the panel's doctor screen)", async () => {
+  const pi = new FakePi();
+  const log = new FakeWorkLog();
+  log.append(makeRecord({ id: "p1", pid: 1 }));
+  log.append(makeRecord({ id: "p2", pid: 2, roleConfidence: "uncertain" }));
+  log.append(makeRecord({ id: "c1", role: "subagent", pid: 3, parentPid: 999 }));
+  const deps: KankakuCommandDeps = {
+    log,
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  };
+  registerKankakuCommand(pi as unknown as ExtensionAPI, deps);
+  const ctx = makeCtx();
+
+  await pi.commands.get("kankaku")!.handler("doctor", ctx);
+  const entry = pi.entries.at(-1) as { data: { lines: string[] } };
+
+  assert.deepEqual(buildDoctorLines(deps, ctx), entry.data.lines);
+});
+
+test("appendReportEntry has the exact body of showReport: a durable entry when hasUI, a notify otherwise", () => {
+  const pi = new FakePi();
+  const report = { title: "test", lines: ["a", "b"] };
+
+  appendReportEntry(pi as unknown as ExtensionAPI, makeCtx(), report);
+  assert.equal(pi.entries.length, 1);
+  assert.deepEqual(pi.entries[0], { customType: "kankaku-report", data: report });
+
+  const notified: string[] = [];
+  appendReportEntry(
+    pi as unknown as ExtensionAPI,
+    makeCtx({ hasUI: false, ui: { notify: (msg: string) => notified.push(msg), setStatus: () => {} } }),
+    report,
+  );
+  assert.deepEqual(notified, ["test\na\nb"]);
 });
 
 test("the plain summary report appends a one-line hint when uncertain records are excluded (SUBAGENT-REQ-017)", async () => {

@@ -184,6 +184,18 @@ export default function kankaku(pi: ExtensionAPI): void {
   let hubConfigError: string | undefined;
   let sync: SyncCommandDeps | undefined;
   let autoSyncEnabled: boolean | undefined;
+  let hubUrl: string | undefined;
+
+  // Resolved once, here (never on a hot path): see README "Hub
+  // (PocketBase)" > "Agent and measurement quality" and the panel's `about`
+  // screen (`adapters/panel/screens/about.ts`). Both degrade to `undefined`
+  // on any failure rather than guessing. Unlike the sync sink below (which
+  // needs them only when the hub is configured), the `about` screen shows
+  // these regardless — so they are resolved unconditionally here.
+  const agentVersion = resolveAgentVersion();
+  // extension.ts lives at <package root>/src/extension.ts.
+  const pluginPackageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const pluginVersion = resolvePluginVersion(pluginPackageRoot);
 
   // `homeDir` is passed as a reference, never invoked here: any failure
   // resolving it (no HOME, a sandbox) must not fail extension load for
@@ -194,6 +206,7 @@ export default function kankaku(pi: ExtensionAPI): void {
 
   if (hub.credentials) {
     const credentials = hub.credentials;
+    hubUrl = credentials.url;
     const client = new PocketBaseClient({ url: credentials.url, email: credentials.email, password: credentials.password });
     // Same defensive resolution as above; falls back to the OS temp dir
     // when no home directory is available so an env-only hub configuration
@@ -225,14 +238,6 @@ export default function kankaku(pi: ExtensionAPI): void {
     const syncStateStore = new SyncStateStore({ dir: resolveKankakuDir(config.dir, process.cwd()), pid: process.pid });
     const catalogRef = catalog;
     const machineName = machine;
-
-    // Resolved once, here (never on a hot path): see README "Hub
-    // (PocketBase)" > "Agent and measurement quality". Both degrade to
-    // `undefined` on any failure rather than guessing.
-    const agentVersion = resolveAgentVersion();
-    // extension.ts lives at <package root>/src/extension.ts.
-    const pluginPackageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-    const pluginVersion = resolvePluginVersion(pluginPackageRoot);
 
     const runOnce = (options?: { full?: boolean; trigger?: SyncTrigger }) => {
       const snapshot = catalogRef.read();
@@ -309,6 +314,11 @@ export default function kankaku(pi: ExtensionAPI): void {
     ...(hubConfigError !== undefined ? { hubConfigError } : {}),
     ...(sync !== undefined ? { sync } : {}),
     ...(autoSyncEnabled !== undefined ? { autoSyncEnabled } : {}),
+    config,
+    kankakuDir: resolvedDir,
+    ...(agentVersion !== undefined ? { agentVersion } : {}),
+    ...(pluginVersion !== undefined ? { pluginVersion } : {}),
+    ...(hubUrl !== undefined ? { hubUrl } : {}),
     ...(roleOverride !== undefined ? { roleOverride } : {}),
     ...(childMarkerPresent ? { childMarkerPresent } : {}),
     ...(profile !== undefined ? { profile } : {}),

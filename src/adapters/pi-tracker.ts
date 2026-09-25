@@ -3,7 +3,7 @@ import { isValidClient } from "../domain/client-label.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { SubagentProfile } from "../domain/subagent-profile.ts";
-import type { RejectedChildEnvMarker } from "../config.ts";
+import type { KankakuConfig, RejectedChildEnvMarker } from "../config.ts";
 import type { OrchestratorRef, WorkRecord, WorkRecordCore, WorkRole } from "../domain/work-record.ts";
 import type { WorkTracker } from "../domain/work-tracker.ts";
 import type { Catalog } from "../ports/catalog.ts";
@@ -13,9 +13,12 @@ import { createSessionClient } from "./session-client.ts";
 import { readNonDefaultSessionDir } from "./session-dir.ts";
 import type { SessionTarget } from "./session-target.ts";
 import { createStatusBar } from "./status-bar.ts";
-import { notifyError, registerKankakuCommand } from "./kankaku-command.ts";
-import type { SyncCommandDeps } from "./kankaku-command.ts";
+import { appendReportEntry, notifyError, registerKankakuCommand } from "./kankaku-command.ts";
+import type { KankakuCommandDeps, SyncCommandDeps } from "./kankaku-command.ts";
 import { openKankakuPanel } from "./panel/kankaku-panel.ts";
+import { createAboutScreen } from "./panel/screens/about.ts";
+import { createDoctorScreen } from "./panel/screens/doctor.ts";
+import { createReportScreen } from "./panel/screens/report.ts";
 import { createTargetScreen } from "./panel/screens/target.ts";
 import type { SyncTrigger } from "./sync-runner.ts";
 
@@ -176,10 +179,36 @@ export interface PiTrackerDeps {
    * real timer.
    */
   shutdownSyncTimeoutMs?: number;
+  /**
+   * The full active kankaku configuration (`config.ts#loadConfig`), for the
+   * panel's `about` screen (P3). Optional so every existing direct
+   * `createPiTracker` caller (e.g. `tests/pi-tracker.test.ts`) keeps
+   * working unchanged — falls back to {@link FALLBACK_ABOUT_CONFIG} (an
+   * empty configuration) when absent. `extension.ts` always supplies the
+   * real one.
+   */
+  config?: KankakuConfig;
+  /** This session's resolved kankaku directory (`adapters/kankaku-dir.ts#resolveKankakuDir`), for the `about` screen. */
+  kankakuDir?: string;
+  /** pi's version (`adapters/agent-info.ts#resolveAgentVersion`), for the `about` screen. */
+  agentVersion?: string;
+  /** kankaku's own version (`adapters/agent-info.ts#resolvePluginVersion`), for the `about` screen. */
+  pluginVersion?: string;
+  /** The hub (PocketBase) URL, when configured, for the `about` screen. */
+  hubUrl?: string;
 }
 
 /** Default for {@link PiTrackerDeps.shutdownSyncTimeoutMs}. */
 const DEFAULT_SHUTDOWN_SYNC_TIMEOUT_MS = 3000;
+
+/** {@link PiTrackerDeps.config}'s fallback for a caller that has not wired the real one yet. */
+const FALLBACK_ABOUT_CONFIG: KankakuConfig = {
+  dir: ".kankaku",
+  interactiveTools: [],
+  subagentProfiles: [],
+  segmentRules: [],
+  rejectedSubagentChildEnvMarkers: [],
+};
 
 /** Default `isAlive`: probe with signal 0 — no signal is sent, only existence/permission is checked. */
 function defaultIsAlive(pid: number): boolean {
@@ -256,7 +285,14 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
 
   const refreshIdleStatus = (ctx: ExtensionContext) => statusBar.showIdle(ctx);
 
-  const kankakuCommand = registerKankakuCommand(pi, {
+  // Built as a named const (rather than inlined into `registerKankakuCommand`
+  // below) so `openPanel`'s doctor screen can reuse the exact same
+  // `KankakuCommandDeps` `buildDoctorLines` needs — the panel and
+  // `/kankaku doctor` can then never drift. Safe to reference `commandDeps`
+  // from within its own `openPanel` closure: the closure body only runs
+  // once `/kankaku` (no args) is actually invoked, long after this `const`
+  // has finished initializing.
+  const commandDeps: KankakuCommandDeps = {
     log,
     sessionClient,
     refreshIdleStatus,
@@ -293,9 +329,29 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
             catalog: deps.catalog,
             refreshIdleStatus,
           }),
+          report: createReportScreen({
+            log,
+            ctx,
+            pi,
+            sessionId: () => ctx.sessionManager.getSessionId(),
+            pinReport: (report) => appendReportEntry(pi, ctx, report),
+          }),
+          doctor: createDoctorScreen({
+            commandDeps,
+            ctx,
+            pinReport: (report) => appendReportEntry(pi, ctx, report),
+          }),
+          about: createAboutScreen({
+            config: deps.config ?? FALLBACK_ABOUT_CONFIG,
+            kankakuDir: deps.kankakuDir ?? deps.config?.dir ?? FALLBACK_ABOUT_CONFIG.dir,
+            agentVersion: deps.agentVersion,
+            pluginVersion: deps.pluginVersion,
+            hubUrl: deps.hubUrl,
+          }),
         },
       }),
-  });
+  };
+  const kankakuCommand = registerKankakuCommand(pi, commandDeps);
 
   /** At most one quiet auto-sync failure notification per session; never notified on success. Shared by the fire-and-forget `triggerAutoSync` and the awaited shutdown sync below. */
   let autoSyncErrorNotified = false;

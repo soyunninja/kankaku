@@ -3,7 +3,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Box, Text } from "@earendil-works/pi-tui";
 import { isValidClient } from "../domain/client-label.ts";
 import { exportRows, toCsv, toJson } from "../domain/export.ts";
-import { buildSessions, buildTasks, detectSameProcessOverlaps, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
+import { buildTasks, detectSameProcessOverlaps, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import { findAmbiguousToolNames } from "../domain/subagent-profile.ts";
 import type { SubagentProfile } from "../domain/subagent-profile.ts";
@@ -12,19 +12,9 @@ import type { SyncState } from "../domain/sync-plan.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { Catalog } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
+import { buildClientsView, buildProjectsView, buildSessionsView, buildSummaryView, buildTasksView } from "./report-views.ts";
+import { localDay } from "./report.ts";
 import type { SyncSummary, SyncTrigger } from "./sync-runner.ts";
-import {
-  countUncertain,
-  formatClients,
-  formatProjects,
-  formatReport,
-  formatSessions,
-  formatTasks,
-  localDay,
-  summarize,
-  summarizeByClient,
-  summarizeByProject,
-} from "./report.ts";
 import type { SessionClient } from "./session-client.ts";
 import { readNonDefaultSessionDir } from "./session-dir.ts";
 import type { SessionTarget } from "./session-target.ts";
@@ -42,6 +32,167 @@ export function notifyError(ctx: ExtensionContext, error: unknown): void {
   if (!ctx.hasUI) return;
   const message = error instanceof Error ? error.message : String(error);
   ctx.ui.notify(`kankaku: ${message}`, "error");
+}
+
+/**
+ * Append a {@link KankakuReportData} as a durable entry in the chat
+ * transcript when a UI is attached, or fall back to a one-shot notify
+ * otherwise. Exact body of `/kankaku`'s own `showReport` (which now
+ * delegates here), so the panel's "pin to chat" action
+ * (`screens/report.ts`, `screens/doctor.ts`) renders identically to every
+ * existing subcommand's report.
+ */
+export function appendReportEntry(pi: ExtensionAPI, ctx: ExtensionContext, report: KankakuReportData): void {
+  if (ctx.hasUI) {
+    pi.appendEntry<KankakuReportData>(REPORT_ENTRY_TYPE, report);
+    return;
+  }
+  ctx.ui.notify(`${report.title}\n${report.lines.join("\n")}`);
+}
+
+/**
+ * Handle `/kankaku doctor`'s line-building: a no-network diagnostic
+ * (SUBAGENT-REQ-017) reporting orphan/uncertain record counts (ADR 0022)
+ * with why, and whether ancestor-chain detection is available on this
+ * platform, so silent undercount stays visible (see README "Subagents").
+ * Extracted from `handleDoctorCommand` so the panel's doctor screen
+ * (`screens/doctor.ts`) can never drift from `/kankaku doctor`'s own output.
+ */
+export function buildDoctorLines(deps: KankakuCommandDeps, ctx: ExtensionContext): string[] {
+  const records = deps.log.readAll();
+  const orphans = orphanSubagents(records);
+  const uncertain = uncertainRecords(records);
+  const ancestorDetectionAvailable = deps.ancestorDetectionAvailable ? deps.ancestorDetectionAvailable() : process.platform !== "win32";
+
+  const lines = [
+    `ancestor-chain detection: ${ancestorDetectionAvailable ? "available" : "unavailable"}`,
+    `orphan subagent record(s): ${orphans.length}` +
+      (orphans.length > 0 ? " — recognised as someone's child (an env marker matched), but no orchestrator could be matched" : ""),
+    `uncertain record(s): ${uncertain.length}` +
+      (uncertain.length > 0
+        ? " — no recognised child-env-marker, but a live tracked ancestor process was found; not counted as a new task, not synced"
+        : ""),
+  ];
+
+  if (!ancestorDetectionAvailable) {
+    lines.push(
+      "on this platform/environment, ancestor-chain detection could not run (Windows, or a failed/unavailable ps/proc read): " +
+        "an unmarked subagent system may be counted twice (a genuine child with no recognised marker looks like a fresh top-level " +
+        "session). Mark it explicitly with KANKAKU_ROLE=subagent in the child's environment (or KANKAKU_ROLE=orchestrator to force " +
+        "the other way).",
+    );
+  }
+
+  if (deps.roleOverride) {
+    if (deps.childMarkerPresent) {
+      // R1: both signals present — the confirmed child marker always
+      // wins (config.ts#detectRole), so the override did not decide
+      // anything, whatever it said.
+      lines.push(
+        `role override: KANKAKU_ROLE=${deps.roleOverride} was present, but the confirmed child marker (GENTLE_PI_AGENTS_CHILD=1) takes precedence — resolved role: subagent`,
+      );
+    } else if (deps.overrideIgnoredInteractive) {
+      lines.push(
+        "role override: KANKAKU_ROLE=subagent was ignored for this interactive session (likely a leaked shell export) — resolved role: orchestrator",
+      );
+    } else {
+      lines.push(`role override: KANKAKU_ROLE=${deps.roleOverride} (deciding signal for this process's role)`);
+    }
+  }
+
+  // C2 item 2/3: a configured child-env marker matched but was ignored
+  // for this process's role because it looked interactive — a
+  // configured marker, unlike a built-in one, never demotes an
+  // interactive session. Escalated when this process also has no
+  // tracked ancestor at all (C2 item 3's self-check: the strongest
+  // signal the marker is genuinely ambient, not a real subagent
+  // mechanism).
+  if (deps.configuredMarkerIgnoredInteractive) {
+    lines.push(
+      deps.hasTrackedAncestor
+        ? "configured marker: a KANKAKU_SUBAGENT_CHILD_ENV marker was present but ignored for this interactive session — resolved role: orchestrator"
+        : "configured marker: a KANKAKU_SUBAGENT_CHILD_ENV marker was present on this interactive, TOP-LEVEL session (no tracked ancestor) — the marker is likely ambient (set on every process of its kind, not just a subagent's child), not a real subagent mechanism; resolved role: orchestrator",
+    );
+  }
+
+  // C2 item 1: markers rejected at config load time as looking
+  // pi/shell/OS/npm-owned rather than genuinely child-only.
+  if (deps.rejectedSubagentChildEnvMarkers && deps.rejectedSubagentChildEnvMarkers.length > 0) {
+    for (const rejected of deps.rejectedSubagentChildEnvMarkers) {
+      lines.push(`rejected KANKAKU_SUBAGENT_CHILD_ENV marker "${rejected.name}": ${rejected.reason}`);
+    }
+  }
+
+  // SUBAGENT-REQ-001/002/003/005/017 (6b): active profiles, any configured
+  // tool names/markers, which profile matched each subagent record, and
+  // any tool-name ambiguity among the active set. Omitted entirely when
+  // deps.subagentProfiles was not wired (back-compat).
+  if (deps.subagentProfiles) {
+    const profiles = deps.subagentProfiles;
+    lines.push(`subagent profiles active: ${profiles.map((p) => p.id).join(", ")}`);
+
+    const configured = profiles.find((p) => p.id === "configured");
+    if (configured) {
+      if (configured.toolNames.length > 0) lines.push(`configured subagent tools: ${configured.toolNames.join(", ")}`);
+      if (configured.childEnvMarkers.length > 0) {
+        lines.push(`configured child-env markers: ${configured.childEnvMarkers.map((m) => (m.value !== undefined ? `${m.name}=${m.value}` : m.name)).join(", ")}`);
+      }
+    }
+
+    const subagentRecords = records.filter((record) => record.role === "subagent");
+    if (subagentRecords.length > 0) {
+      const counts = new Map<string, number>();
+      let unmatched = 0;
+      for (const record of subagentRecords) {
+        if (record.profile) {
+          counts.set(record.profile, (counts.get(record.profile) ?? 0) + 1);
+        } else {
+          unmatched++;
+        }
+      }
+      const parts = profiles.filter((p) => counts.has(p.id)).map((p) => `${p.id}: ${counts.get(p.id)}`);
+      if (unmatched > 0) parts.push(`unmatched: ${unmatched}`);
+      lines.push(`profile matches: ${parts.join(", ")}`);
+    }
+
+    for (const { toolName, profileIds } of findAmbiguousToolNames(profiles)) {
+      lines.push(`ambiguous tool name "${toolName}": registered by ${profileIds.join(", ")} — never guessed, resolved by child-env marker or left uncertain`);
+    }
+  }
+
+  // SUBAGENT-REQ-015 (6c): same-pid overlapping orchestrator records —
+  // never observed from any real subagent mechanism today, but flagged
+  // here (informational only, never changing buildTasks' own numbers) as
+  // the observable signature an in-process nested session would leave.
+  for (const overlap of detectSameProcessOverlaps(records)) {
+    lines.push(
+      `likely in-process nesting: pid ${overlap.pid} has ${overlap.recordIds.length} overlapping orchestrator records (${overlap.recordIds.join(", ")}) — union of their wall time is ${overlap.unionedWallMs}ms`,
+    );
+  }
+
+  if (deps.workLogRouting?.usedFallback) {
+    lines.push(
+      `kankaku: this subagent could not write to its orchestrator's directory (${deps.workLogRouting.parentDir}); ` +
+        "fell back to its own local worklog — this record may show as an orphan until reunited manually",
+    );
+  }
+
+  if (deps.registryHealth) {
+    const { keep, discard } = deps.registryHealth();
+    const counts = new Map<string, number>();
+    for (const { reason } of discard) counts.set(reason, (counts.get(reason) ?? 0) + 1);
+    const byReason = Array.from(counts.entries())
+      .map(([reason, count]) => `${reason}: ${count}`)
+      .join(", ");
+    lines.push(`registry (~/.kankaku/run): ${keep.length} entrie(s) trusted${discard.length > 0 ? `, ${discard.length} discarded (${byReason})` : ""}`);
+  }
+
+  const sessionDir = readNonDefaultSessionDir(ctx.sessionManager);
+  if (sessionDir !== undefined) {
+    lines.push(`session dir (non-default): ${sessionDir}`);
+  }
+
+  return lines;
 }
 
 const COMMAND_TOKENS = ["all", "tasks", "sessions", "client", "clients", "export", "doctor"];
@@ -241,11 +392,7 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
   });
 
   function showReport(ctx: ExtensionContext, report: KankakuReportData): void {
-    if (ctx.hasUI) {
-      pi.appendEntry<KankakuReportData>(REPORT_ENTRY_TYPE, report);
-      return;
-    }
-    ctx.ui.notify(`${report.title}\n${report.lines.join("\n")}`);
+    appendReportEntry(pi, ctx, report);
   }
 
   /**
@@ -465,146 +612,12 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
   }
 
   /**
-   * Handle `/kankaku doctor`: a no-network diagnostic (SUBAGENT-REQ-017)
-   * reporting orphan/uncertain record counts (ADR 0022) with why, and
-   * whether ancestor-chain detection is available on this platform, so
-   * silent undercount stays visible (see README "Subagents").
+   * Handle `/kankaku doctor`: builds the lines (shared with the panel's
+   * doctor screen — see {@link buildDoctorLines}) and shows them as the
+   * durable report.
    */
   function handleDoctorCommand(ctx: ExtensionContext): void {
-    const records = log.readAll();
-    const orphans = orphanSubagents(records);
-    const uncertain = uncertainRecords(records);
-    const ancestorDetectionAvailable = deps.ancestorDetectionAvailable ? deps.ancestorDetectionAvailable() : process.platform !== "win32";
-
-    const lines = [
-      `ancestor-chain detection: ${ancestorDetectionAvailable ? "available" : "unavailable"}`,
-      `orphan subagent record(s): ${orphans.length}` +
-        (orphans.length > 0 ? " — recognised as someone's child (an env marker matched), but no orchestrator could be matched" : ""),
-      `uncertain record(s): ${uncertain.length}` +
-        (uncertain.length > 0
-          ? " — no recognised child-env-marker, but a live tracked ancestor process was found; not counted as a new task, not synced"
-          : ""),
-    ];
-
-    if (!ancestorDetectionAvailable) {
-      lines.push(
-        "on this platform/environment, ancestor-chain detection could not run (Windows, or a failed/unavailable ps/proc read): " +
-          "an unmarked subagent system may be counted twice (a genuine child with no recognised marker looks like a fresh top-level " +
-          "session). Mark it explicitly with KANKAKU_ROLE=subagent in the child's environment (or KANKAKU_ROLE=orchestrator to force " +
-          "the other way).",
-      );
-    }
-
-    if (deps.roleOverride) {
-      if (deps.childMarkerPresent) {
-        // R1: both signals present — the confirmed child marker always
-        // wins (config.ts#detectRole), so the override did not decide
-        // anything, whatever it said.
-        lines.push(
-          `role override: KANKAKU_ROLE=${deps.roleOverride} was present, but the confirmed child marker (GENTLE_PI_AGENTS_CHILD=1) takes precedence — resolved role: subagent`,
-        );
-      } else if (deps.overrideIgnoredInteractive) {
-        lines.push(
-          "role override: KANKAKU_ROLE=subagent was ignored for this interactive session (likely a leaked shell export) — resolved role: orchestrator",
-        );
-      } else {
-        lines.push(`role override: KANKAKU_ROLE=${deps.roleOverride} (deciding signal for this process's role)`);
-      }
-    }
-
-    // C2 item 2/3: a configured child-env marker matched but was ignored
-    // for this process's role because it looked interactive — a
-    // configured marker, unlike a built-in one, never demotes an
-    // interactive session. Escalated when this process also has no
-    // tracked ancestor at all (C2 item 3's self-check: the strongest
-    // signal the marker is genuinely ambient, not a real subagent
-    // mechanism).
-    if (deps.configuredMarkerIgnoredInteractive) {
-      lines.push(
-        deps.hasTrackedAncestor
-          ? "configured marker: a KANKAKU_SUBAGENT_CHILD_ENV marker was present but ignored for this interactive session — resolved role: orchestrator"
-          : "configured marker: a KANKAKU_SUBAGENT_CHILD_ENV marker was present on this interactive, TOP-LEVEL session (no tracked ancestor) — the marker is likely ambient (set on every process of its kind, not just a subagent's child), not a real subagent mechanism; resolved role: orchestrator",
-      );
-    }
-
-    // C2 item 1: markers rejected at config load time as looking
-    // pi/shell/OS/npm-owned rather than genuinely child-only.
-    if (deps.rejectedSubagentChildEnvMarkers && deps.rejectedSubagentChildEnvMarkers.length > 0) {
-      for (const rejected of deps.rejectedSubagentChildEnvMarkers) {
-        lines.push(`rejected KANKAKU_SUBAGENT_CHILD_ENV marker "${rejected.name}": ${rejected.reason}`);
-      }
-    }
-
-    // SUBAGENT-REQ-001/002/003/005/017 (6b): active profiles, any configured
-    // tool names/markers, which profile matched each subagent record, and
-    // any tool-name ambiguity among the active set. Omitted entirely when
-    // deps.subagentProfiles was not wired (back-compat).
-    if (deps.subagentProfiles) {
-      const profiles = deps.subagentProfiles;
-      lines.push(`subagent profiles active: ${profiles.map((p) => p.id).join(", ")}`);
-
-      const configured = profiles.find((p) => p.id === "configured");
-      if (configured) {
-        if (configured.toolNames.length > 0) lines.push(`configured subagent tools: ${configured.toolNames.join(", ")}`);
-        if (configured.childEnvMarkers.length > 0) {
-          lines.push(`configured child-env markers: ${configured.childEnvMarkers.map((m) => (m.value !== undefined ? `${m.name}=${m.value}` : m.name)).join(", ")}`);
-        }
-      }
-
-      const subagentRecords = records.filter((record) => record.role === "subagent");
-      if (subagentRecords.length > 0) {
-        const counts = new Map<string, number>();
-        let unmatched = 0;
-        for (const record of subagentRecords) {
-          if (record.profile) {
-            counts.set(record.profile, (counts.get(record.profile) ?? 0) + 1);
-          } else {
-            unmatched++;
-          }
-        }
-        const parts = profiles.filter((p) => counts.has(p.id)).map((p) => `${p.id}: ${counts.get(p.id)}`);
-        if (unmatched > 0) parts.push(`unmatched: ${unmatched}`);
-        lines.push(`profile matches: ${parts.join(", ")}`);
-      }
-
-      for (const { toolName, profileIds } of findAmbiguousToolNames(profiles)) {
-        lines.push(`ambiguous tool name "${toolName}": registered by ${profileIds.join(", ")} — never guessed, resolved by child-env marker or left uncertain`);
-      }
-    }
-
-    // SUBAGENT-REQ-015 (6c): same-pid overlapping orchestrator records —
-    // never observed from any real subagent mechanism today, but flagged
-    // here (informational only, never changing buildTasks' own numbers) as
-    // the observable signature an in-process nested session would leave.
-    for (const overlap of detectSameProcessOverlaps(records)) {
-      lines.push(
-        `likely in-process nesting: pid ${overlap.pid} has ${overlap.recordIds.length} overlapping orchestrator records (${overlap.recordIds.join(", ")}) — union of their wall time is ${overlap.unionedWallMs}ms`,
-      );
-    }
-
-    if (deps.workLogRouting?.usedFallback) {
-      lines.push(
-        `kankaku: this subagent could not write to its orchestrator's directory (${deps.workLogRouting.parentDir}); ` +
-          "fell back to its own local worklog — this record may show as an orphan until reunited manually",
-      );
-    }
-
-    if (deps.registryHealth) {
-      const { keep, discard } = deps.registryHealth();
-      const counts = new Map<string, number>();
-      for (const { reason } of discard) counts.set(reason, (counts.get(reason) ?? 0) + 1);
-      const byReason = Array.from(counts.entries())
-        .map(([reason, count]) => `${reason}: ${count}`)
-        .join(", ");
-      lines.push(`registry (~/.kankaku/run): ${keep.length} entrie(s) trusted${discard.length > 0 ? `, ${discard.length} discarded (${byReason})` : ""}`);
-    }
-
-    const sessionDir = readNonDefaultSessionDir(ctx.sessionManager);
-    if (sessionDir !== undefined) {
-      lines.push(`session dir (non-default): ${sessionDir}`);
-    }
-
-    showReport(ctx, { title: "doctor", lines });
+    showReport(ctx, { title: "doctor", lines: buildDoctorLines(deps, ctx) });
   }
 
   /** Handle `/kankaku export [csv|json] [all]`; `rest` excludes the leading `export` token. Default format is csv. */
@@ -724,56 +737,28 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
 
         const all = tokens.includes("all");
         const records = log.readAll();
-        const today = localDay(new Date().toISOString());
 
         if (tokens.includes("clients")) {
-          const tasks = buildTasks(records).filter((task) => all || localDay(task.startedAt) === today);
-          showReport(ctx, {
-            title: all ? "clients (all days)" : "clients (today)",
-            lines: formatClients(summarizeByClient(tasks)).split("\n"),
-          });
+          showReport(ctx, buildClientsView(records, { all }));
           return;
         }
 
         if (tokens.includes("projects")) {
-          const tasks = buildTasks(records).filter((task) => all || localDay(task.startedAt) === today);
-          showReport(ctx, {
-            title: all ? "projects (all days)" : "projects (today)",
-            lines: formatProjects(summarizeByProject(tasks)).split("\n"),
-          });
+          showReport(ctx, buildProjectsView(records, { all }));
           return;
         }
 
         if (tokens.includes("tasks")) {
-          const sessionId = ctx.sessionManager.getSessionId();
-          const scoped = all || !sessionId;
-          const tasks = buildTasks(records).filter((task) => scoped || task.sessionId === sessionId);
-          showReport(ctx, {
-            title: scoped ? "tasks (every session)" : "tasks (this session)",
-            lines: formatTasks(tasks).split("\n"),
-          });
+          showReport(ctx, buildTasksView(records, { all, sessionId: ctx.sessionManager.getSessionId() }));
           return;
         }
 
         if (tokens.includes("sessions")) {
-          const tasks = buildTasks(records).filter((task) => all || localDay(task.startedAt) === today);
-          showReport(ctx, {
-            title: all ? "sessions (all days)" : "sessions (today)",
-            lines: formatSessions(buildSessions(tasks)).split("\n"),
-          });
+          showReport(ctx, buildSessionsView(records, { all }));
           return;
         }
 
-        const summary = summarize(records, { all });
-        const lines = formatReport(summary).split(" | ");
-        const uncertainCount = countUncertain(records, { all });
-        if (uncertainCount > 0) {
-          lines.push(`kankaku: ${uncertainCount} uncertain record(s) excluded from tasks — run /kankaku doctor`);
-        }
-        showReport(ctx, {
-          title: all ? "summary (all days)" : "summary (today)",
-          lines,
-        });
+        showReport(ctx, buildSummaryView(records, { all }));
       } catch (error) {
         notifyError(ctx, error);
       }

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  buildAboutRows,
   buildTargetRows,
   footerHints,
   navBack,
@@ -195,4 +196,49 @@ test("buildTargetRows with a full target: client/project/task show their values,
   assert.equal(task.value, "Fix the thing");
   assert.equal(task.description, undefined);
   assert.equal(rows.find((row) => row.id === "source")!.value, "config");
+});
+
+test("buildAboutRows shows 'unknown'/'not configured' fallbacks when versions and the hub are absent", () => {
+  const rows = buildAboutRows({
+    kankakuDir: "/repo/.kankaku",
+    interactiveTools: [],
+    segmentRuleCount: 0,
+    subagentProfileNames: [],
+  });
+  assert.deepEqual(
+    rows.map((row) => row.id),
+    ["kankaku", "pi", "directory", "hub", "interactive-tools", "segments", "subagent-profiles", "client"],
+  );
+  assert.equal(rows.find((row) => row.id === "kankaku")!.value, "unknown");
+  assert.equal(rows.find((row) => row.id === "pi")!.value, "unknown");
+  assert.equal(rows.find((row) => row.id === "directory")!.value, "/repo/.kankaku");
+  assert.equal(rows.find((row) => row.id === "hub")!.value, "not configured");
+  assert.equal(rows.find((row) => row.id === "interactive-tools")!.value, "— none —");
+  assert.equal(rows.find((row) => row.id === "interactive-tools")!.description, "KANKAKU_INTERACTIVE_TOOLS");
+  assert.equal(rows.find((row) => row.id === "segments")!.value, "0 rule(s)");
+  assert.equal(rows.find((row) => row.id === "segments")!.description, "KANKAKU_SEGMENTS");
+  assert.equal(rows.find((row) => row.id === "subagent-profiles")!.value, "— none —");
+  assert.equal(rows.find((row) => row.id === "subagent-profiles")!.description, "KANKAKU_SUBAGENT_TOOLS / KANKAKU_SUBAGENT_CHILD_ENV");
+  assert.equal(rows.find((row) => row.id === "client")!.value, "— none —");
+  assert.equal(rows.find((row) => row.id === "client")!.description, "KANKAKU_CLIENT");
+});
+
+test("buildAboutRows shows real values when everything is present", () => {
+  const rows = buildAboutRows({
+    pluginVersion: "0.6.5",
+    agentVersion: "1.2.3",
+    kankakuDir: "/repo/.kankaku",
+    hubUrl: "https://pb.example.com",
+    interactiveTools: ["ask_user_question", "ask_user_choice"],
+    segmentRuleCount: 2,
+    subagentProfileNames: ["gentle-pi", "pi-subagents"],
+    client: "acme",
+  });
+  assert.equal(rows.find((row) => row.id === "kankaku")!.value, "0.6.5");
+  assert.equal(rows.find((row) => row.id === "pi")!.value, "1.2.3");
+  assert.equal(rows.find((row) => row.id === "hub")!.value, "https://pb.example.com");
+  assert.equal(rows.find((row) => row.id === "interactive-tools")!.value, "ask_user_question, ask_user_choice");
+  assert.equal(rows.find((row) => row.id === "segments")!.value, "2 rule(s)");
+  assert.equal(rows.find((row) => row.id === "subagent-profiles")!.value, "gentle-pi, pi-subagents");
+  assert.equal(rows.find((row) => row.id === "client")!.value, "acme");
 });

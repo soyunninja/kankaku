@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
+import { createPanelComponent } from "../src/adapters/panel/kankaku-panel.ts";
 import { createTargetScreen } from "../src/adapters/panel/screens/target.ts";
 import type { SessionClient } from "../src/adapters/session-client.ts";
 import type { SessionTarget } from "../src/adapters/session-target.ts";
@@ -9,7 +10,7 @@ import type { ClientSourceName, ClientSources } from "../src/domain/client-label
 import { resolveWorkTarget } from "../src/domain/work-target.ts";
 import type { Client, HubTask, Project, WorkTarget, WorkTargetCandidate, WorkTargetSessionOverride, WorkTargetSourceName } from "../src/domain/work-target.ts";
 import type { Catalog, CatalogSnapshot } from "../src/ports/catalog.ts";
-import { DOWN, ENTER, ESCAPE, fakeHost } from "./helpers/panel-fakes.ts";
+import { DOWN, ENTER, ESCAPE, fakeHost, fakeTheme, fakeTui } from "./helpers/panel-fakes.ts";
 import type { FakeHost } from "./helpers/panel-fakes.ts";
 
 type TestComponent = Component & {
@@ -461,6 +462,35 @@ test("the 'remember' row runs SessionTarget#rememberTarget and shows the result"
 
   assert.equal(sessionTarget.calls.rememberTarget, 1);
   assert.match(component.render(80).join("\n"), /saved clientId\/projectId to config\.json/);
+});
+
+test("escape inside the task submenu closes the submenu and keeps the Target screen; a second escape goes back", () => {
+  const catalog = new FakeCatalog();
+  const sessionTarget = new FakeSessionTarget(SNAPSHOT, { clientId: "c-acme", projectId: "p-portal" });
+  const factory = createTargetScreen({
+    pi: makeFakePi(),
+    ctx: makeCtx(),
+    role: "orchestrator",
+    sessionTarget,
+    sessionClient: new FakeSessionClient(),
+    catalog,
+    refreshIdleStatus: () => {},
+  });
+  type TestPanelComponent = Component & { handleInput: NonNullable<Component["handleInput"]>; render: NonNullable<Component["render"]> };
+  const panel = createPanelComponent(fakeTui(), fakeTheme(), { hubConfigured: true, screens: { target: factory } }, () => {}) as TestPanelComponent;
+
+  panel.handleInput(ENTER); // root -> target (topmost when hubConfigured)
+  assert.equal(panel.render(80)[0], "kankaku · Target");
+
+  panel.handleInput(DOWN); // client -> project
+  panel.handleInput(DOWN); // project -> task
+  panel.handleInput(ENTER); // open the task submenu (2 open tasks for p-portal)
+
+  panel.handleInput(ESCAPE); // closes only the submenu
+  assert.equal(panel.render(80)[0], "kankaku · Target");
+
+  panel.handleInput(ESCAPE); // now goes back to root
+  assert.equal(panel.render(80)[0], "kankaku");
 });
 
 test("no hub configured (no sessionTarget): only the legacy row is shown", () => {
