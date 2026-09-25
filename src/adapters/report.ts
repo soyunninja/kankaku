@@ -1,7 +1,7 @@
 import { buildTasks, uncertainRecords } from "../domain/task-view.ts";
 import type { SessionView, TaskView } from "../domain/task-view.ts";
 import { localDay } from "../domain/day.ts";
-import { finiteOrZero } from "../domain/work-record.ts";
+import { cacheHitRatio, finiteOrZero } from "../domain/work-record.ts";
 import type { WorkRecord, WorkRole } from "../domain/work-record.ts";
 
 export { localDay } from "../domain/day.ts";
@@ -13,6 +13,12 @@ export interface RoleTotals {
   count: number;
   /** Estimated cost in USD, as priced by pi's model table. */
   cost: number;
+  /** Prompt input tokens, summed across every record of this role. */
+  input: number;
+  /** Prompt-cache read tokens, summed across every record of this role. */
+  cacheRead: number;
+  /** Prompt-cache write tokens, summed across every record of this role. */
+  cacheWrite: number;
   /** Per-tag total milliseconds summed across every record of this role. */
   segments: Record<string, number>;
 }
@@ -23,6 +29,12 @@ export interface TaskTotals {
   workMs: number;
   /** Estimated cost in USD, orchestrator and subagents combined. */
   cost: number;
+  /** Prompt input tokens, orchestrator and subagents combined. */
+  input: number;
+  /** Prompt-cache read tokens, orchestrator and subagents combined. */
+  cacheRead: number;
+  /** Prompt-cache write tokens, orchestrator and subagents combined. */
+  cacheWrite: number;
   /** Per-tag total milliseconds summed across every task (orchestrator and subagents). */
   segments: Record<string, number>;
 }
@@ -39,7 +51,7 @@ export interface SummarizeOptions {
 const ROLES: WorkRole[] = ["orchestrator", "subagent"];
 
 function emptyTotals(): RoleTotals {
-  return { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, segments: {} };
+  return { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, input: 0, cacheRead: 0, cacheWrite: 0, segments: {} };
 }
 
 /**
@@ -67,7 +79,7 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
   const summary: Summary = {
     orchestrator: emptyTotals(),
     subagent: emptyTotals(),
-    tasks: { count: 0, wallMs: 0, workMs: 0, cost: 0, segments: {} },
+    tasks: { count: 0, wallMs: 0, workMs: 0, cost: 0, input: 0, cacheRead: 0, cacheWrite: 0, segments: {} },
   };
   // Accumulated in Maps (see `addSegments`) and only converted to the
   // returned plain objects at the very end, via `Object.fromEntries`.
@@ -82,6 +94,9 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     totals.wallMs += record.wallMs;
     totals.count += 1;
     totals.cost += finiteOrZero(record.usage.cost);
+    totals.input += finiteOrZero(record.usage.input);
+    totals.cacheRead += finiteOrZero(record.usage.cacheRead);
+    totals.cacheWrite += finiteOrZero(record.usage.cacheWrite);
     addSegments(segmentsByRole[record.role], record.segments);
   }
 
@@ -91,6 +106,9 @@ export function summarize(records: WorkRecord[], options: SummarizeOptions): Sum
     summary.tasks.wallMs += task.wallMs;
     summary.tasks.workMs += task.workMs;
     summary.tasks.cost += task.usage.cost;
+    summary.tasks.input += finiteOrZero(task.usage.input);
+    summary.tasks.cacheRead += finiteOrZero(task.usage.cacheRead);
+    summary.tasks.cacheWrite += finiteOrZero(task.usage.cacheWrite);
     addSegments(taskSegments, task.segments);
   }
 
@@ -131,6 +149,12 @@ function formatTime(iso: string): string {
   return `${hours}:${minutes}`;
 }
 
+/** Render `cache hit NN%` (integer percent) for a usage totals triple, or `undefined` when the ratio is undefined (nothing recorded). */
+function formatCacheHit(usage: { input: number; cacheRead: number; cacheWrite: number }): string | undefined {
+  const ratio = cacheHitRatio(usage);
+  return ratio === undefined ? undefined : `cache hit ${Math.round(ratio * 100)}%`;
+}
+
 /** Render non-zero segment tags as `tag Xm00s` pairs, sorted alphabetically, joined by `, `. Undefined when none are non-zero. */
 function formatSegmentTags(segments: Record<string, number>): string | undefined {
   const tags = Object.keys(segments)
@@ -144,10 +168,14 @@ function formatSegmentTags(segments: Record<string, number>): string | undefined
 export function formatReport(summary: Summary): string {
   const lines = ROLES.map((role) => {
     const totals = summary[role];
-    return `${role}: work ${formatMinutes(totals.workMs)}, waiting ${formatMinutes(totals.waitingMs)}, ${totals.count} record(s), ${formatCost(totals.cost)}`;
+    const cacheHit = formatCacheHit(totals);
+    const cacheHitPart = cacheHit !== undefined ? `, ${cacheHit}` : "";
+    return `${role}: work ${formatMinutes(totals.workMs)}, waiting ${formatMinutes(totals.waitingMs)}, ${totals.count} record(s), ${formatCost(totals.cost)}${cacheHitPart}`;
   });
+  const tasksCacheHit = formatCacheHit(summary.tasks);
+  const tasksCacheHitPart = tasksCacheHit !== undefined ? `, ${tasksCacheHit}` : "";
   lines.push(
-    `tasks: ${summary.tasks.count}, wall ${formatMinutes(summary.tasks.wallMs)}, work ${formatMinutes(summary.tasks.workMs)}, ${formatCost(summary.tasks.cost)}`,
+    `tasks: ${summary.tasks.count}, wall ${formatMinutes(summary.tasks.wallMs)}, work ${formatMinutes(summary.tasks.workMs)}, ${formatCost(summary.tasks.cost)}${tasksCacheHitPart}`,
   );
   const segmentTags = formatSegmentTags(summary.tasks.segments);
   if (segmentTags !== undefined) {
@@ -173,7 +201,9 @@ export function formatTasks(tasks: TaskView[]): string {
       const segmentTags = formatSegmentTags(task.segments);
       const segmentPart = segmentTags !== undefined ? `  ${segmentTags}` : "";
       const clientPart = task.client !== undefined ? `  client:${task.client}` : "";
-      return `${formatTime(task.startedAt)}${clientPart}  wall ${formatMinutes(task.wallMs)}  work ${formatMinutes(task.workMs)}  ${formatCost(task.usage.cost)}${segmentPart}  subagents ${task.subagents.length}  ${prompt}`;
+      const cacheHit = formatCacheHit(task.usage);
+      const cacheHitPart = cacheHit !== undefined ? `  ${cacheHit}` : "";
+      return `${formatTime(task.startedAt)}${clientPart}  wall ${formatMinutes(task.wallMs)}  work ${formatMinutes(task.workMs)}  ${formatCost(task.usage.cost)}${cacheHitPart}${segmentPart}  subagents ${task.subagents.length}  ${prompt}`;
     })
     .join("\n");
 }
@@ -184,6 +214,12 @@ export interface ClientTotals {
   workMs: number;
   /** Estimated cost in USD, summed across this client's tasks. */
   cost: number;
+  /** Prompt input tokens, summed across this client's tasks. */
+  input: number;
+  /** Prompt-cache read tokens, summed across this client's tasks. */
+  cacheRead: number;
+  /** Prompt-cache write tokens, summed across this client's tasks. */
+  cacheWrite: number;
   count: number;
 }
 
@@ -201,11 +237,14 @@ export function summarizeByClient(tasks: TaskView[]): Map<string, ClientTotals> 
   const totals = new Map<string, ClientTotals>();
   for (const task of tasks) {
     const key = task.client ?? NO_CLIENT;
-    const entry = totals.get(key) ?? { wallMs: 0, waitingMs: 0, workMs: 0, cost: 0, count: 0 };
+    const entry = totals.get(key) ?? { wallMs: 0, waitingMs: 0, workMs: 0, cost: 0, input: 0, cacheRead: 0, cacheWrite: 0, count: 0 };
     entry.wallMs += task.wallMs;
     entry.waitingMs += task.waitingMs;
     entry.workMs += task.workMs;
     entry.cost += finiteOrZero(task.usage.cost);
+    entry.input += finiteOrZero(task.usage.input);
+    entry.cacheRead += finiteOrZero(task.usage.cacheRead);
+    entry.cacheWrite += finiteOrZero(task.usage.cacheWrite);
     entry.count += 1;
     totals.set(key, entry);
   }
@@ -220,6 +259,12 @@ export interface ProjectTotals {
   workMs: number;
   /** Estimated cost in USD, summed across this project's tasks. */
   cost: number;
+  /** Prompt input tokens, summed across this project's tasks. */
+  input: number;
+  /** Prompt-cache read tokens, summed across this project's tasks. */
+  cacheRead: number;
+  /** Prompt-cache write tokens, summed across this project's tasks. */
+  cacheWrite: number;
   count: number;
 }
 
@@ -237,11 +282,14 @@ export function summarizeByProject(tasks: TaskView[]): Map<string, ProjectTotals
   for (const task of tasks) {
     const key = task.projectId ?? NO_PROJECT;
     const name = task.projectId !== undefined ? (task.projectName ?? task.projectId) : NO_PROJECT;
-    const entry = totals.get(key) ?? { name, wallMs: 0, waitingMs: 0, workMs: 0, cost: 0, count: 0 };
+    const entry = totals.get(key) ?? { name, wallMs: 0, waitingMs: 0, workMs: 0, cost: 0, input: 0, cacheRead: 0, cacheWrite: 0, count: 0 };
     entry.wallMs += task.wallMs;
     entry.waitingMs += task.waitingMs;
     entry.workMs += task.workMs;
     entry.cost += finiteOrZero(task.usage.cost);
+    entry.input += finiteOrZero(task.usage.input);
+    entry.cacheRead += finiteOrZero(task.usage.cacheRead);
+    entry.cacheWrite += finiteOrZero(task.usage.cacheWrite);
     entry.count += 1;
     totals.set(key, entry);
   }
@@ -253,10 +301,11 @@ export function formatProjects(totals: Map<string, ProjectTotals>): string {
   if (totals.size === 0) return "no projects";
   return Array.from(totals.values())
     .sort((a, b) => a.name.localeCompare(b.name))
-    .map(
-      (t) =>
-        `${t.name}  work ${formatMinutes(t.workMs)}  waiting ${formatMinutes(t.waitingMs)}  wall ${formatMinutes(t.wallMs)}  ${formatCost(t.cost)}  tasks ${t.count}`,
-    )
+    .map((t) => {
+      const cacheHit = formatCacheHit(t);
+      const cacheHitPart = cacheHit !== undefined ? `  ${cacheHit}` : "";
+      return `${t.name}  work ${formatMinutes(t.workMs)}  waiting ${formatMinutes(t.waitingMs)}  wall ${formatMinutes(t.wallMs)}  ${formatCost(t.cost)}${cacheHitPart}  tasks ${t.count}`;
+    })
     .join("\n");
 }
 
@@ -265,10 +314,11 @@ export function formatClients(totals: Map<string, ClientTotals>): string {
   if (totals.size === 0) return "no clients";
   return Array.from(totals.entries())
     .sort(([a], [b]) => a.localeCompare(b))
-    .map(
-      ([client, t]) =>
-        `${client}  work ${formatMinutes(t.workMs)}  waiting ${formatMinutes(t.waitingMs)}  wall ${formatMinutes(t.wallMs)}  ${formatCost(t.cost)}  tasks ${t.count}`,
-    )
+    .map(([client, t]) => {
+      const cacheHit = formatCacheHit(t);
+      const cacheHitPart = cacheHit !== undefined ? `  ${cacheHit}` : "";
+      return `${client}  work ${formatMinutes(t.workMs)}  waiting ${formatMinutes(t.waitingMs)}  wall ${formatMinutes(t.wallMs)}  ${formatCost(t.cost)}${cacheHitPart}  tasks ${t.count}`;
+    })
     .join("\n");
 }
 

@@ -50,8 +50,28 @@ test("summarize groups totals by role for a given local day", () => {
 
   const summary = summarize(records, { day });
 
-  assert.deepEqual(summary.orchestrator, { workMs: 300, waitingMs: 30, wallMs: 330, count: 2, cost: 0, segments: {} });
-  assert.deepEqual(summary.subagent, { workMs: 50, waitingMs: 5, wallMs: 55, count: 1, cost: 0, segments: {} });
+  assert.deepEqual(summary.orchestrator, {
+    workMs: 300,
+    waitingMs: 30,
+    wallMs: 330,
+    count: 2,
+    cost: 0,
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    segments: {},
+  });
+  assert.deepEqual(summary.subagent, {
+    workMs: 50,
+    waitingMs: 5,
+    wallMs: 55,
+    count: 1,
+    cost: 0,
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    segments: {},
+  });
 });
 
 test("summarize excludes records outside the requested local day", () => {
@@ -105,9 +125,38 @@ test("countUncertain returns 0 when there are no uncertain records", () => {
 test("summarize returns zeroed totals for roles with no records", () => {
   const summary = summarize([], { all: true });
 
-  assert.deepEqual(summary.orchestrator, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, segments: {} });
-  assert.deepEqual(summary.subagent, { workMs: 0, waitingMs: 0, wallMs: 0, count: 0, cost: 0, segments: {} });
-  assert.deepEqual(summary.tasks, { count: 0, wallMs: 0, workMs: 0, cost: 0, segments: {} });
+  assert.deepEqual(summary.orchestrator, {
+    workMs: 0,
+    waitingMs: 0,
+    wallMs: 0,
+    count: 0,
+    cost: 0,
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    segments: {},
+  });
+  assert.deepEqual(summary.subagent, {
+    workMs: 0,
+    waitingMs: 0,
+    wallMs: 0,
+    count: 0,
+    cost: 0,
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    segments: {},
+  });
+  assert.deepEqual(summary.tasks, {
+    count: 0,
+    wallMs: 0,
+    workMs: 0,
+    cost: 0,
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    segments: {},
+  });
 });
 
 test("summarize computes a tasks segment as the union of parent and child spans for the given day", () => {
@@ -308,6 +357,41 @@ test("summarize accumulates cost per role and per task, including subagent cost"
   assert.equal(summary.tasks.cost, 0.75);
 });
 
+test("summarize accumulates input, cacheRead and cacheWrite per role and per task", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: sameInstant,
+    settledAt: new Date(Date.parse(sameInstant) + 30_000).toISOString(),
+    usage: { input: 20, output: 5, cacheRead: 60, cacheWrite: 5, cost: 0.25 },
+  });
+  const child = makeRecord({
+    id: "c1",
+    role: "subagent",
+    pid: 200,
+    parentPid: 100,
+    startedAt: new Date(Date.parse(sameInstant) + 5_000).toISOString(),
+    settledAt: new Date(Date.parse(sameInstant) + 20_000).toISOString(),
+    usage: { input: 10, output: 5, cacheRead: 15, cacheWrite: 0, cost: 0.5 },
+  });
+
+  const summary = summarize([parent, child], { day });
+
+  assert.equal(summary.orchestrator.input, 20);
+  assert.equal(summary.orchestrator.cacheRead, 60);
+  assert.equal(summary.orchestrator.cacheWrite, 5);
+  assert.equal(summary.subagent.input, 10);
+  assert.equal(summary.subagent.cacheRead, 15);
+  assert.equal(summary.subagent.cacheWrite, 0);
+  assert.equal(summary.tasks.input, 30);
+  assert.equal(summary.tasks.cacheRead, 75);
+  assert.equal(summary.tasks.cacheWrite, 5);
+});
+
 test("formatReport, formatTasks and formatSessions show cost in dollars", () => {
   const sameInstant = "2026-09-10T10:00:00.000Z";
   const day = localDay(sameInstant);
@@ -401,6 +485,63 @@ test("formatReport appends a segments line only when a tag is non-zero, sorted a
   assert.match(text, /segments: commit 0m10s, review 1m02s/);
 });
 
+test("formatReport appends 'cache hit NN%' to a role line and to the tasks line when the denominator is non-zero", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: sameInstant,
+    settledAt: new Date(Date.parse(sameInstant) + 30_000).toISOString(),
+    usage: { input: 20, output: 5, cacheRead: 75, cacheWrite: 5, cost: 0 },
+  });
+
+  const summary = summarize([parent], { day });
+  const text = formatReport(summary);
+
+  assert.match(text, /orchestrator:.*cache hit 75%/);
+  assert.match(text, /tasks:.*cache hit 75%/);
+});
+
+test("formatReport omits 'cache hit' when input, cacheRead and cacheWrite are all 0", () => {
+  const sameInstant = "2026-09-10T10:00:00.000Z";
+  const day = localDay(sameInstant);
+  const parent = makeRecord({ id: "p1", startedAt: sameInstant });
+
+  const summary = summarize([parent], { day });
+  const text = formatReport(summary);
+
+  assert.equal(text.includes("cache hit"), false);
+});
+
+test("formatTasks appends 'cache hit NN%' after the cost when the denominator is non-zero", () => {
+  const parent = makeRecord({
+    id: "p1",
+    role: "orchestrator",
+    pid: 100,
+    parentPid: 1,
+    startedAt: "2026-09-10T12:00:00.000Z",
+    settledAt: "2026-09-10T12:00:30.000Z",
+    usage: { input: 20, output: 5, cacheRead: 75, cacheWrite: 5, cost: 0 },
+  });
+
+  const tasks = buildTasks([parent]);
+  const text = formatTasks(tasks);
+
+  assert.match(text, /cache hit 75%/);
+});
+
+test("formatTasks omits 'cache hit' when the task has no recorded usage", () => {
+  const parent = makeRecord({ id: "p1", pid: 100, parentPid: 1 });
+
+  const tasks = buildTasks([parent]);
+  const text = formatTasks(tasks);
+
+  assert.equal(text.includes("cache hit"), false);
+});
+
 test("formatReport omits the segments line when no tag is non-zero", () => {
   const sameInstant = "2026-09-10T10:00:00.000Z";
   const day = localDay(sameInstant);
@@ -476,7 +617,7 @@ test("summarizeByClient totals work, waiting, wall, cost and task count per clie
     wallMs: 60000,
     waitingMs: 10000,
     workMs: 50000,
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 1 },
+    usage: { input: 10, output: 0, cacheRead: 50, cacheWrite: 0, cost: 1 },
   });
   const parentB = makeRecord({
     id: "a2",
@@ -489,7 +630,7 @@ test("summarizeByClient totals work, waiting, wall, cost and task count per clie
     wallMs: 30000,
     waitingMs: 0,
     workMs: 30000,
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+    usage: { input: 5, output: 0, cacheRead: 25, cacheWrite: 10, cost: 0.5 },
   });
   const parentC = makeRecord({
     id: "b1",
@@ -506,8 +647,48 @@ test("summarizeByClient totals work, waiting, wall, cost and task count per clie
   const tasks = buildTasks([parentA, parentB, parentC]);
   const totals = summarizeByClient(tasks);
 
-  assert.deepEqual(totals.get("acme"), { wallMs: 90000, waitingMs: 10000, workMs: 80000, cost: 1.5, count: 2 });
-  assert.deepEqual(totals.get("(none)"), { wallMs: 10000, waitingMs: 0, workMs: 10000, cost: 0, count: 1 });
+  assert.deepEqual(totals.get("acme"), {
+    wallMs: 90000,
+    waitingMs: 10000,
+    workMs: 80000,
+    cost: 1.5,
+    input: 15,
+    cacheRead: 75,
+    cacheWrite: 10,
+    count: 2,
+  });
+  assert.deepEqual(totals.get("(none)"), {
+    wallMs: 10000,
+    waitingMs: 0,
+    workMs: 10000,
+    cost: 0,
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    count: 1,
+  });
+});
+
+test("formatClients appends 'cache hit NN%' after the cost when a client's denominator is non-zero", () => {
+  const parentA = makeRecord({
+    id: "a1",
+    pid: 100,
+    parentPid: 1,
+    client: "acme",
+    usage: { input: 15, output: 0, cacheRead: 75, cacheWrite: 10, cost: 0 },
+  });
+
+  const text = formatClients(summarizeByClient(buildTasks([parentA])));
+
+  assert.match(text, /acme.*cache hit 75%/);
+});
+
+test("formatClients omits 'cache hit' when a client has no recorded usage", () => {
+  const parentA = makeRecord({ id: "a1", pid: 100, parentPid: 1, client: "acme" });
+
+  const text = formatClients(summarizeByClient(buildTasks([parentA])));
+
+  assert.equal(text.includes("cache hit"), false);
 });
 
 test("formatClients renders one line per client sorted alphabetically, with (none) as a normal entry", () => {
@@ -539,7 +720,7 @@ test("summarizeByProject totals work/waiting/wall/cost/count per projectId, grou
     startedAt: "2026-09-10T12:00:00.000Z",
     settledAt: "2026-09-10T12:01:00.000Z",
     waitingMs: 10000,
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 1 },
+    usage: { input: 10, output: 0, cacheRead: 50, cacheWrite: 0, cost: 1 },
   });
   const parentB = makeRecord({
     id: "a2",
@@ -550,7 +731,7 @@ test("summarizeByProject totals work/waiting/wall/cost/count per projectId, grou
     startedAt: "2026-09-10T13:00:00.000Z",
     settledAt: "2026-09-10T13:00:30.000Z",
     waitingMs: 0,
-    usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0.5 },
+    usage: { input: 5, output: 0, cacheRead: 25, cacheWrite: 10, cost: 0.5 },
   });
   const parentC = makeRecord({
     id: "b1",
@@ -564,8 +745,51 @@ test("summarizeByProject totals work/waiting/wall/cost/count per projectId, grou
   const tasks = buildTasks([parentA, parentB, parentC]);
   const totals = summarizeByProject(tasks);
 
-  assert.deepEqual(totals.get("p-portal"), { name: "Portal", wallMs: 90000, waitingMs: 10000, workMs: 80000, cost: 1.5, count: 2 });
-  assert.deepEqual(totals.get("(no project)"), { name: "(no project)", wallMs: 10000, waitingMs: 0, workMs: 10000, cost: 0, count: 1 });
+  assert.deepEqual(totals.get("p-portal"), {
+    name: "Portal",
+    wallMs: 90000,
+    waitingMs: 10000,
+    workMs: 80000,
+    cost: 1.5,
+    input: 15,
+    cacheRead: 75,
+    cacheWrite: 10,
+    count: 2,
+  });
+  assert.deepEqual(totals.get("(no project)"), {
+    name: "(no project)",
+    wallMs: 10000,
+    waitingMs: 0,
+    workMs: 10000,
+    cost: 0,
+    input: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    count: 1,
+  });
+});
+
+test("formatProjects appends 'cache hit NN%' after the cost when a project's denominator is non-zero", () => {
+  const parentA = makeRecord({
+    id: "a1",
+    pid: 100,
+    parentPid: 1,
+    projectId: "p-portal",
+    projectName: "Portal",
+    usage: { input: 15, output: 0, cacheRead: 75, cacheWrite: 10, cost: 0 },
+  });
+
+  const text = formatProjects(summarizeByProject(buildTasks([parentA])));
+
+  assert.match(text, /Portal.*cache hit 75%/);
+});
+
+test("formatProjects omits 'cache hit' when a project has no recorded usage", () => {
+  const parentA = makeRecord({ id: "a1", pid: 100, parentPid: 1, projectId: "p-portal", projectName: "Portal" });
+
+  const text = formatProjects(summarizeByProject(buildTasks([parentA])));
+
+  assert.equal(text.includes("cache hit"), false);
 });
 
 test("summarizeByProject falls back to the projectId as the display name when projectName is missing", () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { finiteOrZero, isWorkRecord } from "../src/domain/work-record.ts";
+import { cacheHitRatio, finiteOrZero, isWorkRecord } from "../src/domain/work-record.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 
 function makeRecord(overrides: Partial<WorkRecord> = {}): WorkRecord {
@@ -195,4 +195,23 @@ test("finiteOrZero returns 0 for undefined, NaN, Infinity and non-numbers", () =
   assert.equal(finiteOrZero(Number.NaN), 0);
   assert.equal(finiteOrZero(Number.POSITIVE_INFINITY), 0);
   assert.equal(finiteOrZero("5" as unknown as number), 0);
+});
+
+test("cacheHitRatio returns cacheRead over input + cacheRead + cacheWrite", () => {
+  assert.equal(cacheHitRatio({ input: 20, cacheRead: 75, cacheWrite: 5 }), 0.75);
+});
+
+test("cacheHitRatio returns undefined when input, cacheRead and cacheWrite are all 0", () => {
+  assert.equal(cacheHitRatio({ input: 0, cacheRead: 0, cacheWrite: 0 }), undefined);
+});
+
+test("cacheHitRatio treats non-finite fields as 0, like finiteOrZero", () => {
+  assert.equal(
+    cacheHitRatio({ input: Number.NaN, cacheRead: 10, cacheWrite: Number.POSITIVE_INFINITY }),
+    1,
+  );
+  assert.equal(
+    cacheHitRatio({ input: Number.NaN, cacheRead: Number.NaN, cacheWrite: Number.POSITIVE_INFINITY }),
+    undefined,
+  );
 });

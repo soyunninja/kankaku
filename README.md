@@ -688,7 +688,11 @@ the future, this is the signal that would surface it.
 ## The `/kankaku` command
 
 Run `/kankaku` inside pi to see today's totals (work, waiting, record count)
-per role, plus a union-based tasks segment. In the interactive TUI the report
+per role, plus a union-based tasks segment. Each totals line also shows
+`cache hit NN%` when tokens were recorded: the share of prompt input tokens
+served from the provider's prompt cache, cache reads over input plus cache
+reads plus cache writes; the segment is omitted, not shown as `0%`, when no
+tokens were recorded. In the interactive TUI the report
 is appended to the chat transcript as a durable card that is never sent to
 the LLM; without a UI (print or RPC mode) it falls back to a notification.
 Arguments are whitespace-separated and order-insensitive:

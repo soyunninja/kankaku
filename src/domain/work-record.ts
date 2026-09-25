@@ -214,6 +214,23 @@ export function finiteOrZero(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
+/**
+ * Share of prompt input tokens served from the provider's prompt cache:
+ * `cacheRead / (input + cacheRead + cacheWrite)`. pi's `usage.input` maps to
+ * the provider's `input_tokens`, which already excludes cached tokens, so
+ * the three fields are disjoint and this sum is the true denominator.
+ * Returns `undefined` when the denominator is `0` (nothing to compute a
+ * ratio from) rather than `0`, so callers never render a misleading `0%`.
+ * Non-finite fields count as `0`, mirroring {@link finiteOrZero}.
+ */
+export function cacheHitRatio(usage: { input: number; cacheRead: number; cacheWrite: number }): number | undefined {
+  const input = finiteOrZero(usage.input);
+  const cacheRead = finiteOrZero(usage.cacheRead);
+  const cacheWrite = finiteOrZero(usage.cacheWrite);
+  const denominator = input + cacheRead + cacheWrite;
+  return denominator === 0 ? undefined : cacheRead / denominator;
+}
+
 const ROLES = new Set<WorkRole>(["orchestrator", "subagent"]);
 const STATUSES = new Set<WorkStatus>(["completed", "aborted", "interrupted"]);
 

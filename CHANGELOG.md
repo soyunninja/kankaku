@@ -14,6 +14,12 @@ follow semver. Dates are the day the version was cut.
   is sent on create only — reassigning the link in the hub's web app is
   never undone by a later sync, exactly like `client`/`project`. kankaku
   still never creates a task from pi. See README "Linking to a hub task".
+- **Prompt-cache hit ratio in the local report**: `/kankaku`, `/kankaku
+  tasks`, `clients` and `projects` lines now end with `cache hit NN%`,
+  computed as `cacheRead / (input + cacheRead + cacheWrite)` from the
+  already-recorded token counts (`domain/work-record.ts#cacheHitRatio`);
+  omitted, never shown as `0%`, when no tokens were recorded. No record
+  schema or sync change.
 
 ## 0.6.0 — 2026-09-24
 
