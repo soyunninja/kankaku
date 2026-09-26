@@ -4,3 +4,5 @@ node_modules/
 # CodeGraph local index
 .codegraph/
 .DS_Store
+# Local Pi runtime state
+.atl/
