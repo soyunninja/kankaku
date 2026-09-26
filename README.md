@@ -85,8 +85,11 @@ anything behind in whatever project happens to be open.
   and the last cost the statusline reported (wraps `node src/cli.ts status`).
 - `/kankaku:setup` — prints the `statusLine` snippet described above (wraps
   `node src/cli.ts setup`).
-- `/kankaku:sync` — manually syncs local work records to the hub (wraps
-  `node src/cli.ts sync`; the slash command does not forward arguments).
+- `/kankaku:sync` — manually syncs recent local work records to the hub
+  (wraps `node src/cli.ts sync`; the slash command does not forward arguments).
+- `/kankaku:sync-status` — inspects local pending counts and sync state
+  (wraps `node src/cli.ts sync status`; no hub request or credentials required).
+- `/kankaku:sync-all` — requests a full sync (wraps `node src/cli.ts sync all`).
 
 The report, status, and setup subcommands are also available directly via
 `node src/cli.ts <report|status|setup>`; `report` accepts `--days N` and
@@ -96,9 +99,10 @@ defaults to the last 7 days.
 
 Configure hub credentials with `KANKAKU_PB_URL`, `KANKAKU_PB_EMAIL`, and
 `KANKAKU_PB_PASSWORD`, or use `~/.kankaku/credentials.json` (the shared
-kankaku hub credential file). Then run `/kankaku:sync` or
-`node src/cli.ts sync` in the project whose worklog you want to upload.
-For options not forwarded by the slash command, use the CLI directly:
+kankaku hub credential file). Then run `/kankaku:sync` for recent records or
+`/kankaku:sync-all` for a full sync in the project whose worklog you want to
+upload. Use `/kankaku:sync-status` to inspect local sync state without a hub
+request or credentials. The same operations are available directly via CLI:
 
 | Command | Purpose |
 |---------|---------|
@@ -181,9 +185,9 @@ also runs for the current session's own leftover state at `SessionEnd`.
   document a link between a `SubagentStart`/`SubagentStop` pair and the
   `tool_use_id` that launched it, so kankaku-claude cannot join them; the
   subagent's own time is not separately measured here.
-- **Hub sync is best-effort.** Use `/kankaku:sync` or the direct CLI to retry
-  failures or request a full sync. Prompts are omitted from uploads unless
-  `KANKAKU_SYNC_PROMPT` is `truncated` or `full`.
+- **Hub sync is best-effort.** Use `/kankaku:sync` to retry recent records or
+  `/kankaku:sync-all` to request a full sync. Prompts are omitted from uploads
+  unless `KANKAKU_SYNC_PROMPT` is `truncated` or `full`.
 
 See [kankaku.io](https://kankaku.io) for the pi extension this plugin shares
 its worklog format with.

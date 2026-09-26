@@ -8,6 +8,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `/kankaku:sync-status` and `/kankaku:sync-all` slash commands for local
+  sync state inspection and full hub sync, respectively.
+
 - Phase 1: per-prompt work records from Claude Code hooks. Writes one
   `WorkRecord` per user prompt to `<KANKAKU_DIR>/worklog.jsonl`, in the same
   schema the kankaku pi extension writes, so kankaku's existing
