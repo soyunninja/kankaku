@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { JsonlWorkLog, SyncStateStore } from "kankaku/hub";
@@ -78,7 +78,8 @@ test("sync all sends Claude attribution and privacy defaults through the public 
     assert.equal(bodies.length, 1);
     assert.equal(bodies[0]?.agent, "claude-code");
     assert.equal(bodies[0]?.plugin, "kankaku-claude");
-    assert.equal(bodies[0]?.plugin_version, "0.1.0");
+    const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+    assert.equal(bodies[0]?.plugin_version, pkg.version);
     assert.equal(bodies[0]?.agent_version, undefined);
     assert.equal(bodies[0]?.machine, "test-machine");
     assert.equal(bodies[0]?.prompt, "");
