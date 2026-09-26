@@ -1,6 +1,6 @@
 {
   "name": "kankaku-claude",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Claude Code plugin that records how long the agent works on each user prompt, in kankaku's worklog format.",
   "type": "module",
   "files": [
