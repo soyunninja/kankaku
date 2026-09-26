@@ -7,8 +7,10 @@ import {
   computeSyncStatus, createPocketBaseCatalogFetcher, resolveHubCredentials,
   runSync, safeHomeDir,
 } from "kankaku/hub";
+import type { SyncTrigger } from "kankaku/hub";
 import { resolveKankakuDir } from "./paths.ts";
 import type { CliResult } from "./cli-core.ts";
+import type { WorkSink } from "kankaku/ports";
 
 export interface SyncCliDeps {
   env: NodeJS.ProcessEnv;
@@ -66,26 +68,7 @@ export async function runSyncCli(args: string[], deps: SyncCliDeps): Promise<Cli
     if (hub.invalidReason) return { stdout: "", stderr: `kankaku sync: invalid hub URL: ${hub.invalidReason}\n`, exitCode: 1 };
     if (!hub.credentials) return { stdout: "", stderr: "kankaku sync: hub credentials are not configured (KANKAKU_PB_URL, KANKAKU_PB_EMAIL, KANKAKU_PB_PASSWORD).\n", exitCode: 1 };
 
-    const credentials = hub.credentials;
-    const client = new PocketBaseClient({ ...credentials, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
-    const catalog = new CachedCatalog({
-      filePath: join(safeHomeDir(homeDir) ?? tmpdir(), ".kankaku", "catalog.json"),
-      url: credentials.url,
-      clock: { now: deps.now },
-      fetchCatalog: createPocketBaseCatalogFetcher(client),
-    });
-    // Refresh before resolving assignments; on an offline hub the cached snapshot remains usable.
-    await catalog.refresh();
-    const snapshot = catalog.read();
-    const sink = new PocketBaseSink({
-      client, clients: snapshot?.clients ?? [], projects: snapshot?.projects ?? [],
-      machine: deps.env.KANKAKU_MACHINE || (deps.hostname ?? hostname)(),
-      promptMode: promptMode(deps.env), syncRecords: deps.env.KANKAKU_SYNC_RECORDS !== "0",
-      agent: "claude-code", plugin: "kankaku-claude", pluginVersion: packageVersion(),
-    });
-    const summary = await runSync({
-      log, sink, stateStore, clock: { now: deps.now }, target: credentials.url, windowHours: hours,
-    }, { full: args[0] === "all" });
+    const summary = await syncConfigured(deps, hub.credentials, { full: args[0] === "all" });
     const stdout = `uploaded: ${summary.uploaded}, updated: ${summary.updated}, skipped: ${summary.skipped}, failed: ${summary.failed.length}\n`;
     if (summary.locked) return { stdout, stderr: "kankaku sync: another sync is running.\n", exitCode: 1 };
     if (summary.error || summary.failed.length) {
@@ -96,4 +79,44 @@ export async function runSyncCli(args: string[], deps: SyncCliDeps): Promise<Cli
   } catch (error) {
     return { stdout: "", stderr: `kankaku sync: ${error instanceof Error ? error.message : String(error)}\n`, exitCode: 1 };
   }
+}
+
+/** Shared manual/automatic hub adapters and Claude attribution. */
+export async function syncConfigured(
+  deps: SyncCliDeps,
+  credentials: NonNullable<ReturnType<typeof resolveHubCredentials>["credentials"]>,
+  options: { full?: boolean; trigger?: SyncTrigger } = {},
+) {
+    const homeDir = deps.homeDir ?? (() => deps.env.HOME || homedir());
+    const dir = resolveKankakuDir(deps.env.KANKAKU_DIR ?? ".kankaku", deps.cwd);
+    const log = new JsonlWorkLog(dir);
+    const stateStore = new SyncStateStore({ dir, pid: process.pid, now: deps.now });
+    // Build the catalog only after runSync's unchanged-log and throttle gates.
+    // The public runner still owns locking, planning and the sync watermark.
+    const sink: WorkSink = { push: async (tasks) => {
+      if (tasks.length === 0) return [];
+      const client = new PocketBaseClient({ ...credentials, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+      const catalog = new CachedCatalog({
+        filePath: join(safeHomeDir(homeDir) ?? tmpdir(), ".kankaku", "catalog.json"),
+        url: credentials.url,
+        clock: { now: deps.now },
+        fetchCatalog: createPocketBaseCatalogFetcher(client),
+      });
+      // On an offline hub the cached snapshot remains usable.
+      await catalog.refresh();
+      const snapshot = catalog.read();
+      return new PocketBaseSink({
+        client, clients: snapshot?.clients ?? [], projects: snapshot?.projects ?? [],
+        machine: deps.env.KANKAKU_MACHINE || (deps.hostname ?? hostname)(),
+        promptMode: promptMode(deps.env), syncRecords: deps.env.KANKAKU_SYNC_RECORDS !== "0",
+        agent: "claude-code", plugin: "kankaku-claude", pluginVersion: packageVersion(),
+      }).push(tasks);
+    } };
+    const interval = Number(deps.env.KANKAKU_SYNC_MIN_INTERVAL_MINUTES);
+    const minAutoIntervalMs = deps.env.KANKAKU_SYNC_MIN_INTERVAL_MINUTES !== undefined && Number.isFinite(interval) && interval >= 0
+      ? interval * 60_000 : undefined;
+    return runSync({
+      log, sink, stateStore, clock: { now: deps.now }, target: credentials.url,
+      windowHours: windowHours(deps.env), ...(minAutoIntervalMs !== undefined ? { minAutoIntervalMs } : {}),
+    }, options);
 }

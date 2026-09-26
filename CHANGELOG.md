@@ -28,8 +28,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
     `/kankaku:status`, `/kankaku:setup` slash commands.
 
 - Manual hub sync via `node src/cli.ts sync [all|status]` and the
-  `/kankaku:sync` slash command (default sync only). No automatic sync hooks;
-  prompts are omitted by default.
+  `/kankaku:sync` slash command (default sync only). Prompts are omitted by default.
+- Best-effort automatic hub sync on `SessionStart`, `Stop`, and `SessionEnd`;
+  disabled with `KANKAKU_SYNC_AUTO=0`. Missing credentials and sync failures
+  never block local records or cleanup.
 
 ### Fixed
 

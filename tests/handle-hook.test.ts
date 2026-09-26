@@ -194,6 +194,42 @@ test("full prompt lifecycle: one completed record with a cost delta from a simul
   }
 });
 
+test("heavy hooks sync after local writes and clean up even when sync rejects", async () => {
+  const dirs = makeDirs();
+  const clock = makeClock();
+  const calls: Array<{ trigger: string; records: number }> = [];
+  const errors: string[] = [];
+  const deps = makeDeps(dirs, clock, {
+    autoSync: async (trigger) => {
+      calls.push({ trigger, records: readWorklog(dirs.kankakuDir).length });
+      if (trigger !== "session_start") throw new Error("offline");
+    },
+    stderr: (message) => errors.push(message),
+  });
+  const { resolvePaths } = await import("../src/paths.ts");
+  try {
+    await handleHook(baseInput({ hook_event_name: "SessionStart" }), deps);
+    clock.set(1000);
+    await handleHook(baseInput({ hook_event_name: "UserPromptSubmit", prompt: "hi" }), deps);
+    clock.set(2000);
+    await handleHook(baseInput({ hook_event_name: "Stop" }), deps);
+    assert.equal(readWorklog(dirs.kankakuDir).length, 1);
+    const paths = resolvePaths({ env: deps.env, cwd: "/repo", sessionId: "session-1" });
+    const { readState } = await import("../src/session-state.ts");
+    assert.equal(readState(paths.stateFile)?.promptOpen, null);
+    clock.set(3000);
+    await handleHook(baseInput({ hook_event_name: "SessionEnd" }), deps);
+    assert.deepEqual(calls, [
+      { trigger: "session_start", records: 0 },
+      { trigger: "agent_settled", records: 1 },
+      { trigger: "session_shutdown", records: 1 },
+    ]);
+    assert.equal(existsSync(paths.stateFile), false);
+    assert.equal(existsSync(paths.eventsFile), false);
+    assert.equal(errors.length, 2);
+  } finally { cleanupDirs(dirs); }
+});
+
 test("a completed prompt with no cost write never gets costObserved", async () => {
   const dirs = makeDirs();
   const clock = makeClock();
@@ -308,7 +344,10 @@ test("SessionStart with source compact does not sweep cost files", async () => {
 test("SessionEnd with an open prompt appends an interrupted record and deletes this session's files, including its cost file", async () => {
   const dirs = makeDirs();
   const clock = makeClock();
-  const deps = makeDeps(dirs, clock);
+  const seen: Array<{ trigger: string; status: string | undefined }> = [];
+  const deps = makeDeps(dirs, clock, { autoSync: async (trigger) => {
+    seen.push({ trigger, status: readWorklog(dirs.kankakuDir).at(-1)?.status });
+  } });
   const { resolvePaths } = await import("../src/paths.ts");
   const { writeCost, costFile } = await import("../src/cost-store.ts");
   try {
@@ -330,6 +369,7 @@ test("SessionEnd with an open prompt appends an interrupted record and deletes t
     assert.equal(records.length, 1);
     assert.equal(records[0]?.status, "interrupted");
     assert.equal(records[0]?.model, "anthropic/claude-x");
+    assert.deepEqual(seen, [{ trigger: "session_start", status: undefined }, { trigger: "session_shutdown", status: "interrupted" }]);
 
     const paths = resolvePaths({ env: { KANKAKU_DIR: dirs.kankakuDir }, cwd: "/repo", sessionId: "session-1" });
     assert.equal(existsSync(paths.stateFile), false);

@@ -20,7 +20,7 @@ Records are written in kankaku's own `WorkRecord` schema
 (`WORK_RECORD_SCHEMA = 1`), the exact one the kankaku pi extension writes to
 its own `worklog.jsonl`. This means kankaku's existing report and export
 tooling can read this plugin's worklog unchanged. kankaku-claude also exposes
-manual hub sync through kankaku's public hub adapters (below).
+manual and best-effort automatic hub sync through kankaku's public hub adapters (below).
 
 ## Requirements
 
@@ -114,8 +114,19 @@ Optional environment settings:
 | `KANKAKU_SYNC_PROMPT` | Prompt privacy: omitted by default; set `truncated` or `full` to include prompts. |
 | `KANKAKU_SYNC_WINDOW_HOURS` | Recent sync window in hours (defaults to 24). |
 | `KANKAKU_SYNC_RECORDS` | Set to `0` to disable uploading raw `work_records` children; consolidated `task_entries` still sync. |
+| `KANKAKU_SYNC_AUTO` | Set to `0` to disable automatic sync; manual sync remains available. |
+| `KANKAKU_SYNC_MIN_INTERVAL_MINUTES` | Minimum interval between automatic per-prompt attempts (defaults to 5; `0` disables throttling). |
 
-This first slice is **manual-only**: no automatic sync hooks run yet.
+### Automatic hub sync
+
+With valid hub credentials, heavy hooks attempt a best-effort sync at session start
+(after recovery), after each settled prompt has been appended, and on session end
+(after any interrupted record is appended, before cleanup). Missing/invalid
+credentials silently skip automatic sync. Failures are reported on stderr but
+never prevent local worklog writes or session cleanup. Prompt privacy, machine,
+window, and record settings above apply to both manual and automatic sync.
+Automatic runs use kankaku's change detection and per-prompt throttle; session
+boundaries are not throttled. Set `KANKAKU_SYNC_AUTO=0` to opt out.
 
 ## Where the files live
 
@@ -170,9 +181,9 @@ also runs for the current session's own leftover state at `SessionEnd`.
   document a link between a `SubagentStart`/`SubagentStop` pair and the
   `tool_use_id` that launched it, so kankaku-claude cannot join them; the
   subagent's own time is not separately measured here.
-- **Hub sync is manual-only.** Use `/kankaku:sync` or the direct CLI as
-  described above; no automatic sync hooks run yet. Prompts are omitted
-  from uploads unless `KANKAKU_SYNC_PROMPT` is `truncated` or `full`.
+- **Hub sync is best-effort.** Use `/kankaku:sync` or the direct CLI to retry
+  failures or request a full sync. Prompts are omitted from uploads unless
+  `KANKAKU_SYNC_PROMPT` is `truncated` or `full`.
 
 See [kankaku.io](https://kankaku.io) for the pi extension this plugin shares
 its worklog format with.

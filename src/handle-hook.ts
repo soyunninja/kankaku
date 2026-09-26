@@ -7,6 +7,7 @@ import { splitPrompts, type PromptEvents } from "./prompts.ts";
 import { readCost, deleteCost, sweepStaleCostFiles } from "./cost-store.ts";
 import type { Event } from "./events.ts";
 import type { WorkLog } from "kankaku/ports";
+import type { SyncTrigger } from "kankaku/hub";
 
 export interface HandleHookDeps {
   env: NodeJS.ProcessEnv;
@@ -18,6 +19,8 @@ export interface HandleHookDeps {
   isAlive: (pid: number) => boolean;
   runPs: (pid: number) => PsInfo | undefined;
   stderr: (message: string) => void;
+  /** Optional heavy-hook seam for tests. */
+  autoSync?: (trigger: SyncTrigger) => Promise<void>;
 }
 
 const STOP_COST_WAIT_POLL_MS = 100;
@@ -118,7 +121,7 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
     case "SessionEnd": {
       const reason = readString(raw.reason) ?? "other";
       appendEvent(paths.eventsFile, { ts, event: "SessionEnd", reason });
-      await handleSessionEnd(paths, sessionId, ts, deps);
+      await handleSessionEnd(paths, sessionId, cwd, ts, deps);
       return;
     }
     default:
@@ -166,6 +169,7 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   writeState(paths.stateFile, { ...state, promptOpen: null, permissionOpen: null });
   const keep = events.slice(0, events.length - last.events.length);
   dropSettledPrompts(paths.eventsFile, keep);
+  if (core) await syncHeavy("agent_settled", state.cwd, deps);
 }
 
 async function handleSessionStart(
@@ -194,7 +198,10 @@ async function handleSessionStart(
   }
 
   const existing = readState(paths.stateFile);
-  if (existing) return; // resume/fork on an existing state: keep it as-is
+  if (existing) {
+    await syncHeavy("session_start", cwd, deps);
+    return; // resume/fork on an existing state: keep it as-is
+  }
 
   const pid = resolveClaudePid({ startPid: process.ppid, runPs: deps.runPs });
   const resolvedInfo = deps.runPs(pid);
@@ -209,9 +216,10 @@ async function handleSessionStart(
     permissionOpen: null,
   };
   writeState(paths.stateFile, state);
+  await syncHeavy("session_start", cwd, deps);
 }
 
-async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, ts: number, deps: HandleHookDeps): Promise<void> {
+async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: string, ts: number, deps: HandleHookDeps): Promise<void> {
   const state = readState(paths.stateFile);
   if (state?.promptOpen) {
     const { replayPrompt } = await import("./replay.ts");
@@ -230,8 +238,24 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, ts: num
       }
     }
   }
-  deleteSessionFiles(paths);
-  deleteCost(deps.env, sessionId);
+  try {
+    await syncHeavy("session_shutdown", state?.cwd ?? cwd, deps);
+  } finally {
+    deleteSessionFiles(paths);
+    deleteCost(deps.env, sessionId);
+  }
+}
+
+async function syncHeavy(trigger: SyncTrigger, cwd: string, deps: HandleHookDeps): Promise<void> {
+  try {
+    if (deps.autoSync) await deps.autoSync(trigger);
+    else {
+      const { autoSync } = await import("./auto-sync.ts");
+      await autoSync(trigger, { env: deps.env, cwd, now: deps.now, stderr: deps.stderr });
+    }
+  } catch (error) {
+    deps.stderr(`kankaku auto-sync: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 function deleteSessionFiles(paths: ResolvedPaths): void {
