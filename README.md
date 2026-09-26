@@ -90,10 +90,15 @@ anything behind in whatever project happens to be open.
 - `/kankaku:sync-status` — inspects local pending counts and sync state
   (wraps `node src/cli.ts sync status`; no hub request or credentials required).
 - `/kankaku:sync-all` — requests a full sync (wraps `node src/cli.ts sync all`).
+- `/kankaku:doctor` — a read-only local diagnostic of plugin files, session and
+  cost visibility, and hub sync state (wraps `node src/cli.ts doctor`).
 
-The report, status, and setup subcommands are also available directly via
-`node src/cli.ts <report|status|setup>`; `report` accepts `--days N` and
-defaults to the last 7 days.
+The report, status, setup, and doctor subcommands are also available directly via
+`node src/cli.ts <report|status|setup|doctor>`; `report` accepts `--days N` and
+defaults to the last 7 days. Doctor reads only local data; it never contacts the
+hub or prints credentials. A missing cost file means cost has not been observed
+under the current `HOME` (it does not prove the statusline is misconfigured).
+Stored sync error details are withheld because they may contain sensitive data.
 
 ### Manual hub sync
 

@@ -172,6 +172,16 @@ test("runCli dispatches sync status and rejects unknown sync arguments", async (
   } finally { cleanup({ dir, homeDir }); }
 });
 
+test("runCli dispatches doctor as a local diagnostic", async () => {
+  const { dir, homeDir, deps } = tmpDeps();
+  try {
+    const result = await runCli(["doctor"], deps);
+    assert.equal(result.exitCode, 0);
+    assert.match(result.stdout, /Hub \/ sync/);
+    assert.match(result.stdout, /hub: unconfigured/);
+  } finally { cleanup({ dir, homeDir }); }
+});
+
 test("runCli returns usage on stderr and exit code 1 for an unknown command", async () => {
   const { dir, homeDir, deps } = tmpDeps();
   try {

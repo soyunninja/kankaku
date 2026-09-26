@@ -5,6 +5,7 @@ import { readState } from "./session-state.ts";
 import { readCost } from "./cost-store.ts";
 import { formatReport } from "./report.ts";
 import { runSyncCli } from "./sync-cli.ts";
+import { runDoctor } from "./doctor.ts";
 
 export interface CliDeps {
   env: NodeJS.ProcessEnv;
@@ -22,7 +23,7 @@ export interface CliResult {
   stderr?: string;
 }
 
-const USAGE = "usage: node src/cli.ts <report|status|setup|sync> [--days N]\n";
+const USAGE = "usage: node src/cli.ts <report|status|setup|sync|doctor> [--days N]\n";
 
 /** CLI commands, resolved from `deps.cwd`. */
 export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> {
@@ -36,6 +37,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> 
       return runSetup(deps);
     case "sync":
       return runSyncCli(rest, deps);
+    case "doctor":
+      return { stdout: runDoctor(deps), exitCode: 0 };
     default:
       return { stdout: "", exitCode: 1, stderr: USAGE };
   }

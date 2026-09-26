@@ -8,6 +8,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `/kankaku:doctor` and `node src/cli.ts doctor` provide a read-only local
+  diagnostic of plugin files, sessions, cost visibility and hub sync state,
+  without network requests or credential output.
+
 - `/kankaku:sync-status` and `/kankaku:sync-all` slash commands for local
   sync state inspection and full hub sync, respectively.
 
