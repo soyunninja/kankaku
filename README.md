@@ -18,9 +18,9 @@ One record per user prompt, appended to `<KANKAKU_DIR>/worklog.jsonl`:
 
 Records are written in kankaku's own `WorkRecord` schema
 (`WORK_RECORD_SCHEMA = 1`), the exact one the kankaku pi extension writes to
-its own `worklog.jsonl`. This means kankaku's existing report, export and hub
-sync tooling can read this plugin's worklog unchanged — kankaku-claude adds a
-minimal report and CLI of its own (below) but does not reimplement kankaku.
+its own `worklog.jsonl`. This means kankaku's existing report and export
+tooling can read this plugin's worklog unchanged. kankaku-claude also exposes
+manual hub sync through kankaku's public hub adapters (below).
 
 ## Requirements
 
@@ -85,10 +85,37 @@ anything behind in whatever project happens to be open.
   and the last cost the statusline reported (wraps `node src/cli.ts status`).
 - `/kankaku:setup` — prints the `statusLine` snippet described above (wraps
   `node src/cli.ts setup`).
+- `/kankaku:sync` — manually syncs local work records to the hub (wraps
+  `node src/cli.ts sync`; the slash command does not forward arguments).
 
-The same three subcommands are also available directly:
-`node src/cli.ts <report|status|setup> [--days N]` (`report` defaults to the
-last 7 days).
+The report, status, and setup subcommands are also available directly via
+`node src/cli.ts <report|status|setup>`; `report` accepts `--days N` and
+defaults to the last 7 days.
+
+### Manual hub sync
+
+Configure hub credentials with `KANKAKU_PB_URL`, `KANKAKU_PB_EMAIL`, and
+`KANKAKU_PB_PASSWORD`, or use `~/.kankaku/credentials.json` (the shared
+kankaku hub credential file). Then run `/kankaku:sync` or
+`node src/cli.ts sync` in the project whose worklog you want to upload.
+For options not forwarded by the slash command, use the CLI directly:
+
+| Command | Purpose |
+|---------|---------|
+| `node src/cli.ts sync` | Manually sync the recent window (24 hours by default). |
+| `node src/cli.ts sync all` | Request a full sync. |
+| `node src/cli.ts sync status` | Inspect local pending counts and sync state; no hub network request or credentials required. |
+
+Optional environment settings:
+
+| Variable | Effect |
+|----------|--------|
+| `KANKAKU_MACHINE` | Machine label for uploaded records (defaults to the host name). |
+| `KANKAKU_SYNC_PROMPT` | Prompt privacy: omitted by default; set `truncated` or `full` to include prompts. |
+| `KANKAKU_SYNC_WINDOW_HOURS` | Recent sync window in hours (defaults to 24). |
+| `KANKAKU_SYNC_RECORDS` | Set to `0` to disable uploading raw `work_records` children; consolidated `task_entries` still sync. |
+
+This first slice is **manual-only**: no automatic sync hooks run yet.
 
 ## Where the files live
 
@@ -143,9 +170,9 @@ also runs for the current session's own leftover state at `SessionEnd`.
   document a link between a `SubagentStart`/`SubagentStop` pair and the
   `tool_use_id` that launched it, so kankaku-claude cannot join them; the
   subagent's own time is not separately measured here.
-- **No hub sync in this version.** Phase 1 is local measurement only; the
-  worklog this plugin writes is hub-sync-ready (same schema as kankaku), but
-  syncing it is a separate, later feature.
+- **Hub sync is manual-only.** Use `/kankaku:sync` or the direct CLI as
+  described above; no automatic sync hooks run yet. Prompts are omitted
+  from uploads unless `KANKAKU_SYNC_PROMPT` is `truncated` or `full`.
 
 See [kankaku.io](https://kankaku.io) for the pi extension this plugin shares
 its worklog format with.

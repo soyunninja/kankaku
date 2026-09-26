@@ -27,6 +27,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   - `node src/cli.ts report|status|setup` and the `/kankaku:report`,
     `/kankaku:status`, `/kankaku:setup` slash commands.
 
+- Manual hub sync via `node src/cli.ts sync [all|status]` and the
+  `/kankaku:sync` slash command (default sync only). No automatic sync hooks;
+  prompts are omitted by default.
+
 ### Fixed
 
 - T7: the statusline command is wired globally in `~/.claude/settings.json`,

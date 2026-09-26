@@ -6,7 +6,7 @@ import { isAlive } from "./claude-pid.ts";
 // src/cli.ts -> src -> repo root (the directory that contains .claude-plugin/).
 const pluginRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
-const result = runCli(process.argv.slice(2), {
+const result = await runCli(process.argv.slice(2), {
   env: process.env,
   cwd: process.cwd(),
   now: () => Date.now(),

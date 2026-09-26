@@ -56,12 +56,12 @@ function sampleRecord(startedAt: Date): WorkRecord {
   };
 }
 
-test("runCli report prints formatReport output built from the worklog", () => {
+test("runCli report prints formatReport output built from the worklog", async () => {
   const { dir, homeDir, deps } = tmpDeps();
   try {
     const now = new Date();
     new JsonlWorkLog(dir).append(sampleRecord(now));
-    const result = runCli(["report"], { ...deps, now: () => now.getTime() });
+    const result = await runCli(["report"], { ...deps, now: () => now.getTime() });
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.includes("fix the report formatting"));
   } finally {
@@ -69,27 +69,27 @@ test("runCli report prints formatReport output built from the worklog", () => {
   }
 });
 
-test("runCli report honors --days", () => {
+test("runCli report honors --days", async () => {
   const { dir, homeDir, deps } = tmpDeps();
   try {
     const now = new Date();
     const tenDaysAgo = new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000);
     new JsonlWorkLog(dir).append(sampleRecord(tenDaysAgo));
-    const result = runCli(["report", "--days", "30"], { ...deps, now: () => now.getTime() });
+    const result = await runCli(["report", "--days", "30"], { ...deps, now: () => now.getTime() });
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.includes("fix the report formatting"));
 
-    const resultDefault = runCli(["report"], { ...deps, now: () => now.getTime() });
+    const resultDefault = await runCli(["report"], { ...deps, now: () => now.getTime() });
     assert.equal(resultDefault.stdout, "No tasks recorded in the last 7 days.\n");
   } finally {
     cleanup({ dir, homeDir });
   }
 });
 
-test("runCli report says so when the worklog is empty", () => {
+test("runCli report says so when the worklog is empty", async () => {
   const { dir, homeDir, deps } = tmpDeps();
   try {
-    const result = runCli(["report"], deps);
+    const result = await runCli(["report"], deps);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, "No tasks recorded in the last 7 days.\n");
   } finally {
@@ -97,10 +97,10 @@ test("runCli report says so when the worklog is empty", () => {
   }
 });
 
-test("runCli status reports no active sessions when the claude directory is empty", () => {
+test("runCli status reports no active sessions when the claude directory is empty", async () => {
   const { dir, homeDir, deps } = tmpDeps();
   try {
-    const result = runCli(["status"], deps);
+    const result = await runCli(["status"], deps);
     assert.equal(result.exitCode, 0);
     assert.equal(result.stdout, "No active sessions.\n");
   } finally {
@@ -108,7 +108,7 @@ test("runCli status reports no active sessions when the claude directory is empt
   }
 });
 
-test("runCli status lists each session's id, pid liveness, open prompt and last cost", () => {
+test("runCli status lists each session's id, pid liveness, open prompt and last cost", async () => {
   const { dir, homeDir, deps } = tmpDeps({ isAlive: (pid) => pid === 111 });
   try {
     const paths = resolvePaths({ env: deps.env, cwd: deps.cwd, sessionId: "s1" });
@@ -131,7 +131,7 @@ test("runCli status lists each session's id, pid liveness, open prompt and last 
       permissionOpen: null,
     });
 
-    const result = runCli(["status"], deps);
+    const result = await runCli(["status"], deps);
     assert.equal(result.exitCode, 0);
     assert.ok(result.stdout.includes("s1"));
     assert.ok(result.stdout.includes("alive"));
@@ -144,10 +144,10 @@ test("runCli status lists each session's id, pid liveness, open prompt and last 
   }
 });
 
-test("runCli setup prints the statusLine snippet with an absolute, existing statusline.ts path", () => {
+test("runCli setup prints the statusLine snippet with an absolute, existing statusline.ts path", async () => {
   const { dir, homeDir, deps } = tmpDeps();
   try {
-    const result = runCli(["setup"], deps);
+    const result = await runCli(["setup"], deps);
     assert.equal(result.exitCode, 0);
     const match = result.stdout.match(/([^\s"\\]+\/src\/statusline\.ts)/);
     assert.ok(match, "expected the snippet to contain a path ending in /src/statusline.ts");
@@ -160,10 +160,22 @@ test("runCli setup prints the statusLine snippet with an absolute, existing stat
   }
 });
 
-test("runCli returns usage on stderr and exit code 1 for an unknown command", () => {
+test("runCli dispatches sync status and rejects unknown sync arguments", async () => {
   const { dir, homeDir, deps } = tmpDeps();
   try {
-    const result = runCli(["bogus"], deps);
+    const status = await runCli(["sync", "status"], deps);
+    assert.equal(status.exitCode, 0);
+    assert.match(status.stdout, /unconfigured/);
+    const invalid = await runCli(["sync", "unexpected"], deps);
+    assert.equal(invalid.exitCode, 1);
+    assert.match(invalid.stderr ?? "", /usage/i);
+  } finally { cleanup({ dir, homeDir }); }
+});
+
+test("runCli returns usage on stderr and exit code 1 for an unknown command", async () => {
+  const { dir, homeDir, deps } = tmpDeps();
+  try {
+    const result = await runCli(["bogus"], deps);
     assert.equal(result.exitCode, 1);
     assert.equal(result.stdout, "");
     assert.ok(result.stderr && result.stderr.length > 0);

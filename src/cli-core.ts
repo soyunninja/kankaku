@@ -4,6 +4,7 @@ import { listStateFiles, resolveKankakuDir } from "./paths.ts";
 import { readState } from "./session-state.ts";
 import { readCost } from "./cost-store.ts";
 import { formatReport } from "./report.ts";
+import { runSyncCli } from "./sync-cli.ts";
 
 export interface CliDeps {
   env: NodeJS.ProcessEnv;
@@ -17,14 +18,14 @@ export interface CliDeps {
 export interface CliResult {
   stdout: string;
   exitCode: number;
-  /** Set only for the usage message on an unknown command. */
+  /** Usage or sync error output. */
   stderr?: string;
 }
 
-const USAGE = "usage: node src/cli.ts <report|status|setup> [--days N]\n";
+const USAGE = "usage: node src/cli.ts <report|status|setup|sync> [--days N]\n";
 
-/** `node src/cli.ts <report|status|setup> [--days N]`, resolved from `deps.cwd`. */
-export function runCli(argv: string[], deps: CliDeps): CliResult {
+/** CLI commands, resolved from `deps.cwd`. */
+export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> {
   const [command, ...rest] = argv;
   switch (command) {
     case "report":
@@ -33,6 +34,8 @@ export function runCli(argv: string[], deps: CliDeps): CliResult {
       return runStatus(deps);
     case "setup":
       return runSetup(deps);
+    case "sync":
+      return runSyncCli(rest, deps);
     default:
       return { stdout: "", exitCode: 1, stderr: USAGE };
   }
