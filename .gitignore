@@ -5,3 +5,11 @@ node_modules/
 .codegraph/
 # Compiled library entrypoints (kankaku/domain, kankaku/ports, kankaku/hub)
 dist/
+# This project's own work log and in-flight checkpoints (user data, never committed)
+.kankaku/
+# Local task documents and drafts kept next to the code
+odd/
+# Gentleman Guardian Angel pre-commit review cache
+.gga
+# macOS Finder metadata
+.DS_Store

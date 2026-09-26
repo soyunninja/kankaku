@@ -250,7 +250,14 @@ function persistError(deps: SyncRunnerDeps, state: ReturnType<SyncStateStore["re
   });
 }
 
-/** Number of tasks pending a sync right now, for `/kankaku sync status` — computed locally, no network. */
+/**
+ * Number of tasks pending a sync right now — computed locally, no network.
+ *
+ * @deprecated Superseded by {@link computeSyncStatus}, which returns the same
+ * `pending` count together with `state` and `staleOutsideWindow`. Nothing in
+ * kankaku calls this any more; it stays only because it is part of the
+ * published `kankaku/hub` surface. It will be removed in the next minor.
+ */
 export function pendingCount(tasks: TaskView[], state: ReturnType<SyncStateStore["read"]>, target: string, windowHours?: number): number {
   const plan = planSync(tasks, state, { target, ...(windowHours !== undefined ? { windowHours } : {}) });
   return plan.toSync.length + plan.correctionsDeferred;
