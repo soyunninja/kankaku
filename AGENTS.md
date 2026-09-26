@@ -4,6 +4,8 @@ kankaku is a [pi](https://pi.dev) extension package that records how long
 agents work on each user prompt. It writes append-only JSONL records to
 `.kankaku/worklog.jsonl` and derives task and session views from them.
 Read `README.md` for behaviour and the record schema before changing code.
+New to the codebase? Start with `docs/project-map.md`: where every file
+lives, the four core flows, how to run and release, and the gotchas.
 
 ## Architecture (hexagonal)
 
