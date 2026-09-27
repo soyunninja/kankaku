@@ -26,7 +26,8 @@
   "dependencies": {
     "ink": "^7.1.1",
     "kankaku": "^0.8.0",
-    "react": "^19.3.0"
+    "react": "^19.3.0",
+    "kankaku-hub": "file:../kankaku-hub-worktrees/npm-package"
   },
   "devDependencies": {
     "@types/node": "^24",
