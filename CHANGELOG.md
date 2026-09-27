@@ -3,6 +3,22 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **`kankaku setup` is now an interactive wizard**: on a real terminal
+  (and with neither `--yes` nor `--dry-run`), `kankaku setup` opens as a
+  full-screen, step-by-step wizard in the same sidebar/panel look as the
+  rest of the app — Detect, Agents (a checklist you drive, instead of
+  setup acting on whatever it finds pending; unchecking a configured
+  agent removes kankaku from it), Claude Code checkout, Hub (use an
+  existing hub, install one locally, or skip), Roots, Review and Apply,
+  ending with the Dashboard opening in place. `kankaku` with no arguments
+  offers the same wizard the very first time, when no `~/.kankaku/tui.json`
+  exists yet. `kankaku setup --yes` and `--dry-run` are unchanged:
+  non-interactive, and never open the wizard even on a TTY.
+
 ## 0.2.1 — 2026-09-27
 
 ### Fixed

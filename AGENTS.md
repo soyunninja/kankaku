@@ -40,7 +40,24 @@ formatting or sync-planning logic.
   facts into an ordered `SetupStep[]` (`done`/`todo`/`unavailable`, an
   `action` description and the exact `file` a `todo` step would change);
   `formatDoctorLines` and `formatSetupPlanLines` render that plan as plain
-  text for `doctor` and `setup --dry-run` respectively).
+  text for `doctor` and `setup --dry-run` respectively), and
+  `setup-wizard.ts` (`kankaku setup`'s interactive wizard state: one
+  `WizardState` — the current `WizardStep` (`detect`/`agents`/`claude`/
+  `hub`/`roots`/`review`/`apply`/`done`), the in-progress answers, the
+  computed `plan` and the applied `results` — plus reducers
+  (`createWizardState` builds it from a `WizardFacts`, reusing
+  `detectAgents` and guessing the Claude checkout from an existing
+  `statusLine` via `guessClaudeCheckout`; `toggleAgent`/`setClaudeCheckout`/
+  `setHubMode`/`setHubField`/`setHubHealth`/`setRoots`/`setLocalCheckout`/
+  `setHubLocalManual` update one field each, clearing its own error;
+  `next`/`back` validate and step through — skipping the Claude step when
+  it isn't needed, and never advancing out of `apply` until every planned
+  action has a result; `planFromWizard` diffs the current answers against
+  `WizardFacts`' on-disk state into an ordered `WizardAction[]`, computed
+  once on `roots` → `review`; `applyResult` appends one `ApplyResult`;
+  `hintsForStep` is the footer's own per-step key hints). No I/O — every
+  caller (`ui/setup/wizard-screen.tsx`, `cli.tsx`) reads the real files
+  and passes plain facts in, exactly like `setup-plan.ts`.
 - `src/ports/` holds interfaces only (`ProjectSource` and `Prompter` —
   `confirm`/`text`/`secret`, injected into `kankaku setup`'s interactive
   prompts so a scripted fake can drive it in tests; `--yes` never calls it
@@ -80,7 +97,21 @@ formatting or sync-planning logic.
   `readline-prompter.ts` (`createReadlinePrompter`, the real `Prompter`:
   `node:readline/promises` over given input/output streams; `secret()`
   hides typed input by routing readline's own per-keystroke echo through
-  a `Writable` that swallows bytes while muted).
+  a `Writable` that swallows bytes while muted); `pi.ts`/`claude.ts` also
+  export the wizard's own removal writers, `removeKankakuPackage`/
+  `removeStatusLine` (a no-op, with no backup and no write, when kankaku
+  isn't present); and `local-hub.ts` (the wizard's "install locally" hub
+  option, level 1: `findHubCheckout` picks the first candidate path that
+  looks like a `kankaku-hub` checkout — has `scripts/dev.sh` and
+  `pocketbase/pb_migrations`; `installLocalHub` downloads PocketBase
+  (skipped if already present), starts `scripts/dev.sh` detached (pid/log
+  under `~/.kankaku/hub/`) through the injected `ScriptRunner`
+  (`ports/script-runner.ts`; the real one, `child-process-runner.ts`,
+  wraps `node:child_process` — tests always inject a fake, never spawning
+  the real hub), polls its health endpoint for up to ~20s, then runs
+  `scripts/create-dev-accounts.sh` and returns that script's own
+  hardcoded dev service-account credentials; `manualCommands` is the exact
+  command list shown when no checkout is found).
 - `src/ui/` holds Ink components and the visual system: `theme.ts` (colour
   roles, the default dark/cyan preset, and a `ThemeProvider`/`useTheme`
   context — written with `createElement`, not JSX, so it stays a plain
@@ -95,8 +126,22 @@ formatting or sync-planning logic.
   row; `bar.tsx`/`sparkline.tsx` — text bars and block-character
   sparklines, each also exporting a plain-string `render*` helper for
   reuse inside a `Table` cell; `sidebar.tsx`, `header-bar.tsx`,
-  `key-hints.tsx`), `app.tsx` (owns `NavState`, global `1`-`4`/`q`, and
-  wires Dashboard's `enter`-on-a-project to Tasks' `projectFilter`),
+  `key-hints.tsx`; `text-input.tsx` — a fully-controlled single-line input
+  (printable characters insert at the cursor, ←/→/Home/End move it,
+  Backspace/Delete remove, Enter calls `onSubmit`, a `▏` cursor marker
+  only while `focused`, `masked` renders `•` for every character, e.g. a
+  password field); `checklist.tsx` — `[x]`/`[ ]`/`[-] … (note)` rows,
+  Space toggles the row at `cursor` (never a disabled one), ↑/↓ call
+  `onMove`; `radio.tsx` — `(•)`/`( )` single-select, ↑/↓ select the
+  previous/next option directly), `app.tsx` (owns `NavState`, global
+  `1`-`4`/`q`, and wires Dashboard's `enter`-on-a-project to Tasks'
+  `projectFilter`; also owns `showWizard` — when `AppProps.startInWizard`
+  is set, renders `setup/wizard-screen.tsx#SetupWizard` in place of the
+  four-screen shell instead, with its own global `useInput` disabled
+  (`isActive: !showWizard`) so the wizard owns every keystroke itself;
+  `onDone` just drops back to the normal shell — Dashboard's own
+  `useState(load)` mounts fresh and reloads on its own, so nothing else
+  needs to force a reload),
   `dashboard-screen.tsx` (the home screen: a Today card — it shows today's
   numbers, hence its own title, unrelated to the screen's own name — Last
   7 days sparklines, Projects table with share bars, Hub card and the
@@ -107,6 +152,24 @@ formatting or sync-planning logic.
   left, the selected client's `[ Projects ]` right), `sync-screen.tsx`
   (one card per project in a wrapping grid). Every screen renders its own
   `Layout`, so it stays a self-contained, independently testable unit.
+  `setup/wizard-screen.tsx` (`SetupWizard`) is the same idea applied to
+  `kankaku setup`: one `Layout` whose sidebar lists the wizard's seven
+  named steps (`apply` has no row of its own — it's Review's own
+  execution, so it maps to Review's row while running) with `✓` on
+  completed ones, and whose main area is one `[ Setup · <Step> ]` `Panel`
+  per step, driven entirely by `domain/setup-wizard.ts`'s reducers
+  (`useState<WizardState>`). It never talks to the filesystem or network
+  directly — everything real goes through its own `WizardActions` prop
+  (`apply`, `checkHealth`, `findHubCheckout`, `manualCommands`,
+  `installLocalHub`, built by `cli.tsx`). `apply` takes the current
+  `WizardState` alongside the planned `WizardAction`, since `file` on a
+  `WizardAction` is always the target path, never the value to write —
+  `write-claude`/`write-hub`/`write-roots` read the checkout/hub
+  fields/roots from `state` instead. The Hub step tracks its own
+  `hubFocus` cursor (Tab cycles it) so only one field is ever
+  `focused` at a time, and gates `q`/`c`/`m` behind "is a text field
+  currently focused" the same way the Claude/Roots steps gate `q` — a
+  text input always consumes its own printable keys first.
 - `src/cli.tsx` only wires argv parsing to config, discovery, the domain
   model and rendering (`today`/`tasks`/`catalog [refresh]`/
   `sync [status|all] [--project <dir>]`/`setup [--yes] [--dry-run]`/
@@ -127,8 +190,19 @@ formatting or sync-planning logic.
   each `todo` step is asked through the injected `Prompter` (`--yes`
   answers every question with its own default instead, never touching the
   prompter) and, when confirmed, written through the matching
-  `adapters/setup/*` writer, ending with the same report as `doctor`. Do
-  not put logic there beyond this wiring.
+  `adapters/setup/*` writer, ending with the same report as `doctor`.
+  `setup` opens the interactive wizard instead of this readline flow when
+  stdout is a real TTY (`CliDeps.isTTY`) and neither `--yes` nor
+  `--dry-run` was given — both flags always keep the non-interactive path
+  even on a TTY. `kankaku` with no subcommand does the same the first time
+  (no `~/.kankaku/tui.json` yet); `gatherWizardFacts` (read-only, no
+  network — the hub's health is checked interactively from the wizard's
+  own Hub step) and `buildWizardActions` (wiring every `WizardActions`
+  method to the real `adapters/setup/*` writers, `applyWizardAction`
+  mapping each `WizardActionKind` to its writer) build `<App>`'s `wizard`
+  prop; both are used only from the real `renderApp`, exactly like
+  `dashboardActionsDeps`/`catalogScreenDeps`/`syncScreenDeps`. Do not put
+  logic there beyond this wiring.
 - Dependencies point inwards: adapters and ui import domain and ports;
   domain imports nothing outside `src/domain/` and `src/ports/`.
 

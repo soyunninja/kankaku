@@ -15,24 +15,57 @@ npm i -g kankaku-tui
 kankaku setup
 ```
 
-`kankaku setup` detects every coding agent kankaku knows how to configure
-on this machine (pi, gentle-shell, Claude Code — each by its own settings
-file) and, for each one that already exists but isn't wired up, offers to
-add it: `npm:kankaku` to a pi-family `packages` array, or Claude Code's
-`statusLine` pointing at a `kankaku-claude` checkout. It also offers to
-configure hub credentials (reusing `~/.kankaku/credentials.json` or the
-`KANKAKU_PB_*` environment when either is already set) and writes this
-app's own `~/.kankaku/tui.json`. Codex and OpenCode are detected and
-reported, but kankaku has no adapter for either yet.
+On a real terminal, `kankaku setup` opens as a full-screen wizard — one
+step at a time, in the same sidebar/panel look as the rest of the app.
+`kankaku` with no arguments does the same the very first time (no
+`~/.kankaku/tui.json` yet); after that first run it opens straight into
+the Dashboard as usual.
 
-Every question has a sensible default; `kankaku setup --yes` accepts every
-default without asking, and `kankaku setup --dry-run` prints the plan —
-each step's state (`done`/`todo`/`unavailable`) and the exact file it
-would change — without writing anything. Nothing is ever written without
-either an explicit prompt answer or `--yes`. Before the first change to
-any file, kankaku setup creates a `<file>.bak` next to it; re-running
-`kankaku setup` is always safe, since it only ever writes what is still
-missing or what you explicitly change.
+The wizard's steps, `enter` to advance and `esc` to go back throughout
+(`esc` at the first step quits):
+
+1. **Detect** — which agents kankaku found on this machine, and their
+   current state.
+2. **Agents** — a checklist (`space` toggles): pi, gentle-shell, Claude
+   Code. Pre-checked means already configured; unchecking a configured
+   agent schedules removing kankaku from it, not just skipping it. Codex
+   and OpenCode are listed but disabled — no adapter yet.
+3. **Claude Code** — the `kankaku-claude` checkout path (only shown when
+   Claude Code is checked and not already configured), guessed from any
+   existing `statusLine`.
+4. **Hub** — `use an existing hub` (URL, email, masked password, a `c`
+   inline health check, reusing the current credentials as the default),
+   `install locally`, or `skip`. Installing locally looks for a
+   `kankaku-hub` checkout first; if found, its path is prefilled and
+   confirming it downloads PocketBase, starts the dev server in the
+   background and creates a **development** service account (its email
+   and password are fixed constants from `kankaku-hub`'s own dev script,
+   never meant for anything but a local machine) — the wizard writes that
+   account as this machine's hub credentials. Without a checkout, the
+   wizard shows the exact commands to run in another terminal and a `c`
+   "check again" action, plus `m` to acknowledge you'll install it
+   manually.
+5. **Roots** — the comma-separated project roots, defaulting to the
+   current `tui.json` (or the parent of the current directory the first
+   time).
+6. **Review** — the plan: one line per change, with the exact file it
+   touches. `enter` applies it.
+7. **Apply** — runs each change and shows its result
+   (`wrote`/`unchanged`/`removed`/`started`/`error: …`) as it happens.
+8. **Done** — a summary, then `enter` opens the Dashboard in place — no
+   restart.
+
+`kankaku setup --yes` and `kankaku setup --dry-run` stay exactly as
+before: non-interactive, driven by argv/env only, never opening the
+wizard (even on a TTY). `--yes` accepts every question's own default
+without asking; `--dry-run` prints the plan — each step's state
+(`done`/`todo`/`unavailable`) and the exact file it would change —
+without writing anything. Nothing is ever written without either an
+explicit answer (in the wizard or the `--yes`/readline flow) or `--yes`
+itself. Before the first change to any file, kankaku setup creates a
+`<file>.bak` next to it; re-running `kankaku setup` in any form is always
+safe, since it only ever writes what is still missing or what you
+explicitly change.
 
 `kankaku setup` ends with, and `kankaku doctor` prints on its own, the
 same read-only report: one line per agent, one for the hub, one for
