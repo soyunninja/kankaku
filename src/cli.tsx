@@ -11,9 +11,12 @@ import { readTuiConfig } from "./adapters/tui-config.ts";
 import { discoverProjects } from "./adapters/project-discovery.ts";
 import { readProjectRecords } from "./adapters/worklog-reader.ts";
 import { computeProjectSyncStatus, createCatalog, refreshCatalog, resolveHub, syncProject } from "./adapters/hub.ts";
+import { readOwnVersion } from "./adapters/app-info.ts";
 import { buildCatalogModel } from "./domain/catalog-model.ts";
 import { buildTodayRows, formatTodayLines } from "./domain/today-model.ts";
 import type { TodayModel } from "./domain/today-model.ts";
+import { buildDashboardModel } from "./domain/dashboard-model.ts";
+import type { DashboardHubInput, DashboardModel } from "./domain/dashboard-model.ts";
 import type { ProjectRef } from "./ports/project-source.ts";
 import { App } from "./ui/app.tsx";
 import type { CatalogScreenProps } from "./ui/catalog-screen.tsx";
@@ -53,6 +56,41 @@ export function loadTasks(roots: string[], options: { all: boolean }): TasksMode
   const projects = discoverProjects(roots);
   const withRecords = projects.map((project) => ({ name: project.name, records: readProjectRecords(project) }));
   return buildTasksModel(withRecords, options);
+}
+
+/**
+ * Load the Today screen's dashboard model: every project's records (kept
+ * whole — `dashboard-model.ts` derives both today's rows and the last 7
+ * days from the same set, so nothing extra is read beyond what
+ * `readProjectRecords` already loads), plus the Hub card from local
+ * no-network sync status and the cached catalog. Without hub credentials,
+ * or with no catalog cached yet, the Hub card degrades to `"unavailable"`
+ * without touching the network.
+ */
+export function loadDashboard(roots: string[], deps: CliDeps): DashboardModel {
+  const projects = discoverProjects(roots);
+  const withRecords = projects.map((project) => ({ name: project.name, records: readProjectRecords(project) }));
+  const { now } = envDeps(deps);
+  const today = localDay(new Date(now()).toISOString());
+
+  const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  if (!hub.ok) {
+    return buildDashboardModel(withRecords, undefined, undefined, { today });
+  }
+
+  const { fetch: fetchOverride } = envDeps(deps);
+  const hubEntries: DashboardHubInput[] = projects.map((project) => ({
+    name: project.name,
+    status: computeProjectSyncStatus(project, hub.credentials, deps.env ?? {}),
+  }));
+  const catalog = createCatalog(hub.credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
+  const catalogModel = buildCatalogModel(catalog.read(), now());
+  const catalogSummary =
+    catalogModel.status === "ready"
+      ? { url: catalogModel.url, clientCount: catalogModel.clients.length, projectCount: catalogModel.clients.reduce((sum, client) => sum + client.projects.length, 0) }
+      : undefined;
+
+  return buildDashboardModel(withRecords, hubEntries, catalogSummary, { today });
 }
 
 function parseRoots(argv: string[], deps: Pick<CliDeps, "homeDir" | "cwd">): { roots: string[]; rest: string[] } {
@@ -221,7 +259,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
 }
 
 /** Build the Catalog screen's `load`/`refresh` deps for the interactive app; used only by `renderApp`. */
-function catalogScreenDeps(deps: CliDeps): CatalogScreenProps {
+function catalogScreenDeps(deps: CliDeps): Pick<CatalogScreenProps, "load" | "refresh"> {
   const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
   const { now, fetch: fetchOverride } = envDeps(deps);
 
@@ -237,7 +275,7 @@ function catalogScreenDeps(deps: CliDeps): CatalogScreenProps {
 }
 
 /** Build the Sync screen's `load`/`syncOne`/`syncAll` deps for the interactive app; used only by `renderApp`. */
-function syncScreenDeps(deps: CliDeps, roots: string[]): SyncScreenProps {
+function syncScreenDeps(deps: CliDeps, roots: string[]): Pick<SyncScreenProps, "load" | "syncOne" | "syncAll"> {
   const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
   const runnerDeps = envDeps(deps);
 
@@ -300,7 +338,8 @@ if (isMain) {
       render(
         <App
           roots={roots}
-          loadToday={() => loadToday(roots)}
+          version={readOwnVersion()}
+          loadToday={() => loadDashboard(roots, realDeps)}
           loadTasks={(options) => loadTasks(roots, options)}
           catalog={catalogScreenDeps(realDeps)}
           sync={syncScreenDeps(realDeps, roots)}
