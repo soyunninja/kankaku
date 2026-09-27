@@ -16,24 +16,27 @@ kankaku setup
 ```
 
 On a real terminal, `kankaku setup` opens as a full-screen wizard — one
-step at a time, in the same sidebar/panel look as the rest of the app.
-`kankaku` with no arguments does the same the very first time (no
-`~/.kankaku/tui.json` yet); after that first run it opens straight into
-the Dashboard as usual.
+step at a time, in the same header/panel/footer look as the rest of the
+app (there's no sidebar in the wizard itself: the panel's own title
+tracks progress instead, e.g. `Setup · Agents 1/5`, numbering only the
+steps this run will actually show). `kankaku` with no arguments does the
+same the very first time (no `~/.kankaku/tui.json` yet); after that first
+run it opens straight into the Dashboard as usual.
 
 The wizard's steps, `enter` to advance and `esc` to go back throughout
-(`esc` at the first step quits):
+(`esc` at the first step, Agents, quits):
 
-1. **Detect** — which agents kankaku found on this machine, and their
-   current state.
-2. **Agents** — a checklist (`space` toggles): pi, gentle-shell, Claude
-   Code. Pre-checked means already configured; unchecking a configured
+1. **Agents** — a checklist (`space` toggles) that also carries detection
+   for every agent kankaku knows about: pi, gentle-shell and Claude Code
+   each show `configured (<path, shortened with ~>)` or `not configured`;
+   pre-checked means already configured, and unchecking a configured
    agent schedules removing kankaku from it, not just skipping it. Codex
-   and OpenCode are listed but disabled — no adapter yet.
-3. **Claude Code** — the `kankaku-claude` checkout path (only shown when
+   and OpenCode are listed but disabled, showing `no adapter yet` (found,
+   but kankaku can't write its config) or `not installed` (not found).
+2. **Claude Code** — the `kankaku-claude` checkout path (only shown when
    Claude Code is checked and not already configured), guessed from any
    existing `statusLine`.
-4. **Hub** — `use an existing hub` (URL, email, masked password, a `c`
+3. **Hub** — `use an existing hub` (URL, email, masked password, a `c`
    inline health check, reusing the current credentials as the default),
    `install locally`, or `skip`. Installing locally looks for a
    `kankaku-hub` checkout first; if found, its path is prefilled and
@@ -45,14 +48,14 @@ The wizard's steps, `enter` to advance and `esc` to go back throughout
    wizard shows the exact commands to run in another terminal and a `c`
    "check again" action, plus `m` to acknowledge you'll install it
    manually.
-5. **Roots** — the comma-separated project roots, defaulting to the
+4. **Roots** — the comma-separated project roots, defaulting to the
    current `tui.json` (or the parent of the current directory the first
-   time).
-6. **Review** — the plan: one line per change, with the exact file it
+   time). See "Configuration" below for how deep each root is searched.
+5. **Review** — the plan: one line per change, with the exact file it
    touches. `enter` applies it.
-7. **Apply** — runs each change and shows its result
+6. **Apply** — runs each change and shows its result
    (`wrote`/`unchanged`/`removed`/`started`/`error: …`) as it happens.
-8. **Done** — a summary, then `enter` opens the Dashboard in place — no
+7. **Done** — a summary, then `enter` opens the Dashboard in place — no
    restart.
 
 `kankaku setup --yes` and `kankaku setup --dry-run` stay exactly as
@@ -90,10 +93,23 @@ this repo with `npm run dev`.
 }
 ```
 
-Each root is either a project itself (it has its own `.kankaku/worklog.jsonl`)
-or a directory containing one or more projects as direct subdirectories.
-`~` expands to the home directory. Missing or malformed config falls back
-to the current working directory as the only root.
+### Projects across roots
+
+Each root is searched recursively for projects, up to 5 directory levels
+below it by default: a directory is a project once it has its own
+`.kankaku/worklog.jsonl` — including the root itself — and the search
+still continues below it, so a stray worklog in a parent directory (a pi
+session run once in `~/desarrollo`) never hides the projects beneath;
+every directory is listed at most once. Subdirectories are searched one
+level deeper, skipping `node_modules`, `.git` and any hidden
+(dot-prefixed) directory. This lets one root cover a whole workspace, e.g.
+`~/desarrollo` finding every project under `~/desarrollo/<client>/<project>`
+without listing each one. Projects are deduped by real (symlink-resolved)
+path and sorted by name — the directory's basename, or the last two path
+segments joined with `/` when two discovered projects share a basename
+(e.g. `clientA/shared` and `clientB/shared`). `~` expands to the home
+directory. Missing or malformed config falls back to the current working
+directory as the only root.
 
 ### Hub credentials (Catalog and Sync)
 

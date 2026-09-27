@@ -42,28 +42,45 @@ formatting or sync-planning logic.
   `formatDoctorLines` and `formatSetupPlanLines` render that plan as plain
   text for `doctor` and `setup --dry-run` respectively), and
   `setup-wizard.ts` (`kankaku setup`'s interactive wizard state: one
-  `WizardState` — the current `WizardStep` (`detect`/`agents`/`claude`/
-  `hub`/`roots`/`review`/`apply`/`done`), the in-progress answers, the
-  computed `plan` and the applied `results` — plus reducers
-  (`createWizardState` builds it from a `WizardFacts`, reusing
-  `detectAgents` and guessing the Claude checkout from an existing
-  `statusLine` via `guessClaudeCheckout`; `toggleAgent`/`setClaudeCheckout`/
-  `setHubMode`/`setHubField`/`setHubHealth`/`setRoots`/`setLocalCheckout`/
-  `setHubLocalManual` update one field each, clearing its own error;
-  `next`/`back` validate and step through — skipping the Claude step when
-  it isn't needed, and never advancing out of `apply` until every planned
-  action has a result; `planFromWizard` diffs the current answers against
-  `WizardFacts`' on-disk state into an ordered `WizardAction[]`, computed
-  once on `roots` → `review`; `applyResult` appends one `ApplyResult`;
-  `hintsForStep` is the footer's own per-step key hints). No I/O — every
-  caller (`ui/setup/wizard-screen.tsx`, `cli.tsx`) reads the real files
-  and passes plain facts in, exactly like `setup-plan.ts`.
+  `WizardState` — the current `WizardStep` (`agents`/`claude`/`hub`/
+  `roots`/`review`/`apply`/`done` — Detect was merged into Agents:
+  `agents` is the first step, its checklist rows carry detection for
+  every agent via `detectAgents`, and `esc` from it quits instead of
+  going back), the in-progress answers, the computed `plan` and the
+  applied `results` — plus reducers (`createWizardState` builds it from a
+  `WizardFacts`, reusing `detectAgents` and guessing the Claude checkout
+  from an existing `statusLine` via `guessClaudeCheckout`;
+  `toggleAgent`/`setClaudeCheckout`/`setHubMode`/`setHubField`/
+  `setHubHealth`/`setRoots`/`setLocalCheckout`/`setHubLocalManual` update
+  one field each, clearing its own error; `next`/`back` validate and step
+  through — skipping the Claude step when it isn't needed (`claudeStepNeeded`,
+  exported so `ui/setup/wizard-screen.tsx` can number only the steps a run
+  will actually show), and never advancing out of `apply` until every
+  planned action has a result; `planFromWizard` diffs the current answers
+  against `WizardFacts`' on-disk state into an ordered `WizardAction[]`,
+  computed once on `roots` → `review`; `applyResult` appends one
+  `ApplyResult`; `hintsForStep` is the footer's own per-step key hints;
+  `shortenHome` replaces a leading `WizardFacts.homeDir` with `~` for a
+  displayed file path — pure, so the home directory is threaded in rather
+  than read from `node:os`). No I/O — every caller
+  (`ui/setup/wizard-screen.tsx`, `cli.tsx`) reads the real files and
+  passes plain facts in, exactly like `setup-plan.ts`.
 - `src/ports/` holds interfaces only (`ProjectSource` and `Prompter` —
   `confirm`/`text`/`secret`, injected into `kankaku setup`'s interactive
   prompts so a scripted fake can drive it in tests; `--yes` never calls it
   at all).
 - `src/adapters/` talks to the filesystem and the hub: `tui-config.ts`,
-  `project-discovery.ts`, `worklog-reader.ts` (kankaku's `JsonlWorkLog`),
+  `project-discovery.ts` (`discoverProjects` searches each root
+  recursively, up to `options.maxDepth` directory levels below it
+  (default 5): a directory with `.kankaku/worklog.jsonl` is a project,
+  and the search still continues below it — a pi session run once in a
+  parent such as `~/desarrollo` leaves a worklog there that must never
+  hide the projects beneath; every directory is listed at most once;
+  subdirectories are searched one level deeper, skipping `node_modules`,
+  `.git` and any hidden directory; deduped by real/symlink-resolved path, `name` is the
+  basename or, when two discovered projects share one, the last two path
+  segments joined with `/`; never throws on an unreadable or missing
+  directory), `worklog-reader.ts` (kankaku's `JsonlWorkLog`),
   `app-info.ts` (`readOwnVersion`, this package's own version for the
   header bar), and `hub.ts` — credentials (`resolveHub`, wrapping kankaku's
   `resolveHubCredentials`), the disk-backed catalog (`createCatalog`/
@@ -153,12 +170,16 @@ formatting or sync-planning logic.
   (one card per project in a wrapping grid). Every screen renders its own
   `Layout`, so it stays a self-contained, independently testable unit.
   `setup/wizard-screen.tsx` (`SetupWizard`) is the same idea applied to
-  `kankaku setup`: one `Layout` whose sidebar lists the wizard's seven
-  named steps (`apply` has no row of its own — it's Review's own
-  execution, so it maps to Review's row while running) with `✓` on
-  completed ones, and whose main area is one `[ Setup · <Step> ]` `Panel`
-  per step, driven entirely by `domain/setup-wizard.ts`'s reducers
-  (`useState<WizardState>`). It never talks to the filesystem or network
+  `kankaku setup`, but renders its own header/panel/footer frame directly
+  instead of `Layout` — there is no sidebar in the wizard: its progress
+  lives in the panel's own title instead (`[ Setup · Agents 1/5 ]`,
+  numbering only the steps this run will actually show via
+  `domain/setup-wizard.ts#claudeStepNeeded` — Claude Code is dropped from
+  the count when it isn't needed; `apply`/`done` render unnumbered, `apply`
+  being Review's own execution rather than a step the user navigates to).
+  One `[ Setup · <Step> [n/total] ]` `Panel` per step, driven entirely by
+  `domain/setup-wizard.ts`'s reducers (`useState<WizardState>`). It never
+  talks to the filesystem or network
   directly — everything real goes through its own `WizardActions` prop
   (`apply`, `checkHealth`, `findHubCheckout`, `manualCommands`,
   `installLocalHub`, built by `cli.tsx`). `apply` takes the current

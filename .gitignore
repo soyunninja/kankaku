@@ -4,3 +4,5 @@ dist/
 odd/
 .gga
 .DS_Store
+# CodeGraph local index
+.codegraph/

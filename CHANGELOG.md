@@ -3,6 +3,28 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Changed
+
+- **The setup wizard has no sidebar and merges Detect into Agents**: the
+  wizard starts on Agents, whose checklist rows now carry each agent's
+  detection state directly (`configured (<path>)` / `not configured` for
+  pi, gentle-shell and Claude Code; `no adapter yet` / `not installed` for
+  the disabled Codex/OpenCode rows), and `esc` on that first step quits
+  instead of going back. The left step list is gone; the panel's own
+  title carries progress instead (`[ Setup · Agents 1/5 ]`,
+  `[ Setup · Claude Code 2/5 ]`, …), numbering only the steps a given run
+  will actually show — Claude Code drops out of the count when it's
+  skipped. `Setup · Done` carries no number.
+- **Roots are searched in depth**: `kankaku today`/`tasks`/the wizard's
+  Roots step now search each configured root recursively, up to 5
+  directory levels below it by default, instead of only its direct
+  children — a directory with `.kankaku/worklog.jsonl` is a project, the
+  search still continues below it (a stray worklog in a parent directory
+  never hides the projects beneath), and `node_modules`, `.git` and
+  hidden directories are skipped along the way.
+
 ## 0.3.0 — 2026-09-28
 
 ### Added
