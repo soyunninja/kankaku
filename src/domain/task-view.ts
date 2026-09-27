@@ -121,10 +121,16 @@ function isConfirmedOrchestrator(record: WorkRecord): boolean {
 /** How long after a record settled a child it launched may still start and be joined to it by span evidence (see {@link matchChildren}). */
 const LATE_CHILD_GRACE_MS = 5000;
 
-/** `true` when `orchestrator` opened more subagent spans of `child`'s profile than it has been given children for. A missing profile on either side matches any. */
+/**
+ * `true` when `orchestrator` opened more subagent spans of `child`'s profile
+ * than it has been given children for. A missing profile on either side
+ * matches any. A span marked `isError` returned an error and produced NO
+ * subagent (no child process was ever spawned — see `SubagentSpan.isError`),
+ * so it is never counted: it must never claim a later child.
+ */
 function hasUnclaimedSpan(orchestrator: WorkRecord, child: WorkRecord, alreadyAssigned: WorkRecord[]): boolean {
   const sameKind = (profile: string | undefined): boolean => child.profile === undefined || profile === undefined || profile === child.profile;
-  const spans = orchestrator.subagents.filter((span) => sameKind(span.profile)).length;
+  const spans = orchestrator.subagents.filter((span) => !span.isError && sameKind(span.profile)).length;
   const claimed = alreadyAssigned.filter((other) => sameKind(other.profile)).length;
   return spans > claimed;
 }

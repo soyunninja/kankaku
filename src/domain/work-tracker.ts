@@ -222,7 +222,7 @@ export class WorkTracker {
     }
   }
 
-  onToolEnd(toolCallId: string, result: unknown): void {
+  onToolEnd(toolCallId: string, result: unknown, isError = false): void {
     if (!this.state) return;
 
     const openSegment = this.state.openSegments.get(toolCallId);
@@ -269,8 +269,14 @@ export class WorkTracker {
         toolCallId: openSubagent.toolCallId,
         agent: openSubagent.agent,
         mode: openSubagent.mode,
+        // Only ever set to `true`: a successful call's span must stay
+        // byte-identical to before this field existed (no `isError: false`).
+        ...(isError ? { isError: true } : {}),
         ...(resultInfo.taskId !== undefined ? { taskId: resultInfo.taskId } : {}),
         ...(openSubagent.profile !== undefined ? { profile: openSubagent.profile } : {}),
+        // Descriptive only (SUBAGENT-REQ-005): never used to decide linkage
+        // or to join a child — `isError` above is the authoritative signal.
+        ...(resultInfo.status !== undefined ? { status: resultInfo.status } : {}),
         // Clamped to >= 0: a backward clock jump while the subagent was
         // running must never produce a negative duration.
         ms: Math.max(0, this.clock.now() - openSubagent.start),

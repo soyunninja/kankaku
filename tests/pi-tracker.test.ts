@@ -266,6 +266,54 @@ test("a full run with a subagent call and an interactive tool appends exactly on
   assert.equal(record.usage.input, 10);
 });
 
+test("tool_execution_end forwards isError so a failed subagent call is persisted as isError: true", async () => {
+  const clock = new FakeClock(0);
+  const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 4242, parentPid: 4000 });
+
+  clock.advanceTo(0);
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "do the thing", systemPrompt: "", systemPromptOptions: {} }, ctx);
+
+  clock.advanceTo(100);
+  await pi.fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "failed-1", toolName: "subagent_run", args: { agent: "sdd-apply", mode: "task" } }, ctx);
+  clock.advanceTo(200);
+  await pi.fire(
+    "tool_execution_end",
+    { type: "tool_execution_end", toolCallId: "failed-1", toolName: "subagent_run", result: { content: "boom" }, isError: true },
+    ctx,
+  );
+
+  clock.advanceTo(300);
+  await pi.fire("tool_execution_start", { type: "tool_execution_start", toolCallId: "ok-1", toolName: "subagent_run", args: { agent: "sdd-apply", mode: "task" } }, ctx);
+  clock.advanceTo(500);
+  await pi.fire(
+    "tool_execution_end",
+    { type: "tool_execution_end", toolCallId: "ok-1", toolName: "subagent_run", result: { details: { gentleAgents: { taskId: "t2", status: "completed" } } }, isError: false },
+    ctx,
+  );
+
+  clock.advanceTo(600);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records.length, 1);
+  const record = log.records[0]!;
+  assert.equal(record.subagents.length, 2);
+
+  const failed = record.subagents[0]!;
+  assert.equal(failed.toolCallId, "failed-1");
+  assert.equal(failed.isError, true);
+  assert.equal(failed.taskId, undefined);
+
+  const ok = record.subagents[1]!;
+  assert.equal(ok.toolCallId, "ok-1");
+  assert.equal("isError" in ok, false);
+  assert.equal(ok.status, "completed");
+});
+
 test("before_agent_start alone saves an in-flight checkpoint, so a crash on the first turn is still recoverable", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });

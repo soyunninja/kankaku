@@ -274,6 +274,30 @@ test("computeSubagentLinkage: unlinked when there are fewer joined children than
   assert.equal(buildTaskEntryCreatePayload(task, ctx).subagent_linkage, "unlinked");
 });
 
+test("computeSubagentLinkage: a failed (isError) span is not counted, so 2 joined children for 2 real spans is linked", () => {
+  const child1 = makeRecord({ id: "child-1", role: "subagent", pid: 200, parentPid: 100 });
+  const child2 = makeRecord({ id: "child-2", role: "subagent", pid: 201, parentPid: 100 });
+  const task = makeTask(
+    { subagents: [child1, child2] },
+    {
+      subagents: [
+        { toolCallId: "call-1", agent: "reviewer", mode: "task", ms: 1000 },
+        { toolCallId: "call-2", agent: "reviewer", mode: "task", ms: 1000 },
+        { toolCallId: "call-3", agent: "reviewer", mode: "task", ms: 0, isError: true },
+      ],
+    },
+  );
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).subagent_linkage, "linked");
+});
+
+test("computeSubagentLinkage: not_applicable when every span is a failed (isError) span", () => {
+  const task = makeTask(
+    { subagents: [] },
+    { subagents: [{ toolCallId: "call-1", agent: "reviewer", mode: "task", ms: 0, isError: true }] },
+  );
+  assert.equal(buildTaskEntryCreatePayload(task, ctx).subagent_linkage, "not_applicable");
+});
+
 test("buildTaskEntryCreatePayload sends empty relation strings, not omitted or null, when unresolved", () => {
   const task = makeTask({});
   const payload = buildTaskEntryCreatePayload(task, { clients: [], projects: [], tasks: [], machine: "laptop", promptMode: "none", agent: "pi", plugin: "kankaku" });

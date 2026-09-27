@@ -157,13 +157,17 @@ export function computeCostQuality(task: TaskView): CostQuality {
  * gentle-pi does not hand a child its own task id), so this is a
  * task-level approximation, not a per-span one:
  *
- * - `not_applicable`: the orchestrator opened no subagent spans at all.
- * - `linked`: at least as many child records were joined as spans were
- *   opened — plausibly every span is accounted for (a gentle-pi subagent
- *   spawns exactly one child process per span, so counts normally match
- *   1:1).
- * - `unlinked`: fewer joined children than spans (including zero) — at
- *   least one span's time is only visible inside the orchestrator's own
+ * - `not_applicable`: the orchestrator opened no countable subagent span at
+ *   all. A span marked `isError` returned an error and produced NO subagent
+ *   (no child process was ever spawned — see `SubagentSpan.isError`), so it
+ *   is not counted; a task whose only spans all failed is `not_applicable`
+ *   rather than falsely `unlinked`.
+ * - `linked`: at least as many child records were joined as countable spans
+ *   were opened — plausibly every span is accounted for (a gentle-pi
+ *   subagent spawns exactly one child process per span, so counts normally
+ *   match 1:1).
+ * - `unlinked`: fewer joined children than countable spans (including zero)
+ *   — at least one span's time is only visible inside the orchestrator's own
  *   tool-call span, with no corroborating child record. This also covers
  *   a fully in-process subagent mechanism (no separate OS process at all,
  *   invisible to the registry/ancestry machinery) and a genuine join miss
@@ -171,7 +175,7 @@ export function computeCostQuality(task: TaskView): CostQuality {
  *   conservative, visible-gap answer rather than guessing "linked".
  */
 export function computeSubagentLinkage(task: TaskView): SubagentLinkage {
-  const spanCount = task.orchestrator.subagents.length;
+  const spanCount = task.orchestrator.subagents.filter((span) => !span.isError).length;
   if (spanCount === 0) return "not_applicable";
   return task.subagents.length >= spanCount ? "linked" : "unlinked";
 }

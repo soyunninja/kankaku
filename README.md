@@ -128,6 +128,23 @@ orchestrator when a background subagent finishes. Its `prompt` is the fixed
 text `(no user prompt — run started by an extension)`. Without it that work
 would not be recorded at all, since pi only announces user prompts.
 
+Each `subagents[]` entry is one subagent-launching tool call, measured from
+its `tool_execution_start` to its matching `tool_execution_end`. Two of its
+fields are optional and normally absent:
+
+- `isError: true` marks a call that returned an error, so no subagent was
+ever spawned. The span is still recorded — the failed call's own time
+stays visible — but it is never counted as an opened subagent: the hub's
+`subagent_linkage` skips it, and it can never claim a child record. Only
+ever written as `true`, so a successful span stays byte-identical to what
+earlier builds wrote.
+- `status` carries the subagent's own live status as the tool result
+reported it (`details.gentleAgents.status` for gentle-pi). Descriptive
+only: it never decides what is joined or aggregated.
+
+Neither field bumps `WORK_RECORD_SCHEMA`: a span written before they
+existed stays valid and reads as a successful call.
+
 `roleConfidence` and `orchestratorRef` are both optional and normally
 absent — see "Subagents" below. `roleConfidence` is only ever set to
 `"uncertain"`, and only on an `orchestrator`-role record kankaku could not
@@ -1047,10 +1064,11 @@ own record or any joined subagent observed a real provider cost figure on
 at least one turn; `"unknown"` when none did, e.g. a subscription/OAuth
 provider that reports no cost — kankaku has no token-price estimator, so
 it never sends `"estimated"`), and `subagent_linkage` (`"not_applicable"`
-when the task opened no subagent spans; `"linked"` when at least as many
-child records were joined as spans were opened; `"unlinked"` otherwise —
-a task-level approximation, since there is no per-span correlation id
-today, see "Subagents" > "Limitations"). These are measurement fields, not
+when the task opened no subagent span that could have spawned a child —
+none at all, or every one of them an error; `"linked"` when at least as
+many child records were joined as countable spans were opened;
+`"unlinked"` otherwise — a task-level approximation, since there is no
+per-span correlation id today, see "Subagents" > "Limitations"). These are measurement fields, not
 assignment: sent on every create *and* update, and included in the sync
 content hash, so a background subagent that joins later — improving
 `cost_quality`/`subagent_linkage` without changing any other number —

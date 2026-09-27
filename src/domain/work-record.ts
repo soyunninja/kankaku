@@ -17,6 +17,26 @@ export interface SubagentSpan {
   toolCallId: string;
   agent: string;
   mode: string;
+  /**
+   * `true` when this tool call returned an error (`ToolExecutionEndEvent.isError`
+   * from pi) and therefore produced NO subagent — no child process was ever
+   * spawned. The span is still recorded so the failed call's time stays
+   * visible, but it is never counted as an opened subagent span
+   * (`domain/hub-entry.ts#computeSubagentLinkage`) and never claims a later
+   * child (`domain/task-view.ts#hasUnclaimedSpan`). Only ever `true`; optional
+   * so an older-format span (written before this field existed) still
+   * validates and reads as a successful call.
+   */
+  isError?: true;
+  /**
+   * The subagent's live `status` as reported by the matched profile's
+   * `readResult` (`domain/subagent-profile.ts`), when it reported one.
+   * Purely descriptive measurement detail: it is NEVER used to decide
+   * linkage or to join anything — only `isError` is authoritative there.
+   * Optional so an older-format span (written before this field existed)
+   * still validates.
+   */
+  status?: string;
   taskId?: string;
   ms: number;
   /**

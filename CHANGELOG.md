@@ -3,6 +3,18 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Fixed
+
+- **A failed subagent tool call is no longer recorded as if it had spawned a
+  subagent**: the span now carries `isError` straight from pi's
+  `tool_execution_end`, and a span marked that way is excluded from the
+  hub's `subagent_linkage` counting and can never claim a late child. A task
+  whose only orphan spans were failed calls no longer reports `"unlinked"`.
+  The optional `status` the tool result already reported is persisted
+  alongside it, as descriptive detail only.
+
 ## 0.7.1 — 2026-09-25
 
 ### Changed

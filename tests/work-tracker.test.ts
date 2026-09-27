@@ -158,6 +158,49 @@ test("subagent_run defaults mode to task when args omit it", () => {
   assert.equal(record?.subagents[0]?.taskId, undefined);
 });
 
+test("a failed subagent call records isError: true; a successful one omits isError entirely", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent_run", { agent: "sdd-apply" });
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", {}, true);
+
+  tracker.onToolStart("call-2", "subagent_run", { agent: "sdd-apply" });
+  clock.advanceTo(200);
+  tracker.onToolEnd("call-2", {});
+
+  const record = tracker.onSettled();
+
+  assert.equal(record?.subagents.length, 2);
+  assert.equal(record?.subagents[0]?.isError, true);
+  assert.equal("isError" in (record?.subagents[0] ?? {}), true);
+  // The successful call's span must stay byte-identical to today: no
+  // `isError` key at all, not `isError: false`.
+  assert.equal(record?.subagents[1]?.isError, undefined);
+  assert.equal("isError" in (record?.subagents[1] ?? {}), false);
+});
+
+test("a subagent span carries the status the profile reports, and omits it when absent", () => {
+  const clock = new FakeClock(0);
+  const tracker = makeTracker(clock);
+
+  tracker.onRunStart("prompt");
+  tracker.onToolStart("call-1", "subagent_run", { agent: "sdd-apply" });
+  clock.advanceTo(100);
+  tracker.onToolEnd("call-1", { details: { gentleAgents: { taskId: "t1", status: "error" } } });
+
+  tracker.onToolStart("call-2", "subagent_run", { agent: "sdd-apply" });
+  clock.advanceTo(200);
+  tracker.onToolEnd("call-2", { details: { gentleAgents: { taskId: "t2" } } });
+
+  const record = tracker.onSettled();
+
+  assert.equal(record?.subagents[0]?.status, "error");
+  assert.equal("status" in (record?.subagents[1] ?? {}), false);
+});
+
 test("tool counts are accumulated by tool name", () => {
   const clock = new FakeClock(0);
   const tracker = makeTracker(clock);

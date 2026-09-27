@@ -767,6 +767,38 @@ test("forwarded usage is cancelled by the span's own child even when that child 
   assert.equal(buildTasks([parent, child])[0]!.usage.cost, 7);
 });
 
+test("a failed (isError) span never claims a late child, even inside the late-child grace window", () => {
+  const parent = makeRecord({
+    id: "p1",
+    pid: 1000,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    subagents: [span({ profile: "gentle-pi", isError: true })],
+  });
+  // Starts 1s after the parent settled: inside LATE_CHILD_GRACE_MS (5s), but
+  // the only span of the child's kind failed, so it opened no child process.
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 2000, parentPid: 1000, profile: "gentle-pi", startedAt: iso(11), settledAt: iso(12) });
+
+  const tasks = buildTasks([parent, child]);
+  assert.equal(tasks[0]!.subagents.length, 0);
+  assert.equal(orphanSubagents([parent, child]).length, 1);
+});
+
+test("a successful span still claims the same late child, so the isError filter does not break the grace join", () => {
+  const parent = makeRecord({
+    id: "p1",
+    pid: 1000,
+    startedAt: iso(0),
+    settledAt: iso(10),
+    subagents: [span({ profile: "gentle-pi" })],
+  });
+  const child = makeRecord({ id: "c1", role: "subagent", pid: 2000, parentPid: 1000, profile: "gentle-pi", startedAt: iso(11), settledAt: iso(12) });
+
+  const tasks = buildTasks([parent, child]);
+  assert.equal(tasks[0]!.subagents.length, 1);
+  assert.equal(orphanSubagents([parent, child]).length, 0);
+});
+
 test("the primary parentPid+window join never crosses machines either", () => {
   const parent = makeRecord({ id: "p1", pid: 100, machine: "mac-a", startedAt: iso(0), settledAt: iso(100) });
   const child = makeRecord({ id: "c1", role: "subagent", pid: 200, parentPid: 100, machine: "mac-b", startedAt: iso(10), settledAt: iso(20) });

@@ -576,7 +576,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
   pi.on(
     "tool_execution_end",
     guarded((event, ctx) => {
-      tracker.onToolEnd(event.toolCallId, event.result);
+      tracker.onToolEnd(event.toolCallId, event.result, event.isError);
       checkpoint(ctx);
     }),
   );
