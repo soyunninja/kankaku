@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { homedir, hostname } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { existsSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { render } from "ink";
@@ -30,13 +30,17 @@ import { DEFAULT_THEME, ThemeProvider, resolveTheme } from "./ui/theme.ts";
 import type { Theme } from "./ui/theme.ts";
 import { detectAgents, formatDoctorLines, formatSetupPlanLines, planSetup } from "./domain/setup-plan.ts";
 import type { AgentStatus, HubPlanFacts, TuiPlanFacts } from "./domain/setup-plan.ts";
+import type { ApplyResult, WizardAction, WizardFacts, WizardState } from "./domain/setup-wizard.ts";
 import { readAgentFacts } from "./adapters/setup/agents.ts";
-import { addKankakuPackage } from "./adapters/setup/pi.ts";
-import { writeStatusLine } from "./adapters/setup/claude.ts";
+import { addKankakuPackage, removeKankakuPackage } from "./adapters/setup/pi.ts";
+import { removeStatusLine, writeStatusLine } from "./adapters/setup/claude.ts";
 import { checkHubHealth, credentialsPath, writeHubCredentials } from "./adapters/setup/hub.ts";
 import { tuiConfigPath, writeTuiConfig } from "./adapters/setup/tui-config.ts";
+import { findHubCheckout, installLocalHub, manualCommands } from "./adapters/setup/local-hub.ts";
+import { createChildProcessRunner } from "./adapters/setup/child-process-runner.ts";
 import { createReadlinePrompter } from "./adapters/setup/readline-prompter.ts";
 import type { Prompter } from "./ports/prompter.ts";
+import type { WizardActions } from "./ui/setup/wizard-screen.tsx";
 
 export interface CliDeps {
   homeDir: string;
@@ -44,7 +48,9 @@ export interface CliDeps {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   exit: (code: number) => void;
-  renderApp: (roots: string[], theme: Theme) => void;
+  renderApp: (roots: string[], theme: Theme, options?: { startInWizard?: boolean }) => void;
+  /** Whether stdout is a real terminal; drives `kankaku setup`'s TTY-vs-readline split. Injectable for tests; defaults to `false` when omitted, so every existing test keeps exercising the readline flow. */
+  isTTY?: () => boolean;
   /** Injectable for tests; defaults to `process.env` at the real entry point. */
   env?: NodeJS.ProcessEnv;
   /** Injectable for tests; defaults to `Date.now` at the real entry point. */
@@ -279,6 +285,119 @@ async function runDoctorCommand(deps: CliDeps): Promise<void> {
   deps.stdout(formatDoctorLines(agents, hub, tui).join("\n"));
 }
 
+/** Plausible `kankaku-hub` checkout locations to probe for the wizard's Hub step: a sibling of this project's parent, and the documented default under the home directory. */
+function localHubCandidates(deps: CliDeps): string[] {
+  return [join(deps.homeDir, "desarrollo", "soyun.ninja", "kankaku-hub"), join(dirname(deps.cwd), "kankaku-hub")];
+}
+
+/**
+ * Gather the plain facts the setup wizard needs (`domain/setup-wizard.ts#createWizardState`):
+ * every detected agent, current hub credentials (reused as the "existing
+ * hub" step's defaults) and current `tui.json` roots. Entirely read-only,
+ * with no network call — the hub's health is checked interactively, from
+ * the wizard's own Hub step, never upfront.
+ */
+function gatherWizardFacts(deps: CliDeps): WizardFacts {
+  const agentFacts = readAgentFacts(deps.homeDir);
+  const hubResolution = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  const credPath = credentialsPath(deps.homeDir);
+  const localCheckoutGuess = findHubCheckout(localHubCandidates(deps)) ?? join(deps.homeDir, "desarrollo", "soyun.ninja", "kankaku-hub");
+
+  const hub: WizardFacts["hub"] = hubResolution.ok
+    ? {
+        credentialsPresent: true,
+        url: hubResolution.credentials.url,
+        email: hubResolution.credentials.email,
+        password: hubResolution.credentials.password,
+        credentialsPath: credPath,
+        localCheckoutGuess,
+      }
+    : { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: credPath, localCheckoutGuess };
+
+  const tuiPath = tuiConfigPath(deps.homeDir);
+  const roots: WizardFacts["roots"] = {
+    current: existsSync(tuiPath) ? readTuiConfig(deps.homeDir, deps.cwd).roots : undefined,
+    defaultRoots: [dirname(deps.cwd)],
+    path: tuiPath,
+  };
+
+  return { agentFacts, hub, roots };
+}
+
+/** Runs `adapters/setup/local-hub.ts#installLocalHub` for real, sharing one `ScriptRunner`/timer setup between the wizard's `installLocalHub` action and `apply`'s own `install-local-hub` handling. */
+async function performLocalHubInstall(checkout: string, deps: CliDeps): Promise<{ url: string; serviceEmail: string; servicePassword: string }> {
+  const { now, fetch: fetchOverride } = envDeps(deps);
+  const result = await installLocalHub(checkout, {
+    runner: createChildProcessRunner(),
+    homeDir: deps.homeDir,
+    fetch: fetchOverride ?? fetch,
+    now,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  });
+  if (!result.ok) throw new Error(result.error ?? "installing the local hub failed");
+  return { url: result.url, serviceEmail: result.serviceEmail!, servicePassword: result.servicePassword! };
+}
+
+/**
+ * Apply one planned `WizardAction` for real, through the matching
+ * `adapters/setup/*` writer. Several kinds need a value `planFromWizard`
+ * never put in the action itself (`file` is always the target path, not
+ * what to write) — `state` carries it: `state.claudeCheckout` for
+ * `write-claude`, `state.hub` for `write-hub`, `state.roots` for
+ * `write-roots`. `install-local-hub` runs the real installer, then writes
+ * its returned dev-account credentials as the hub, labelling them as dev
+ * defaults in the result detail. Never throws: any adapter failure becomes
+ * an `"error"` outcome instead.
+ */
+async function applyWizardAction(action: WizardAction, state: WizardState, deps: CliDeps): Promise<ApplyResult> {
+  try {
+    switch (action.kind) {
+      case "install-pi": {
+        const result = addKankakuPackage(action.file);
+        return { action, outcome: result.changed ? "wrote" : "unchanged" };
+      }
+      case "remove-pi": {
+        const result = removeKankakuPackage(action.file);
+        return { action, outcome: result.changed ? "removed" : "unchanged" };
+      }
+      case "write-claude": {
+        const result = writeStatusLine(action.file, state.claudeCheckout);
+        return { action, outcome: result.changed ? "wrote" : "unchanged" };
+      }
+      case "remove-claude": {
+        const result = removeStatusLine(action.file);
+        return { action, outcome: result.changed ? "removed" : "unchanged" };
+      }
+      case "write-hub": {
+        const result = writeHubCredentials(deps.homeDir, { url: state.hub.url, email: state.hub.email, password: state.hub.password });
+        return { action, outcome: result.changed ? "wrote" : "unchanged" };
+      }
+      case "install-local-hub": {
+        const installed = await performLocalHubInstall(action.file, deps);
+        writeHubCredentials(deps.homeDir, { url: installed.url, email: installed.serviceEmail, password: installed.servicePassword });
+        return { action, outcome: "started", detail: `running at ${installed.url} (dev defaults: ${installed.serviceEmail} / ${installed.servicePassword})` };
+      }
+      case "write-roots": {
+        const result = writeTuiConfig(deps.homeDir, state.roots);
+        return { action, outcome: result.changed ? "wrote" : "unchanged" };
+      }
+    }
+  } catch (error) {
+    return { action, outcome: "error", detail: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+/** Build the setup wizard's `WizardActions` for the interactive app: every write goes through the same real `adapters/setup/*` writers `kankaku setup --yes` uses. Used only by `renderApp`. */
+function buildWizardActions(deps: CliDeps): WizardActions {
+  return {
+    apply: (action, state) => applyWizardAction(action, state, deps),
+    checkHealth: (url) => checkHubHealth(url, { fetch: deps.fetch }),
+    findHubCheckout: () => findHubCheckout(localHubCandidates(deps)),
+    manualCommands: (checkout) => manualCommands(checkout),
+    installLocalHub: (checkout) => performLocalHubInstall(checkout, deps),
+  };
+}
+
 /**
  * Extract a plausible kankaku-claude checkout path from an existing
  * `statusLine.command` of the shape `node "<checkout>/src/statusline.ts"`,
@@ -414,7 +533,10 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
   const [command] = rest;
 
   if (command === undefined) {
-    deps.renderApp(roots, theme);
+    // First-run hint: no `tui.json` yet means this machine has never been
+    // set up — open straight into the wizard instead of an empty Dashboard.
+    const startInWizard = !existsSync(tuiConfigPath(deps.homeDir));
+    deps.renderApp(roots, theme, { startInWizard });
     return;
   }
 
@@ -440,7 +562,13 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
   }
 
   if (command === "setup") {
-    await runSetupCommand(rest.slice(1), deps);
+    const setupArgs = rest.slice(1);
+    const interactiveTTY = !setupArgs.includes("--yes") && !setupArgs.includes("--dry-run") && (deps.isTTY?.() ?? false);
+    if (interactiveTTY) {
+      deps.renderApp(roots, theme, { startInWizard: true });
+      return;
+    }
+    await runSetupCommand(setupArgs, deps);
     return;
   }
 
@@ -583,8 +711,9 @@ if (isMain) {
     exit: (code) => {
       process.exit(code);
     },
+    isTTY: () => process.stdout.isTTY === true,
     prompter: createReadlinePrompter(process.stdin, process.stdout),
-    renderApp: (roots, theme) => {
+    renderApp: (roots, theme, options) => {
       render(
         <ThemeProvider theme={theme}>
           <App
@@ -595,6 +724,8 @@ if (isMain) {
             catalog={catalogScreenDeps(realDeps)}
             sync={syncScreenDeps(realDeps, roots)}
             dashboardActions={dashboardActionsDeps(realDeps, roots)}
+            wizard={{ facts: gatherWizardFacts(realDeps), actions: buildWizardActions(realDeps) }}
+            startInWizard={options?.startInWizard}
           />
         </ThemeProvider>,
         { alternateScreen: true, exitOnCtrlC: true },

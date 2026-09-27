@@ -1,0 +1,220 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { render } from "ink-testing-library";
+import { SetupWizard } from "../src/ui/setup/wizard-screen.tsx";
+import type { WizardActions } from "../src/ui/setup/wizard-screen.tsx";
+import type { ApplyResult, WizardAction, WizardFacts, WizardState } from "../src/domain/setup-wizard.ts";
+import type { AgentDetectionFacts } from "../src/domain/setup-plan.ts";
+
+function baseAgentFacts(): AgentDetectionFacts {
+  return { pi: undefined, gentleShell: undefined, claudeCode: undefined, codex: undefined, opencode: undefined };
+}
+
+function baseFacts(overrides: Partial<WizardFacts> = {}): WizardFacts {
+  return {
+    agentFacts: baseAgentFacts(),
+    hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" },
+    roots: { current: undefined, defaultRoots: ["/work"], path: "/home/.kankaku/tui.json" },
+    ...overrides,
+  };
+}
+
+function fakeActions(overrides: Partial<WizardActions> = {}): {
+  actions: WizardActions;
+  calls: { apply: [WizardAction, WizardState][]; checkHealth: string[]; findHubCheckout: number };
+} {
+  const calls = { apply: [] as [WizardAction, WizardState][], checkHealth: [] as string[], findHubCheckout: 0 };
+  const actions: WizardActions = {
+    apply: async (action, state) => {
+      calls.apply.push([action, state]);
+      const result: ApplyResult = { action, outcome: "wrote" };
+      return result;
+    },
+    checkHealth: async (url) => {
+      calls.checkHealth.push(url);
+      return true;
+    },
+    findHubCheckout: () => {
+      calls.findHubCheckout += 1;
+      return undefined;
+    },
+    manualCommands: (checkout) => [`cd ${checkout ?? "~/desarrollo/soyun.ninja/kankaku-hub"}`, "scripts/pb-download.sh", "scripts/dev.sh &", "scripts/create-dev-accounts.sh"],
+    installLocalHub: async () => ({ url: "http://127.0.0.1:8090", serviceEmail: "kankaku-sync@kankaku.local", servicePassword: "kankaku-dev-sync" }),
+    ...overrides,
+  };
+  return { actions, calls };
+}
+
+function nextTick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 60));
+}
+
+test("Detect step: renders the agent facts and Esc quits the wizard", async () => {
+  const { actions } = fakeActions();
+  let quit = 0;
+  const { lastFrame, stdin } = render(
+    <SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => (quit += 1)} columns={100} rows={24} />,
+  );
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("Setup · Detect"), true);
+  assert.equal(frame.includes("pi"), true);
+
+  stdin.write("\u001B");
+  await nextTick();
+  assert.equal(quit, 1);
+});
+
+test("Agents step: Space toggles the cursor row's selection, disabled rows never toggle", async () => {
+  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), pi: { settingsPath: "/home/.pi/agent/settings.json", packages: [] } } });
+  const { actions } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  stdin.write("\r"); // detect -> agents
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Agents"), true);
+  assert.equal((lastFrame() ?? "").includes("[ ] pi"), true);
+
+  stdin.write(" ");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("[x] pi"), true);
+
+  // codex/opencode rows are disabled, with the "no adapter yet" note.
+  assert.equal((lastFrame() ?? "").includes("no adapter yet"), true);
+});
+
+test("Claude step: Enter with an empty checkout shows the error and stays on the step", async () => {
+  const { actions } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  stdin.write("\r"); // detect -> agents
+  await nextTick();
+  stdin.write("\u001B[B"); // pi -> gentle-shell
+  await nextTick();
+  stdin.write("\u001B[B"); // gentle-shell -> claude-code
+  await nextTick();
+  stdin.write(" "); // select claude-code
+  await nextTick();
+  stdin.write("\r"); // agents -> claude (selected, not configured)
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Claude"), true);
+
+  stdin.write("\r"); // submit an empty checkout
+  await nextTick();
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("Setup · Claude"), true);
+  assert.equal(frame.includes("enter the kankaku-claude checkout path"), true);
+});
+
+test("Hub step (existing mode): 'c' runs the health check and shows the result", async () => {
+  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://hub.example.com", email: "a@b.com", password: "s", credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" } });
+  const { actions, calls } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  stdin.write("\r"); // detect -> agents
+  await nextTick();
+  stdin.write("\r"); // agents -> hub (claude not selected: skipped)
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
+  assert.equal((lastFrame() ?? "").includes("hub.example.com"), true);
+
+  stdin.write("c");
+  await nextTick();
+  assert.deepEqual(calls.checkHealth, ["https://hub.example.com"]);
+  assert.equal((lastFrame() ?? "").includes("health ok"), true);
+});
+
+test("Hub step (local mode, no checkout found): shows the manual commands, 'm' acknowledges manual install", async () => {
+  const { actions } = fakeActions({ findHubCheckout: () => undefined });
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  stdin.write("\r"); // detect -> agents
+  await nextTick();
+  stdin.write("\r"); // agents -> hub
+  await nextTick();
+  stdin.write("\u001B[A"); // skip -> local (up arrow)
+  await nextTick();
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("scripts/pb-download.sh"), true);
+
+  stdin.write("\r"); // next while unacknowledged: blocked
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
+
+  stdin.write("m");
+  await nextTick();
+  stdin.write("\r");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+});
+
+test("Hub step (local mode, checkout found): prefills the checkout path from findHubCheckout", async () => {
+  const { actions } = fakeActions({ findHubCheckout: () => "/home/dev/kankaku-hub" });
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  stdin.write("\r"); // detect -> agents
+  await nextTick();
+  stdin.write("\r"); // agents -> hub
+  await nextTick();
+  stdin.write("\u001B[A"); // skip -> local
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("/home/dev/kankaku-hub"), true);
+});
+
+test("Review step: lists the plan's label and file, Roots step renders along the way", async () => {
+  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), pi: { settingsPath: "/home/.pi/agent/settings.json", packages: [] } } });
+  const { actions } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  stdin.write("\r"); // detect -> agents
+  await nextTick();
+  stdin.write(" "); // select pi (cursor starts on the first row)
+  await nextTick();
+  stdin.write("\r"); // agents -> hub
+  await nextTick();
+  stdin.write("\r"); // hub (skip) -> roots
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+
+  stdin.write("\r"); // roots -> review
+  await nextTick();
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("Setup · Review"), true);
+  assert.equal(frame.includes("install kankaku in pi"), true);
+  assert.equal(frame.includes("/home/.pi/agent/settings.json"), true);
+});
+
+test("Apply step: runs every planned action through actions.apply in order and shows results; Done -> onDone on Enter", async () => {
+  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), pi: { settingsPath: "/home/.pi/agent/settings.json", packages: [] } } });
+  const { actions, calls } = fakeActions();
+  let done = 0;
+  const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => (done += 1)} onQuit={() => {}} columns={100} rows={24} />);
+
+  stdin.write("\r"); // detect -> agents
+  await nextTick();
+  stdin.write(" "); // select pi
+  await nextTick();
+  stdin.write("\r"); // agents -> hub
+  await nextTick();
+  stdin.write("\r"); // hub -> roots
+  await nextTick();
+  stdin.write("\r"); // roots -> review
+  await nextTick();
+  stdin.write("\r"); // review -> apply (starts running)
+  await nextTick();
+  await nextTick();
+
+  assert.equal(calls.apply.length, 2); // install-pi + write-roots (no current tui.json)
+  assert.equal(calls.apply[0]?.[0].kind, "install-pi");
+  assert.equal(calls.apply[1]?.[0].kind, "write-roots");
+  const applyFrame = lastFrame() ?? "";
+  assert.equal(applyFrame.includes("Setup · Apply"), true);
+  assert.equal(applyFrame.includes("wrote"), true);
+
+  stdin.write("\r"); // apply finished -> done
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
+
+  stdin.write("\r");
+  await nextTick();
+  assert.equal(done, 1);
+});

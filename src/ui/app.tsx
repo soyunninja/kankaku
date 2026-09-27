@@ -18,8 +18,11 @@ import { CatalogScreen } from "./catalog-screen.tsx";
 import type { CatalogScreenProps } from "./catalog-screen.tsx";
 import { SyncScreen } from "./sync-screen.tsx";
 import type { SyncScreenProps } from "./sync-screen.tsx";
+import { SetupWizard } from "./setup/wizard-screen.tsx";
+import type { WizardActions } from "./setup/wizard-screen.tsx";
 import type { DashboardModel } from "../domain/dashboard-model.ts";
 import type { TasksModel } from "../domain/tasks-model.ts";
+import type { WizardFacts } from "../domain/setup-wizard.ts";
 
 export interface AppProps {
   roots: string[];
@@ -30,6 +33,10 @@ export interface AppProps {
   catalog: Pick<CatalogScreenProps, "load" | "refresh">;
   sync: Pick<SyncScreenProps, "load" | "syncOne" | "syncAll">;
   dashboardActions: DashboardActions;
+  /** The setup wizard's own facts/actions, built by `cli.tsx`; omitted only in a standalone render that never opens it. */
+  wizard?: { facts: WizardFacts; actions: WizardActions };
+  /** Opens the app straight into the wizard (`kankaku setup` on a TTY, or the first-run hint) instead of the Dashboard. */
+  startInWizard?: boolean;
 }
 
 /**
@@ -50,44 +57,55 @@ export interface AppProps {
  * filter — this hook only predicts whether that will happen, to decide
  * whether it should also move focus.
  */
-export function App({ roots, version, loadToday, loadTasks, catalog, sync, dashboardActions }: AppProps) {
+export function App({ roots, version, loadToday, loadTasks, catalog, sync, dashboardActions, wizard, startInWizard }: AppProps) {
   const { exit } = useApp();
   const [nav, setNav] = useState<NavState>(INITIAL_NAV_STATE);
+  const [showWizard, setShowWizard] = useState(startInWizard === true && wizard !== undefined);
 
-  useInput((input, key) => {
-    if (input === "q") {
-      exit();
-      return;
-    }
+  useInput(
+    (input, key) => {
+      if (input === "q") {
+        exit();
+        return;
+      }
 
-    const nextScreen = screenForKey(input);
-    if (nextScreen !== undefined) {
-      setNav((state) => switchScreen(state, nextScreen));
-      return;
-    }
+      const nextScreen = screenForKey(input);
+      if (nextScreen !== undefined) {
+        setNav((state) => switchScreen(state, nextScreen));
+        return;
+      }
 
-    setNav((state) => {
-      if (state.focus === "sidebar") {
-        if (key.downArrow) return moveSidebar(state, 1);
-        if (key.upArrow) return moveSidebar(state, -1);
-        if (key.return || key.rightArrow || key.tab) return focusMain(state);
+      setNav((state) => {
+        if (state.focus === "sidebar") {
+          if (key.downArrow) return moveSidebar(state, 1);
+          if (key.upArrow) return moveSidebar(state, -1);
+          if (key.return || key.rightArrow || key.tab) return focusMain(state);
+          return state;
+        }
+
+        // Main zone focused.
+        if (key.leftArrow || key.tab) return focusSidebar(state);
+        if (key.escape) {
+          // Tasks consumes the first `esc` itself (via its own `onClearFilter`,
+          // gated by its `focused` prop just like every other screen key) to
+          // clear its project filter; only move focus once there is none left.
+          const consumedByTasks = state.screen === "tasks" && state.projectFilter !== undefined;
+          return consumedByTasks ? state : focusSidebar(state);
+        }
         return state;
-      }
-
-      // Main zone focused.
-      if (key.leftArrow || key.tab) return focusSidebar(state);
-      if (key.escape) {
-        // Tasks consumes the first `esc` itself (via its own `onClearFilter`,
-        // gated by its `focused` prop just like every other screen key) to
-        // clear its project filter; only move focus once there is none left.
-        const consumedByTasks = state.screen === "tasks" && state.projectFilter !== undefined;
-        return consumedByTasks ? state : focusSidebar(state);
-      }
-      return state;
-    });
-  });
+      });
+    },
+    // While the wizard is active, it owns every keystroke itself (including
+    // `q`, gated there by whether a text field currently has focus) — this
+    // app-wide handler must stay out of the way entirely.
+    { isActive: !showWizard },
+  );
 
   const focused = nav.focus === "main";
+
+  if (showWizard && wizard) {
+    return <SetupWizard facts={wizard.facts} actions={wizard.actions} onDone={() => setShowWizard(false)} onQuit={() => exit()} version={version} />;
+  }
 
   return (
     <>

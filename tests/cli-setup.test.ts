@@ -256,3 +256,99 @@ test("setup (interactive): refreshing the catalog prints the same result line as
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("setup: on a TTY with no --yes/--dry-run, opens the wizard instead of the readline flow", async () => {
+  const home = makeHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    let renderCall: { roots: string[]; startInWizard: boolean | undefined } | undefined;
+    await runCli(
+      ["setup"],
+      baseDeps(home, {
+        isTTY: () => true,
+        renderApp: (roots, _theme, options) => {
+          renderCall = { roots, startInWizard: options?.startInWizard };
+        },
+      }),
+    );
+    assert.deepEqual(renderCall, { roots: [join(home, "project")], startInWizard: true });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --yes: ignores isTTY and still runs the non-interactive flow (renderApp is never called)", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    const lines: string[] = [];
+    await runCli(["setup", "--yes"], baseDeps(home, { isTTY: () => true, stdout: (text) => lines.push(text) }));
+    assert.match(lines.join("\n"), /^TUI config: done/m);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --dry-run: ignores isTTY and still prints the plan (renderApp is never called)", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    const lines: string[] = [];
+    await runCli(["setup", "--dry-run"], baseDeps(home, { isTTY: () => true, stdout: (text) => lines.push(text) }));
+    assert.match(lines.join("\n"), /^pi: done/m);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup: without a TTY, keeps the readline flow even though a prompter was injected", async () => {
+  const home = makeHome();
+  try {
+    mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+    writeFileSync(join(home, ".pi", "agent", "settings.json"), JSON.stringify({ packages: [] }, null, 2));
+    mkdirSync(join(home, "project"), { recursive: true });
+    const { prompter, questions } = scriptedPrompter({ confirm: [false, false, false, false, false] });
+    await runCli(["setup"], baseDeps(home, { prompter }));
+    assert.ok(questions.length > 0);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("no command, no tui.json yet: opens straight into the wizard (first-run hint)", async () => {
+  const home = makeHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    let renderCall: { startInWizard: boolean | undefined } | undefined;
+    await runCli(
+      [],
+      baseDeps(home, {
+        renderApp: (_roots, _theme, options) => {
+          renderCall = { startInWizard: options?.startInWizard };
+        },
+      }),
+    );
+    assert.deepEqual(renderCall, { startInWizard: true });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("no command, tui.json already exists: opens the normal dashboard, not the wizard", async () => {
+  const home = makeHome();
+  try {
+    mkdirSync(join(home, ".kankaku"), { recursive: true });
+    writeFileSync(join(home, ".kankaku", "tui.json"), JSON.stringify({ roots: ["/x"] }));
+    let renderCall: { startInWizard: boolean | undefined } | undefined;
+    await runCli(
+      [],
+      baseDeps(home, {
+        renderApp: (_roots, _theme, options) => {
+          renderCall = { startInWizard: options?.startInWizard };
+        },
+      }),
+    );
+    assert.deepEqual(renderCall, { startInWizard: false });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

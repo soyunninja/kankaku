@@ -7,6 +7,8 @@ import type { TasksModel } from "../src/domain/tasks-model.ts";
 import type { CatalogModel } from "../src/domain/catalog-model.ts";
 import type { SyncModel } from "../src/ui/sync-screen.tsx";
 import type { DashboardActions } from "../src/ui/dashboard-screen.tsx";
+import type { WizardActions } from "../src/ui/setup/wizard-screen.tsx";
+import type { WizardFacts } from "../src/domain/setup-wizard.ts";
 
 function dashboardModel(): DashboardModel {
   return {
@@ -42,6 +44,24 @@ function appProps() {
     catalog: { load: () => catalogModel(), refresh: async () => catalogModel() },
     sync: { load: () => syncModel(), syncOne: async () => ({ ok: true as const, message: "" }), syncAll: async () => [] },
     dashboardActions: dashboardActions(),
+  };
+}
+
+function wizardFacts(): WizardFacts {
+  return {
+    agentFacts: { pi: undefined, gentleShell: undefined, claudeCode: undefined, codex: undefined, opencode: undefined },
+    hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" },
+    roots: { current: undefined, defaultRoots: ["/work"], path: "/home/.kankaku/tui.json" },
+  };
+}
+
+function wizardActions(): WizardActions {
+  return {
+    apply: async (action) => ({ action, outcome: "wrote" }),
+    checkHealth: async () => true,
+    findHubCheckout: () => undefined,
+    manualCommands: () => [],
+    installLocalHub: async () => ({ url: "http://127.0.0.1:8090", serviceEmail: "a@b", servicePassword: "pw" }),
   };
 }
 
@@ -193,4 +213,57 @@ test("esc on a screen without a project filter returns straight to the sidebar",
   stdin.write("\u001B");
   await nextTick();
   assert.equal((lastFrame() ?? "").includes("choose"), true);
+});
+
+test("startInWizard opens the app straight into the setup wizard instead of the Dashboard", () => {
+  const { lastFrame } = render(<App {...appProps()} wizard={{ facts: wizardFacts(), actions: wizardActions() }} startInWizard />);
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("Setup · Detect"), true);
+  assert.equal(frame.includes("› Dashboard"), false);
+});
+
+test("without startInWizard, the app opens on the Dashboard as usual even when a wizard is supplied", () => {
+  const { lastFrame } = render(<App {...appProps()} wizard={{ facts: wizardFacts(), actions: wizardActions() }} />);
+  assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
+});
+
+test("finishing the wizard (Done -> Enter) switches to the Dashboard in place, reloading its data", async () => {
+  let loads = 0;
+  const props = appProps();
+  const { lastFrame, stdin } = render(
+    <App
+      {...props}
+      loadToday={() => {
+        loads += 1;
+        return dashboardModel();
+      }}
+      wizard={{ facts: wizardFacts(), actions: wizardActions() }}
+      startInWizard
+    />,
+  );
+  assert.equal((lastFrame() ?? "").includes("Setup · Detect"), true);
+  assert.equal(loads, 0);
+
+  for (let i = 0; i < 5; i += 1) {
+    stdin.write("\r"); // detect -> agents -> hub -> roots -> review -> apply
+    await nextTick();
+  }
+  await nextTick(); // let the (empty) plan's apply effect settle
+  assert.equal((lastFrame() ?? "").includes("Setup · Apply"), true);
+
+  stdin.write("\r"); // apply finished (empty plan) -> done
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
+
+  stdin.write("\r"); // done -> onDone
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
+  assert.equal(loads, 1);
+});
+
+test("while the wizard is active, the app's own global keys (q, digits, arrows) are inert", async () => {
+  const { lastFrame, stdin } = render(<App {...appProps()} wizard={{ facts: wizardFacts(), actions: wizardActions() }} startInWizard />);
+  stdin.write("1"); // would switch to Dashboard on the normal shell
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Detect"), true);
 });
