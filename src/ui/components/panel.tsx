@@ -9,6 +9,10 @@ export interface PanelProps {
   /** Uses `theme.borderActive` instead of `theme.border`. */
   active?: boolean;
   width: number;
+  /** Fixed total height (including both border lines). When set, the body clips instead of growing past it. */
+  height?: number;
+  /** Passed through to the outer `Box` so a panel can stretch to fill available vertical space in a flex layout. */
+  flexGrow?: number;
   children?: ReactNode;
 }
 
@@ -34,15 +38,26 @@ function buildTopBorder(title: string, headerRight: string | undefined, width: n
  * border colour to `theme.borderActive` (e.g. the focused panel in a
  * multi-panel screen).
  */
-export function Panel({ title, headerRight, active = false, width, children }: PanelProps) {
+export function Panel({ title, headerRight, active = false, width, height, flexGrow, children }: PanelProps) {
   const theme = useTheme();
   const borderColor = active ? theme.borderActive : theme.border;
   const topBorder = buildTopBorder(title, headerRight, width);
+  /** The top border is its own line above the bordered box, so the box's own height (which includes its bottom border) is one row less than the panel's total. */
+  const bodyHeight = height !== undefined ? Math.max(height - 1, 1) : undefined;
 
   return (
-    <Box flexDirection="column" width={Math.max(width, topBorder.length)}>
+    <Box flexDirection="column" width={Math.max(width, topBorder.length)} height={height} flexGrow={flexGrow}>
       <Text color={borderColor}>{topBorder}</Text>
-      <Box flexDirection="column" borderStyle="round" borderTop={false} borderColor={borderColor} width={width}>
+      <Box
+        flexDirection="column"
+        borderStyle="round"
+        borderTop={false}
+        borderColor={borderColor}
+        width={width}
+        height={bodyHeight}
+        flexGrow={flexGrow !== undefined ? 1 : undefined}
+        overflow="hidden"
+      >
         {children}
       </Box>
     </Box>

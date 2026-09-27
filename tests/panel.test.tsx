@@ -49,3 +49,24 @@ test("active accepts a boolean flag without breaking rendering", () => {
   );
   assert.equal((lastFrame() ?? "").includes("hello"), true);
 });
+
+test("a fixed height clips overflowing children instead of growing past it", () => {
+  const { lastFrame } = render(
+    <Panel title="Tasks" width={20} height={5}>
+      <Text>{"one\ntwo\nthree\nfour\nfive\nsix\nseven"}</Text>
+    </Panel>,
+  );
+  const lines = (lastFrame() ?? "").split("\n");
+  // 1 top border + 1 bottom border + up to 3 content lines = 5 total lines.
+  assert.equal(lines.length, 5);
+  assert.equal(lines.join("\n").includes("seven"), false);
+});
+
+test("flexGrow is accepted without breaking rendering", () => {
+  const { lastFrame } = render(
+    <Panel title="Today" width={20} flexGrow={1}>
+      <Text>hello</Text>
+    </Panel>,
+  );
+  assert.equal((lastFrame() ?? "").includes("hello"), true);
+});
