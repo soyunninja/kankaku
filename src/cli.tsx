@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { homedir, hostname } from "node:os";
-import { resolve } from "node:path";
-import { realpathSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { existsSync, realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { render } from "ink";
 import { buildTasks, localDay } from "kankaku/domain";
@@ -28,6 +28,15 @@ import { buildSyncRows } from "./domain/sync-model.ts";
 import type { SyncModel, SyncScreenProps } from "./ui/sync-screen.tsx";
 import { DEFAULT_THEME, ThemeProvider, resolveTheme } from "./ui/theme.ts";
 import type { Theme } from "./ui/theme.ts";
+import { detectAgents, formatDoctorLines, formatSetupPlanLines, planSetup } from "./domain/setup-plan.ts";
+import type { AgentStatus, HubPlanFacts, TuiPlanFacts } from "./domain/setup-plan.ts";
+import { readAgentFacts } from "./adapters/setup/agents.ts";
+import { addKankakuPackage } from "./adapters/setup/pi.ts";
+import { writeStatusLine } from "./adapters/setup/claude.ts";
+import { checkHubHealth, credentialsPath, writeHubCredentials } from "./adapters/setup/hub.ts";
+import { tuiConfigPath, writeTuiConfig } from "./adapters/setup/tui-config.ts";
+import { createReadlinePrompter } from "./adapters/setup/readline-prompter.ts";
+import type { Prompter } from "./ports/prompter.ts";
 
 export interface CliDeps {
   homeDir: string;
@@ -44,10 +53,12 @@ export interface CliDeps {
   hostname?: () => string;
   /** Injectable for tests; defaults to the global `fetch` at the real entry point. */
   fetch?: typeof fetch;
+  /** Drives `setup`'s interactive prompts; defaults to `readline-prompter.ts` over stdin/stdout at the real entry point. Never called by `--yes` or `--dry-run`. */
+  prompter?: Prompter;
 }
 
 const USAGE =
-  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]] [--roots a,b] [--theme name]\n";
+  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run]|doctor] [--roots a,b] [--theme name]\n";
 
 /** Load today's model for `roots`: discover projects, read their worklogs, build rows. */
 export function loadToday(roots: string[]): TodayModel {
@@ -238,6 +249,140 @@ async function runSyncCommand(args: string[], roots: string[], deps: CliDeps): P
 }
 
 /**
+ * Gather the plain facts `domain/setup-plan.ts` needs: every detected
+ * agent, hub credentials/health, and whether `tui.json` exists. Read-only;
+ * the hub health check (bounded to 5s) is the only network call.
+ */
+async function gatherSetupFacts(deps: CliDeps): Promise<{ agents: AgentStatus[]; hub: HubPlanFacts; tui: TuiPlanFacts }> {
+  const agents = detectAgents(readAgentFacts(deps.homeDir));
+
+  const hubResolution = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  const credPath = credentialsPath(deps.homeDir);
+  const hub: HubPlanFacts = hubResolution.ok
+    ? {
+        credentialsPresent: true,
+        url: hubResolution.credentials.url,
+        healthOk: await checkHubHealth(hubResolution.credentials.url, { fetch: deps.fetch }),
+        credentialsPath: credPath,
+      }
+    : { credentialsPresent: false, url: undefined, healthOk: undefined, credentialsPath: credPath };
+
+  const tuiPath = tuiConfigPath(deps.homeDir);
+  const tui: TuiPlanFacts = { present: existsSync(tuiPath), path: tuiPath };
+
+  return { agents, hub, tui };
+}
+
+/** `kankaku doctor`: read-only report, `domain/setup-plan.ts#formatDoctorLines` verbatim. Also run as the last step of `kankaku setup`. */
+async function runDoctorCommand(deps: CliDeps): Promise<void> {
+  const { agents, hub, tui } = await gatherSetupFacts(deps);
+  deps.stdout(formatDoctorLines(agents, hub, tui).join("\n"));
+}
+
+/**
+ * Extract a plausible kankaku-claude checkout path from an existing
+ * `statusLine.command` of the shape `node "<checkout>/src/statusline.ts"`,
+ * whatever package it currently points at — used as the `text()` prompt's
+ * default. `undefined` when the command doesn't match that shape at all.
+ */
+function guessClaudeCheckout(existingCommand: string | undefined): string | undefined {
+  if (!existingCommand) return undefined;
+  const match = /^node\s+"(.+)\/src\/statusline\.ts"$/.exec(existingCommand.trim());
+  return match ? match[1] : undefined;
+}
+
+/** Answers one question at a time: `--yes` always takes `defaultValue` without touching `prompter`; otherwise a `Prompter` must have been injected. */
+function makeAsker(yes: boolean, prompter: Prompter | undefined): Prompter {
+  function requirePrompter(): Prompter {
+    if (!prompter) throw new Error("kankaku setup: no prompter available (pass --yes or --dry-run, or inject one)");
+    return prompter;
+  }
+  return {
+    confirm: (question, defaultValue) => (yes ? Promise.resolve(defaultValue) : requirePrompter().confirm(question, defaultValue)),
+    text: (question, defaultValue) => (yes ? Promise.resolve(defaultValue) : requirePrompter().text(question, defaultValue)),
+    secret: (question) => (yes ? Promise.resolve("") : requirePrompter().secret(question)),
+  };
+}
+
+/**
+ * `kankaku setup [--yes] [--dry-run]`: detects every agent, prompts (or
+ * takes each question's own default with `--yes`) for what to install or
+ * configure, writes only what was confirmed, and ends with the same
+ * report as `kankaku doctor`. `--dry-run` prints the plan and writes
+ * nothing — no prompt is asked and no default is applied.
+ */
+async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
+  const dryRun = args.includes("--dry-run");
+  const yes = args.includes("--yes");
+
+  const initial = await gatherSetupFacts(deps);
+  const steps = planSetup(initial.agents, initial.hub, initial.tui);
+
+  if (dryRun) {
+    deps.stdout(formatSetupPlanLines(steps).join("\n"));
+    return;
+  }
+
+  const ask = makeAsker(yes, deps.prompter);
+  const byId = Object.fromEntries(steps.map((step) => [step.id, step]));
+
+  for (const agent of initial.agents) {
+    if (agent.id === "codex" || agent.id === "opencode") continue;
+    const step = byId[agent.id]!;
+    if (step.state !== "todo") continue;
+
+    if (agent.id === "claude-code") {
+      const doIt = await ask.confirm(`Configure Claude Code's statusLine for kankaku (${step.file})?`, true);
+      if (!doIt) continue;
+      const guessed = guessClaudeCheckout(readAgentFacts(deps.homeDir).claudeCode?.statusLineCommand) ?? "";
+      const checkoutPath = await ask.text("Path to your kankaku-claude checkout", guessed);
+      if (checkoutPath !== "") writeStatusLine(step.file, checkoutPath);
+      continue;
+    }
+
+    const doIt = await ask.confirm(`Install kankaku in ${step.title} (${step.file})?`, true);
+    if (doIt) addKankakuPackage(step.file);
+  }
+
+  if (byId["hub"]!.state === "todo" && !initial.hub.credentialsPresent) {
+    const doIt = await ask.confirm("Configure hub credentials now?", false);
+    if (doIt) {
+      const url = await ask.text("Hub URL", "");
+      if (url !== "") {
+        const email = await ask.text("Email", "");
+        const password = await ask.secret("Password");
+        writeHubCredentials(deps.homeDir, { url, email, password });
+      }
+    }
+  }
+
+  if (byId["tui-config"]!.state === "todo") {
+    const defaultRoots = dirname(deps.cwd);
+    const doIt = await ask.confirm(`Write TUI roots to ${byId["tui-config"]!.file}?`, true);
+    if (doIt) {
+      const rootsInput = await ask.text("Roots for the TUI (comma-separated)", defaultRoots);
+      const roots = rootsInput
+        .split(",")
+        .map((root) => root.trim())
+        .filter((root) => root.length > 0);
+      if (roots.length > 0) writeTuiConfig(deps.homeDir, roots);
+    }
+  }
+
+  const finalHub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  if (finalHub.ok) {
+    const doRefresh = await ask.confirm("Refresh the hub catalog now?", false);
+    if (doRefresh) {
+      const { now, fetch: fetchOverride } = envDeps(deps);
+      const catalog = createCatalog(finalHub.credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
+      await refreshCatalogAdapter(catalog);
+    }
+  }
+
+  await runDoctorCommand(deps);
+}
+
+/**
  * Resolve the `--theme`/`KANKAKU_TUI_THEME` preset (flag wins), defaulting
  * to {@link DEFAULT_THEME} when neither is given. An explicit but unknown
  * name is a usage error, never a silent fallback.
@@ -285,6 +430,16 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
 
   if (command === "sync") {
     await runSyncCommand(rest.slice(1), roots, deps);
+    return;
+  }
+
+  if (command === "setup") {
+    await runSetupCommand(rest.slice(1), deps);
+    return;
+  }
+
+  if (command === "doctor") {
+    await runDoctorCommand(deps);
     return;
   }
 
@@ -422,6 +577,7 @@ if (isMain) {
     exit: (code) => {
       process.exit(code);
     },
+    prompter: createReadlinePrompter(process.stdin, process.stdout),
     renderApp: (roots, theme) => {
       render(
         <ThemeProvider theme={theme}>
