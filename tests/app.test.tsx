@@ -50,6 +50,12 @@ test("App renders the sidebar with Today active by default", () => {
   assert.equal(frame.includes(">_ kankaku 0.1.0"), true);
 });
 
+test("the very first frame already has the sidebar focused: its own footer hints show, not the screen's", () => {
+  const { lastFrame } = render(<App {...appProps()} />);
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("↑↓ choose"), true);
+});
+
 test("App switches screens on 1-4", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
   stdin.write("2");
