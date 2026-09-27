@@ -106,9 +106,12 @@ through `tsx` (`node --import tsx --test`), which does transform JSX, so
   asserting on the rendered frame after a key press must `await` a short
   `setTimeout` first; a test that only asserts on a side channel (e.g. a
   `load`/`syncOne` call being recorded) does not need to, since the
-  handler itself runs synchronously. `ink-testing-library`'s stub stdout
-  also never emits ANSI codes, so a selection highlight must be a visible
-  text marker (e.g. `"› "`), not `<Text inverse>`/`bold` alone.
+  handler itself runs synchronously. Colour is disabled for every test run
+  by `tests/setup.mjs` (`--import`ed before tsx in the `test` script), so
+  `lastFrame()` is plain text on a TTY and in a pipe alike — on a real
+  terminal Ink would otherwise emit ANSI codes and text assertions would
+  break. A selection highlight must therefore be a visible text marker
+  (e.g. `"› "`), never colour alone.
 - Relative imports include the `.ts`/`.tsx` extension; `verbatimModuleSyntax`
   is on.
 - No runtime dependencies beyond `ink`, `react` and `kankaku`.
