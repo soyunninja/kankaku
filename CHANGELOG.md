@@ -3,6 +3,16 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 0.1.1 — 2026-09-27
+
+### Fixed
+
+- **Tests failed on a real terminal**: Ink emits ANSI colour codes when
+  stdout is a TTY or `COLORTERM` is set, so `npm test` (and therefore
+  `npm publish`, through `prepublishOnly`) failed with 34 text assertions
+  outside a plain pipe. Colour is now disabled for every test run by
+  `tests/setup.mjs`, loaded before the test files. No change to the app.
+
 ## 0.1.0 — 2026-09-27
 
 ### Added
