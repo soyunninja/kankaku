@@ -311,6 +311,11 @@ function makeAsker(yes: boolean, prompter: Prompter | undefined): Prompter {
  * report as `kankaku doctor`. `--dry-run` prints the plan and writes
  * nothing — no prompt is asked and no default is applied.
  */
+/** Tell the user what setup just did to a file: nothing is written silently. */
+function announceWrite(deps: CliDeps, file: string, result: { changed: boolean }): void {
+  deps.stdout(result.changed ? `wrote ${file}` : `unchanged ${file}`);
+}
+
 async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const yes = args.includes("--yes");
@@ -336,12 +341,12 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
       if (!doIt) continue;
       const guessed = guessClaudeCheckout(readAgentFacts(deps.homeDir).claudeCode?.statusLineCommand) ?? "";
       const checkoutPath = await ask.text("Path to your kankaku-claude checkout", guessed);
-      if (checkoutPath !== "") writeStatusLine(step.file, checkoutPath);
+      if (checkoutPath !== "") announceWrite(deps, step.file, writeStatusLine(step.file, checkoutPath));
       continue;
     }
 
     const doIt = await ask.confirm(`Install kankaku in ${step.title} (${step.file})?`, true);
-    if (doIt) addKankakuPackage(step.file);
+    if (doIt) announceWrite(deps, step.file, addKankakuPackage(step.file));
   }
 
   if (byId["hub"]!.state === "todo" && !initial.hub.credentialsPresent) {
@@ -351,7 +356,7 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
       if (url !== "") {
         const email = await ask.text("Email", "");
         const password = await ask.secret("Password");
-        writeHubCredentials(deps.homeDir, { url, email, password });
+        announceWrite(deps, credentialsPath(deps.homeDir), writeHubCredentials(deps.homeDir, { url, email, password }));
       }
     }
   }
@@ -365,7 +370,7 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
         .split(",")
         .map((root) => root.trim())
         .filter((root) => root.length > 0);
-      if (roots.length > 0) writeTuiConfig(deps.homeDir, roots);
+      if (roots.length > 0) announceWrite(deps, tuiConfigPath(deps.homeDir), writeTuiConfig(deps.homeDir, roots));
     }
   }
 
@@ -375,7 +380,8 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
     if (doRefresh) {
       const { now, fetch: fetchOverride } = envDeps(deps);
       const catalog = createCatalog(finalHub.credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
-      await refreshCatalogAdapter(catalog);
+      const snapshot = await refreshCatalogAdapter(catalog);
+      deps.stdout(formatCatalogRefreshLines(snapshot).join("\n"));
     }
   }
 

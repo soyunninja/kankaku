@@ -128,7 +128,8 @@ test("setup --yes: on a fully-configured machine, writes only tui.json and touch
     const written = JSON.parse(readFileSync(join(home, ".kankaku", "tui.json"), "utf8"));
     assert.deepEqual(written, { roots: [dirname(join(home, "project"))] });
 
-    // Setup ends with the same report as `kankaku doctor`.
+    // Every write announces itself, then setup ends with the same report as `kankaku doctor`.
+    assert.match(lines.join("\n"), new RegExp(`^wrote ${join(home, ".kankaku", "tui.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
     assert.match(lines.join("\n"), /^TUI config: done/m);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -230,6 +231,27 @@ test("setup (interactive): entering hub credentials writes them when confirmed",
     const written = JSON.parse(readFileSync(join(home, ".kankaku", "credentials.json"), "utf8"));
     assert.deepEqual(written, { url: "https://new-hub.example.com", email: "me@example.com", password: "s3cret" });
     assert.ok(questions.some((q) => q.includes("hub credentials")));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup (interactive): refreshing the catalog prints the same result line as kankaku catalog refresh", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    const catalogFetch = (async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url.endsWith("/api/collections/users/auth-with-password")) return new Response(JSON.stringify({ token: "tok", record: { id: "u1" } }), { status: 200, headers: { "content-type": "application/json" } });
+      if (url.includes("/api/collections/clients/records")) return new Response(JSON.stringify({ page: 1, perPage: 200, totalItems: 1, totalPages: 1, items: [{ id: "c1", name: "Acme", code: "acme", active: true }] }), { status: 200, headers: { "content-type": "application/json" } });
+      if (url.includes("/api/collections/")) return new Response(JSON.stringify({ page: 1, perPage: 200, totalItems: 0, totalPages: 1, items: [] }), { status: 200, headers: { "content-type": "application/json" } });
+      return new Response(null, { status: 200 });
+    }) as typeof fetch;
+    const { prompter } = scriptedPrompter({ confirm: [true, true], text: [dirname(join(home, "project"))], secret: [] });
+    const lines: string[] = [];
+    await runCli(["setup"], baseDeps(home, { prompter, fetch: catalogFetch, stdout: (text) => lines.push(text) }));
+
+    assert.match(lines.join("\n"), /1 client\(s\), 0 project\(s\)/);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
