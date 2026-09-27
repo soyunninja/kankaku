@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { homedir, hostname } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
+import { randomBytes as cryptoRandomBytes } from "node:crypto";
 import { render } from "ink";
 import { buildTasks, localDay } from "kankaku/domain";
 import type { TaskView } from "kankaku/domain";
@@ -36,11 +37,17 @@ import { addKankakuPackage, removeKankakuPackage } from "./adapters/setup/pi.ts"
 import { removeStatusLine, writeStatusLine } from "./adapters/setup/claude.ts";
 import { checkHubHealth, credentialsPath, writeHubCredentials } from "./adapters/setup/hub.ts";
 import { tuiConfigPath, writeTuiConfig } from "./adapters/setup/tui-config.ts";
-import { findHubCheckout, installLocalHub, manualCommands } from "./adapters/setup/local-hub.ts";
+import { installLocalHub } from "./adapters/setup/local-hub.ts";
 import { createChildProcessRunner } from "./adapters/setup/child-process-runner.ts";
 import { createReadlinePrompter } from "./adapters/setup/readline-prompter.ts";
 import type { Prompter } from "./ports/prompter.ts";
 import type { WizardActions } from "./ui/setup/wizard-screen.tsx";
+import { hubLayout, parseHubConfig } from "./domain/local-hub-model.ts";
+import type { HubStatus } from "./domain/local-hub-model.ts";
+import { hubLogs, hubStatus, installHub, startHub, stopHub, upgradeHub } from "./adapters/hub-manager/install.ts";
+import type { HubManagerDeps } from "./adapters/hub-manager/install.ts";
+import { isAlive, readPid, startDetached } from "./adapters/hub-manager/process.ts";
+import { locateHubPackage } from "./adapters/hub-manager/package.ts";
 
 export interface CliDeps {
   homeDir: string;
@@ -61,10 +68,12 @@ export interface CliDeps {
   fetch?: typeof fetch;
   /** Drives `setup`'s interactive prompts; defaults to `readline-prompter.ts` over stdin/stdout at the real entry point. Never called by `--yes` or `--dry-run`. */
   prompter?: Prompter;
+  /** Overrides for `hub-manager/install.ts`'s injectable dependencies (`runner`, `startDetached`, `randomBytes`, `locatePackage`, `platform`, `arch`); tests inject fakes here so `kankaku hub *` never spawns a real PocketBase or touches the real package. Defaults to the real adapters at the real entry point. */
+  hubManager?: Partial<HubManagerDeps>;
 }
 
 const USAGE =
-  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run]|doctor] [--roots a,b] [--theme name]\n";
+  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run] [--from-checkout <dir>]|doctor|hub install [--port N] [--owner-email E] [--owner-password P]|hub start|hub stop|hub status|hub upgrade|hub logs [-n N]] [--roots a,b] [--theme name]\n";
 
 /** Load today's model for `roots`: discover projects, read their worklogs, build rows. */
 export function loadToday(roots: string[]): TodayModel {
@@ -78,6 +87,29 @@ export function loadTasks(roots: string[], options: { all: boolean }): TasksMode
   const projects = discoverProjects(roots);
   const withRecords = projects.map((project) => ({ name: project.name, records: readProjectRecords(project) }));
   return buildTasksModel(withRecords, options);
+}
+
+/**
+ * Detects whether the resolved hub credentials point at this machine's
+ * own local hub install (`~/.kankaku/hub/hub.json` exists and its
+ * `hub.json` port matches the credentials' `http://127.0.0.1:<port>`),
+ * and if so, whether its process is currently alive — via pid liveness
+ * only (`hub-manager/process.ts#isAlive`), never a network call, so the
+ * Dashboard's load stays no-network exactly like every other local-only
+ * fact it already reads.
+ */
+function detectLocalHub(deps: CliDeps, hubUrl: string): "running" | "stopped" | undefined {
+  const layout = hubLayout(deps.homeDir);
+  if (!existsSync(layout.hubJson)) return undefined;
+  let config;
+  try {
+    config = parseHubConfig(JSON.parse(readFileSync(layout.hubJson, "utf8")));
+  } catch {
+    return undefined;
+  }
+  if (hubUrl !== `http://127.0.0.1:${config.port}`) return undefined;
+  const pid = readPid(layout.pidFile);
+  return pid !== undefined && isAlive(pid) ? "running" : "stopped";
 }
 
 /**
@@ -112,7 +144,8 @@ export function loadDashboard(roots: string[], deps: CliDeps): DashboardModel {
       ? { url: catalogModel.url, clientCount: catalogModel.clients.length, projectCount: catalogModel.clients.reduce((sum, client) => sum + client.projects.length, 0) }
       : undefined;
 
-  return buildDashboardModel(withRecords, hubEntries, catalogSummary, { today });
+  const localHub = detectLocalHub(deps, hub.credentials.url);
+  return buildDashboardModel(withRecords, hubEntries, catalogSummary, { today, ...(localHub !== undefined ? { localHub } : {}) });
 }
 
 function parseRoots(argv: string[], deps: Pick<CliDeps, "homeDir" | "cwd">): { roots: string[]; rest: string[] } {
@@ -285,11 +318,6 @@ async function runDoctorCommand(deps: CliDeps): Promise<void> {
   deps.stdout(formatDoctorLines(agents, hub, tui).join("\n"));
 }
 
-/** Plausible `kankaku-hub` checkout locations to probe for the wizard's Hub step: a sibling of this project's parent, and the documented default under the home directory. */
-function localHubCandidates(deps: CliDeps): string[] {
-  return [join(deps.homeDir, "desarrollo", "soyun.ninja", "kankaku-hub"), join(dirname(deps.cwd), "kankaku-hub")];
-}
-
 /**
  * Gather the plain facts the setup wizard needs (`domain/setup-wizard.ts#createWizardState`):
  * every detected agent, current hub credentials (reused as the "existing
@@ -301,7 +329,6 @@ function gatherWizardFacts(deps: CliDeps): WizardFacts {
   const agentFacts = readAgentFacts(deps.homeDir);
   const hubResolution = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
   const credPath = credentialsPath(deps.homeDir);
-  const localCheckoutGuess = findHubCheckout(localHubCandidates(deps)) ?? join(deps.homeDir, "desarrollo", "soyun.ninja", "kankaku-hub");
 
   const hub: WizardFacts["hub"] = hubResolution.ok
     ? {
@@ -310,9 +337,8 @@ function gatherWizardFacts(deps: CliDeps): WizardFacts {
         email: hubResolution.credentials.email,
         password: hubResolution.credentials.password,
         credentialsPath: credPath,
-        localCheckoutGuess,
       }
-    : { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: credPath, localCheckoutGuess };
+    : { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: credPath };
 
   const tuiPath = tuiConfigPath(deps.homeDir);
   const roots: WizardFacts["roots"] = {
@@ -324,8 +350,26 @@ function gatherWizardFacts(deps: CliDeps): WizardFacts {
   return { agentFacts, hub, roots, homeDir: deps.homeDir };
 }
 
-/** Runs `adapters/setup/local-hub.ts#installLocalHub` for real, sharing one `ScriptRunner`/timer setup between the wizard's `installLocalHub` action and `apply`'s own `install-local-hub` handling. */
-async function performLocalHubInstall(checkout: string, deps: CliDeps): Promise<{ url: string; serviceEmail: string; servicePassword: string }> {
+/** Builds the injectable dependency bag `adapters/hub-manager/install.ts` needs, sharing one `ScriptRunner`/timer/crypto setup across every real hub-manager call (`kankaku hub *`, the wizard's `install-local-hub` action). */
+function buildHubManagerDeps(deps: CliDeps): HubManagerDeps {
+  const { now, fetch: fetchOverride } = envDeps(deps);
+  return {
+    homeDir: deps.homeDir,
+    fetch: fetchOverride ?? fetch,
+    runner: createChildProcessRunner(),
+    startDetached: (binary, args, opts) => startDetached(binary, args, opts),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    now,
+    randomBytes: (n) => cryptoRandomBytes(n),
+    locatePackage: () => locateHubPackage(),
+    platform: process.platform,
+    arch: process.arch,
+    ...deps.hubManager,
+  };
+}
+
+/** Runs `adapters/setup/local-hub.ts#installLocalHub` for real: the checkout-based, dev-only local hub install kept behind `kankaku setup --from-checkout <dir>`. */
+async function performLocalHubInstallFromCheckout(checkout: string, deps: CliDeps): Promise<{ url: string; serviceEmail: string; servicePassword: string }> {
   const { now, fetch: fetchOverride } = envDeps(deps);
   const result = await installLocalHub(checkout, {
     runner: createChildProcessRunner(),
@@ -343,11 +387,12 @@ async function performLocalHubInstall(checkout: string, deps: CliDeps): Promise<
  * `adapters/setup/*` writer. Several kinds need a value `planFromWizard`
  * never put in the action itself (`file` is always the target path, not
  * what to write) — `state` carries it: `state.claudeCheckout` for
- * `write-claude`, `state.hub` for `write-hub`, `state.roots` for
- * `write-roots`. `install-local-hub` runs the real installer, then writes
- * its returned dev-account credentials as the hub, labelling them as dev
- * defaults in the result detail. Never throws: any adapter failure becomes
- * an `"error"` outcome instead.
+ * `write-claude`, `state.hub` for `write-hub`/`install-local-hub`,
+ * `state.roots` for `write-roots`. `install-local-hub` runs the real
+ * `hub-manager/install.ts#installHub` (which writes `accounts.json` and
+ * `~/.kankaku/credentials.json` itself), reporting every install step in
+ * the result detail. Never throws: any adapter failure becomes an
+ * `"error"` outcome instead.
  */
 async function applyWizardAction(action: WizardAction, state: WizardState, deps: CliDeps): Promise<ApplyResult> {
   try {
@@ -373,9 +418,10 @@ async function applyWizardAction(action: WizardAction, state: WizardState, deps:
         return { action, outcome: result.changed ? "wrote" : "unchanged" };
       }
       case "install-local-hub": {
-        const installed = await performLocalHubInstall(action.file, deps);
-        writeHubCredentials(deps.homeDir, { url: installed.url, email: installed.serviceEmail, password: installed.servicePassword });
-        return { action, outcome: "started", detail: `running at ${installed.url} (dev defaults: ${installed.serviceEmail} / ${installed.servicePassword})` };
+        const report = await installHub({ ownerEmail: state.hub.ownerEmail, ownerPassword: state.hub.ownerPassword }, buildHubManagerDeps(deps));
+        const detail = report.steps.map((step) => `${step.step}: ${step.outcome}`).join("; ");
+        if (!report.ok) return { action, outcome: "error", detail };
+        return { action, outcome: "started", detail: `${detail} — running at ${report.url}` };
       }
       case "write-roots": {
         const result = writeTuiConfig(deps.homeDir, state.roots);
@@ -392,10 +438,142 @@ function buildWizardActions(deps: CliDeps): WizardActions {
   return {
     apply: (action, state) => applyWizardAction(action, state, deps),
     checkHealth: (url) => checkHubHealth(url, { fetch: deps.fetch }),
-    findHubCheckout: () => findHubCheckout(localHubCandidates(deps)),
-    manualCommands: (checkout) => manualCommands(checkout),
-    installLocalHub: (checkout) => performLocalHubInstall(checkout, deps),
   };
+}
+
+/** `<value> <unit>`, picking the largest unit that keeps `bytes` at least 1 (`B`/`KB`/`MB`/`GB`), one decimal place past `B`. */
+function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  return unitIndex === 0 ? `${value} ${units[unitIndex]}` : `${value.toFixed(1)} ${units[unitIndex]}`;
+}
+
+/** Total size in bytes of every regular file under `dir`, recursively; `0` when `dir` does not exist. */
+function dirSizeBytes(dir: string): number {
+  if (!existsSync(dir)) return 0;
+  let total = 0;
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name);
+    total += entry.isDirectory() ? dirSizeBytes(full) : statSync(full).size;
+  }
+  return total;
+}
+
+/** `local hub: running 0.2.0 (PocketBase 0.40.4) at http://127.0.0.1:8090 · pb_data 1.2 MB` / `stopped 0.2.0` / `not installed`. */
+function formatHubStatusLine(status: HubStatus, pocketbaseVersion: string | undefined, pbDataBytes: number): string {
+  if (status.state === "not-installed") return "local hub: not installed";
+  if (status.state === "stopped") return `local hub: stopped${status.version ? ` ${status.version}` : ""}`;
+  const label = status.state === "unhealthy" ? "unhealthy" : "running";
+  const pbPart = pocketbaseVersion ? ` (PocketBase ${pocketbaseVersion})` : "";
+  return `local hub: ${label}${status.version ? ` ${status.version}` : ""}${pbPart} at ${status.url} · pb_data ${formatBytes(pbDataBytes)}`;
+}
+
+/** `-n <count>`'s value, defaulting to 50 when absent or not a positive integer. */
+function logCountFlag(args: string[]): number {
+  const index = args.indexOf("-n");
+  const value = index === -1 ? undefined : Number(args[index + 1]);
+  return value !== undefined && Number.isInteger(value) && value > 0 ? value : 50;
+}
+
+function flagValue(args: string[], flag: string): string | undefined {
+  const index = args.indexOf(flag);
+  return index === -1 ? undefined : args[index + 1];
+}
+
+function portFlag(args: string[]): number | undefined {
+  const raw = flagValue(args, "--port");
+  if (raw === undefined) return undefined;
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : undefined;
+}
+
+/** Print every `HubActionReport` step, one per line (`<step>: <outcome> (<detail>)`), and the resulting URL when present. */
+function printHubReport(deps: CliDeps, report: { steps: { step: string; outcome: string; detail?: string }[]; url?: string }): void {
+  for (const step of report.steps) {
+    deps.stdout(`${step.step}: ${step.outcome}${step.detail ? ` (${step.detail})` : ""}`);
+  }
+  if (report.url) deps.stdout(`hub running at ${report.url}`);
+}
+
+/**
+ * `kankaku hub install|start|stop|status|upgrade|logs`: the local hub's
+ * full lifecycle, driven by `adapters/hub-manager/install.ts`. `install`
+ * asks for the owner email/password on a TTY (through the injected
+ * `Prompter`); without a TTY, `--owner-email`/`--owner-password` are
+ * required flags. `status` composes `hubStatus`'s plain `HubStatus` with
+ * the installed PocketBase version and the on-disk `pb_data` size, read
+ * directly from `hub.json`/the layout — never a second network call.
+ */
+async function runHubCommand(args: string[], deps: CliDeps): Promise<void> {
+  const [sub, ...rest] = args;
+  const hubDeps = buildHubManagerDeps(deps);
+
+  if (sub === "install") {
+    let ownerEmail = flagValue(rest, "--owner-email");
+    let ownerPassword = flagValue(rest, "--owner-password");
+    if ((ownerEmail === undefined || ownerPassword === undefined) && (deps.isTTY?.() ?? false) && deps.prompter) {
+      ownerEmail ??= await deps.prompter.text("Owner email", "");
+      ownerPassword ??= await deps.prompter.secret("Owner password");
+    }
+    if (!ownerEmail || !ownerPassword) {
+      deps.stderr("kankaku hub install: --owner-email and --owner-password are required (or run on a TTY to be prompted)\n");
+      deps.exit(1);
+      return;
+    }
+    const report = await installHub({ port: portFlag(rest), ownerEmail, ownerPassword }, hubDeps);
+    printHubReport(deps, report);
+    if (!report.ok) deps.exit(1);
+    return;
+  }
+
+  if (sub === "start") {
+    const report = await startHub(hubDeps);
+    printHubReport(deps, report);
+    if (!report.ok) deps.exit(1);
+    return;
+  }
+
+  if (sub === "stop") {
+    const report = await stopHub(hubDeps);
+    printHubReport(deps, report);
+    return;
+  }
+
+  if (sub === "status") {
+    const status = await hubStatus(hubDeps);
+    const layout = hubLayout(deps.homeDir);
+    let pocketbaseVersion: string | undefined;
+    if (existsSync(layout.hubJson)) {
+      try {
+        pocketbaseVersion = parseHubConfig(JSON.parse(readFileSync(layout.hubJson, "utf8"))).pocketbaseVersion;
+      } catch {
+        pocketbaseVersion = undefined;
+      }
+    }
+    deps.stdout(formatHubStatusLine(status, pocketbaseVersion, dirSizeBytes(layout.pbData)));
+    return;
+  }
+
+  if (sub === "upgrade") {
+    const report = await upgradeHub(hubDeps);
+    printHubReport(deps, report);
+    if (!report.ok) deps.exit(1);
+    return;
+  }
+
+  if (sub === "logs") {
+    const lines = hubLogs(logCountFlag(rest), hubDeps);
+    deps.stdout(lines.length > 0 ? lines.join("\n") : "no logs yet");
+    return;
+  }
+
+  deps.stderr(USAGE);
+  deps.exit(1);
 }
 
 /**
@@ -435,9 +613,16 @@ function announceWrite(deps: CliDeps, file: string, result: { changed: boolean }
   deps.stdout(result.changed ? `wrote ${file}` : `unchanged ${file}`);
 }
 
+/** `--from-checkout <dir>`'s value, when present anywhere in `args`. */
+function fromCheckoutFlag(args: string[]): string | undefined {
+  const index = args.indexOf("--from-checkout");
+  return index === -1 ? undefined : args[index + 1];
+}
+
 async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const yes = args.includes("--yes");
+  const fromCheckout = fromCheckoutFlag(args);
 
   const initial = await gatherSetupFacts(deps);
   const steps = planSetup(initial.agents, initial.hub, initial.tui);
@@ -469,13 +654,26 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
   }
 
   if (byId["hub"]!.state === "todo" && !initial.hub.credentialsPresent) {
-    const doIt = await ask.confirm("Configure hub credentials now?", false);
-    if (doIt) {
-      const url = await ask.text("Hub URL", "");
-      if (url !== "") {
-        const email = await ask.text("Email", "");
-        const password = await ask.secret("Password");
-        announceWrite(deps, credentialsPath(deps.homeDir), writeHubCredentials(deps.homeDir, { url, email, password }));
+    if (fromCheckout !== undefined) {
+      // Hub-developer path (never interactive): install from a local `kankaku-hub` checkout via its own dev scripts, skipping the credential prompts below.
+      try {
+        const installed = await performLocalHubInstallFromCheckout(fromCheckout, deps);
+        writeHubCredentials(deps.homeDir, { url: installed.url, email: installed.serviceEmail, password: installed.servicePassword });
+        deps.stdout(`installed a local hub from ${fromCheckout}: running at ${installed.url} (dev defaults: ${installed.serviceEmail} / ${installed.servicePassword})`);
+      } catch (error) {
+        deps.stderr(`kankaku setup --from-checkout: ${error instanceof Error ? error.message : String(error)}\n`);
+        deps.exit(1);
+        return;
+      }
+    } else {
+      const doIt = await ask.confirm("Configure hub credentials now?", false);
+      if (doIt) {
+        const url = await ask.text("Hub URL", "");
+        if (url !== "") {
+          const email = await ask.text("Email", "");
+          const password = await ask.secret("Password");
+          announceWrite(deps, credentialsPath(deps.homeDir), writeHubCredentials(deps.homeDir, { url, email, password }));
+        }
       }
     }
   }
@@ -563,7 +761,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
 
   if (command === "setup") {
     const setupArgs = rest.slice(1);
-    const interactiveTTY = !setupArgs.includes("--yes") && !setupArgs.includes("--dry-run") && (deps.isTTY?.() ?? false);
+    const interactiveTTY = !setupArgs.includes("--yes") && !setupArgs.includes("--dry-run") && !setupArgs.includes("--from-checkout") && (deps.isTTY?.() ?? false);
     if (interactiveTTY) {
       deps.renderApp(roots, theme, { startInWizard: true });
       return;
@@ -574,6 +772,11 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
 
   if (command === "doctor") {
     await runDoctorCommand(deps);
+    return;
+  }
+
+  if (command === "hub") {
+    await runHubCommand(rest.slice(1), deps);
     return;
   }
 
@@ -640,15 +843,36 @@ function syncScreenDeps(deps: CliDeps, roots: string[]): Pick<SyncScreenProps, "
 }
 
 /**
+ * Builds the Dashboard's `localHub` quick action, only when the resolved
+ * hub credentials point at this machine's own local hub install (see
+ * `detectLocalHub`): `toggle` starts it if stopped, stops it if running,
+ * through `hub-manager/install.ts#startHub`/`stopHub`.
+ */
+function localHubAction(deps: CliDeps, hubUrl: string): DashboardActions["localHub"] {
+  const state = detectLocalHub(deps, hubUrl);
+  if (state === undefined) return undefined;
+  return {
+    toggle: async () => {
+      const hubDeps = buildHubManagerDeps(deps);
+      const report = state === "running" ? await stopHub(hubDeps) : await startHub(hubDeps);
+      const verb = state === "running" ? "stopped" : "started";
+      return report.ok ? `${verb} the local hub` : `error: ${report.steps.find((step) => step.outcome === "error")?.detail ?? "the local hub action failed"}`;
+    },
+  };
+}
+
+/**
  * Build the Dashboard screen's Quick actions deps for the interactive app:
  * `refreshCatalog` refreshes the cached catalog through `createCatalog`/
  * `refreshCatalogAdapter`, `syncAll` runs `syncProject` over every
  * discovered project — both reuse kankaku's own `formatCatalogRefreshLines`/
  * `formatSyncSummaryLines` for the result message, never reimplementing
  * them. Without hub credentials, `hubAvailable` is `false` and neither
- * function is ever called by the screen. Used only by `renderApp`.
+ * function is ever called by the screen. `localHub` is present only when
+ * the configured hub is this machine's own local install. Used only by
+ * `renderApp`.
  */
-function dashboardActionsDeps(deps: CliDeps, roots: string[]): DashboardActions {
+export function dashboardActionsDeps(deps: CliDeps, roots: string[]): DashboardActions {
   const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
   if (!hub.ok) {
     const reason = hub.reason;
@@ -671,6 +895,7 @@ function dashboardActionsDeps(deps: CliDeps, roots: string[]): DashboardActions 
       const summaries = await Promise.all(projects.map((project) => syncProject(project, credentials, options, runnerDeps)));
       return summaries.flatMap((summary) => formatSyncSummaryLines(summary)).join(" · ");
     },
+    localHub: localHubAction(deps, credentials.url),
   };
 }
 
