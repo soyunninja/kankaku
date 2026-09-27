@@ -99,3 +99,60 @@ test("renders at 80 columns without overflowing any line", () => {
   const lines = (lastFrame() ?? "").split("\n");
   assert.ok(lines.every((line) => line.length <= 80));
 });
+
+function manyRows(count: number): TaskRow[] {
+  return Array.from({ length: count }, (_, index) => row({ id: `r${index}`, project: `p${index}` }));
+}
+
+test("fits within `rows` and shows both indicators with many tasks at 100×24", async () => {
+  const { lastFrame, stdin } = render(
+    <TasksScreen load={() => model(manyRows(40))} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  // Move the selection into the middle of the list, so both the '↑ N more'
+  // and '↓ N more' indicators are visible at once (the scenario that a
+  // fixed-width column overflowing the panel's actual content width used
+  // to corrupt into blank lines instead of the indicator text).
+  stdin.write("\u001B[6~"); // Page Down
+  await nextTick();
+
+  const frame = lastFrame() ?? "";
+  const lines = frame.split("\n");
+  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+  assert.equal(/↑ \d+ more/.test(frame), true, "expected an '↑ N more' indicator");
+  assert.equal(/↓ \d+ more/.test(frame), true, "expected a '↓ N more' indicator");
+  // Every visible row is real task content — no blank line stands in for
+  // a row that failed to render (the corruption this guards against).
+  assert.equal(lines.some((line) => /^\s*$/.test(line) && line !== ""), false, "no whitespace-only line should appear inside the frame");
+});
+
+test("PageDown/PageUp move the selection by the window size, Home/End jump to the ends", async () => {
+  const { lastFrame, stdin } = render(
+    <TasksScreen load={() => model(manyRows(40))} roots={["/work"]} version="0.1.0" columns={120} rows={24} />,
+  );
+  // The sidebar's own "› Tasks" marker can land on the same terminal row as
+  // the table's selected line, so match the task row's own shape (time +
+  // project) rather than the first "› " anywhere in the frame.
+  const markedProject = (): string | undefined => (lastFrame() ?? "").match(/› \d{2}:\d{2} (p\d+)/)?.[1];
+
+  assert.equal(markedProject(), "p0");
+
+  stdin.write("\u001B[6~"); // Page Down
+  await nextTick();
+  assert.equal(markedProject(), "p19");
+
+  stdin.write("\u001B[6~"); // Page Down again
+  await nextTick();
+  assert.equal(markedProject(), "p38");
+
+  stdin.write("\u001B[5~"); // Page Up
+  await nextTick();
+  assert.equal(markedProject(), "p19");
+
+  stdin.write("\u001B[H"); // Home
+  await nextTick();
+  assert.equal(markedProject(), "p0");
+
+  stdin.write("\u001B[F"); // End
+  await nextTick();
+  assert.equal(markedProject(), "p39");
+});

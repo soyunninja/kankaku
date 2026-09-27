@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { TodayScreen } from "../src/ui/today-screen.tsx";
-import type { DashboardModel } from "../src/domain/dashboard-model.ts";
+import type { DashboardModel, DashboardProjectRow } from "../src/domain/dashboard-model.ts";
 
 function nextTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 30));
@@ -97,4 +97,58 @@ test("stacks the panels in one column under 70 columns without overflowing", () 
   assert.equal(frame.includes("Projects"), true);
   const lines = frame.split("\n");
   assert.ok(lines.every((line) => line.length <= 80));
+});
+
+function manyProjects(count: number): DashboardProjectRow[] {
+  return Array.from({ length: count }, (_, index) => ({
+    name: `project-${index}`,
+    tasks: 1,
+    wallMs: 60000,
+    workMs: 60000,
+    waitingMs: 0,
+    cost: 1,
+    share: 0.5,
+  }));
+}
+
+test("fits within `rows` with many projects at 100×24", async () => {
+  const { lastFrame, stdin } = render(
+    <TodayScreen load={() => model({ projects: manyProjects(40) })} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  // Scroll into the middle of the list, so both indicators are visible at
+  // once — the scenario where a fixed-width column overflowing the
+  // panel's actual content width used to corrupt rendering into blank
+  // lines instead of showing the indicator text and the Today card.
+  stdin.write("\u001B[6~"); // Page Down
+  await nextTick();
+
+  const frame = lastFrame() ?? "";
+  const lines = frame.split("\n");
+  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+  assert.equal(frame.includes("work"), true, "the Today card's work line should still render");
+  assert.equal(/↑ \d+ more/.test(frame), true, "expected an '↑ N more' indicator");
+  assert.equal(/↓ \d+ more/.test(frame), true, "expected a '↓ N more' indicator");
+});
+
+test("PageDown/Home/End move the Projects selection", async () => {
+  const { lastFrame, stdin } = render(
+    <TodayScreen load={() => model({ projects: manyProjects(40) })} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  const markedProject = (): string | undefined => (lastFrame() ?? "").match(/› (project-\d+)/)?.[1];
+
+  assert.equal(markedProject(), "project-0");
+
+  stdin.write("\u001B[6~"); // Page Down
+  await nextTick();
+  const afterPageDown = markedProject();
+  assert.notEqual(afterPageDown, "project-0");
+  assert.notEqual(afterPageDown, "project-1");
+
+  stdin.write("\u001B[F"); // End
+  await nextTick();
+  assert.equal(markedProject(), "project-39");
+
+  stdin.write("\u001B[H"); // Home
+  await nextTick();
+  assert.equal(markedProject(), "project-0");
 });

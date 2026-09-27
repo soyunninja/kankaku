@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { formatMinutes } from "../domain/today-model.ts";
 import type { CatalogClientRow, CatalogModel, CatalogProjectRow } from "../domain/catalog-model.ts";
@@ -51,6 +51,8 @@ const KEY_HINTS = [
 
 /** Below this main-content width, the Projects panel stacks under Clients instead of beside it. */
 const DETAIL_BREAKPOINT = 70;
+/** Rows a panel's own chrome (border + table header) takes outside its data rows. */
+const TABLE_CHROME_ROWS = 3;
 
 /**
  * The Catalog screen: a `[ Clients ]` list and, beside it, the selected
@@ -63,10 +65,12 @@ export function CatalogScreen({ load, refresh, roots, version, columns, rows }: 
   const [model, setModel] = useState<CatalogModel>(load);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState(0);
+  const maxRowsRef = useRef(0);
 
   const clients = model.status === "ready" ? model.clients : [];
 
   useInput((input, key) => {
+    const lastIndex = Math.max(clients.length - 1, 0);
     if (input === "r" && !refreshing) {
       setRefreshing(true);
       void refresh().then((next) => {
@@ -74,9 +78,17 @@ export function CatalogScreen({ load, refresh, roots, version, columns, rows }: 
         setRefreshing(false);
       });
     } else if (key.downArrow) {
-      setSelected((index) => Math.min(index + 1, Math.max(clients.length - 1, 0)));
+      setSelected((index) => Math.min(index + 1, lastIndex));
     } else if (key.upArrow) {
       setSelected((index) => Math.max(index - 1, 0));
+    } else if (key.pageDown) {
+      setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
+    } else if (key.pageUp) {
+      setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
+    } else if (key.home) {
+      setSelected(0);
+    } else if (key.end) {
+      setSelected(lastIndex);
     }
   });
 
@@ -110,24 +122,32 @@ export function CatalogScreen({ load, refresh, roots, version, columns, rows }: 
       sidebarStats={[`clients ${clients.length}`]}
       keyHints={KEY_HINTS}
     >
-      {({ mainWidth }) => {
+      {({ mainWidth, mainHeight }) => {
         const wide = mainWidth >= DETAIL_BREAKPOINT;
         const leftWidth = wide ? Math.floor(mainWidth * 0.4) : mainWidth;
         const rightWidth = wide ? Math.max(mainWidth - leftWidth - 1, 1) : mainWidth;
 
+        // Stacked mode splits the height between Clients and Projects, mirroring the width split used in wide mode.
+        const clientsHeight = wide ? mainHeight : Math.max(Math.floor(mainHeight * 0.4), TABLE_CHROME_ROWS + 1);
+        const projectsHeight = wide ? mainHeight : Math.max(mainHeight - clientsHeight, TABLE_CHROME_ROWS + 1);
+        const clientsMaxRows = Math.max(clientsHeight - TABLE_CHROME_ROWS, 1);
+        const projectsMaxRows = Math.max(projectsHeight - TABLE_CHROME_ROWS, 1);
+        maxRowsRef.current = clientsMaxRows;
+
         const clientsPanel = (
-          <Panel title="Clients" headerRight={ageText} width={leftWidth}>
-            <Table columns={CLIENT_COLUMNS} rows={clients} rowKey={(client) => client.id} cell={(client) => clientCell(client)} selectedIndex={selected} emptyText="no clients" />
+          <Panel title="Clients" headerRight={ageText} width={leftWidth} height={clientsHeight}>
+            <Table columns={CLIENT_COLUMNS} rows={clients} rowKey={(client) => client.id} cell={(client) => clientCell(client)} selectedIndex={selected} emptyText="no clients" maxRows={clientsMaxRows} />
           </Panel>
         );
         const projectsPanel = (
-          <Panel title="Projects" width={rightWidth}>
+          <Panel title="Projects" width={rightWidth} height={projectsHeight}>
             <Table
               columns={PROJECT_COLUMNS}
               rows={selectedClient?.projects ?? []}
               rowKey={(project) => project.id}
               cell={projectCell}
               emptyText="no projects"
+              maxRows={projectsMaxRows}
             />
           </Panel>
         );

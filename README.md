@@ -86,11 +86,19 @@ never guesses which coding agent produced someone else's worklog.
 One visual system drives all four screens: a left sidebar for navigation,
 titled bordered panels, aligned tables with a highlighted selection, text
 bars and sparklines, a header line and a footer of key hints — all driven
-by a single theme of colour roles (`src/ui/theme.ts`). The sidebar sits
+by a single theme of colour roles (`src/ui/theme.ts`). The app runs
+fullscreen, in the terminal's alternate screen buffer: the frame fills the
+whole terminal height, resizing live with the terminal. The sidebar sits
 beside the screen at 100+ terminal columns, stacks full-width above it at
 70-99 columns, and collapses to a one-line tab strip below 70 columns; a
 selected row or card is always marked with a visible `›`, never colour
 alone.
+
+Any list that can grow past the available height (the Tasks table, the
+Catalog Clients/Projects lists, the Today Projects table, the Sync card
+grid) scrolls instead of overflowing the terminal: the viewport follows
+the current selection, and a `↑ N more` / `↓ N more` line marks rows
+hidden above or below it.
 
 Today is a dashboard: a Today card (work/wait/cost/tasks/cache hit), a
 Last 7 days card (work and cost sparklines with weekday labels), a
@@ -131,18 +139,23 @@ Projects table (work, cost and a share bar per project) and a Hub card
 ## Keys (TUI)
 
 Tab bar: `1` Today, `2` Tasks, `3` Catalog, `4` Sync. `q` quits from any
-screen.
+screen. The app fills the whole terminal; every scrolling list (Tasks,
+Catalog's Clients/Projects, Today's Projects, Sync's cards) additionally
+takes `PageUp`/`PageDown` to move a full window at a time and `Home`/`End`
+to jump to the first/last row.
 
-- **Today** — `↑`/`↓` move the Projects selection, `enter` opens the
-  selected project in Tasks (filtered to it), `r` refresh.
-- **Tasks** — `a` toggle today/all, `↑`/`↓` move the selection, `r`
-  refresh, `esc` clears a project filter set from Today.
-- **Catalog** — `↑`/`↓` move the client selection, `r` refresh from the
-  hub.
-- **Sync** — `↑`/`↓` move the selection, `s` sync the selected project,
-  `f` full-sync the selected project, `S` sync every project. Each
-  action's summary shows inline in its card while it runs and once it
-  settles.
+- **Today** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the Projects
+  selection, `enter` opens the selected project in Tasks (filtered to
+  it), `r` refresh.
+- **Tasks** — `a` toggle today/all, `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End`
+  move the selection, `r` refresh, `esc` clears a project filter set from
+  Today.
+- **Catalog** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the client
+  selection, `r` refresh from the hub.
+- **Sync** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the selection,
+  `s` sync the selected project, `f` full-sync the selected project, `S`
+  sync every project. Each action's summary shows inline in its card
+  while it runs and once it settles.
 
 The TUI never writes to disk on its own — Today, Tasks and read-only
 Catalog views write nothing at all; Catalog's `refresh` and Sync's

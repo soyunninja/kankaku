@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { formatMinutes } from "../domain/today-model.ts";
 import type { TodayRow } from "../domain/today-model.ts";
@@ -76,12 +76,28 @@ function Last7DaysPanel({ points, width }: { points: DayPoint[]; width: number }
   );
 }
 
-const PROJECT_COLUMNS: TableColumn<DashboardProjectRow>[] = [
-  { key: "name", header: "project", width: 14 },
-  { key: "work", header: "work", width: 8, align: "right" },
-  { key: "cost", header: "cost", width: 7, align: "right" },
-  { key: "share", header: "share", width: 12 },
-];
+/** Combined width of every fixed-width column but `project`, plus their separating spaces, the row's own `› `/`  ` marker prefix, and the panel's own left/right border columns. */
+const PROJECT_FIXED_COLUMNS_WIDTH = 8 + 1 + 7 + 1 + 12 + 1 + 2 + 2;
+/** Floor for the `project` column so a very narrow table still shows a sliver of the name instead of collapsing to nothing. */
+const MIN_PROJECT_NAME_WIDTH = 4;
+
+/**
+ * `work`/`cost`/`share` are fixed-width; `project` absorbs whatever width
+ * is left in `panelWidth` (the panel's own outer width, including its
+ * border columns) so the row's total text never exceeds the panel's
+ * actual content width — which would otherwise wrap inside the
+ * fixed-height, `overflow: hidden` panel and corrupt the scrolling
+ * window (see the matching fix in `tasks-screen.tsx`).
+ */
+function projectColumns(panelWidth: number): TableColumn<DashboardProjectRow>[] {
+  const nameWidth = Math.max(panelWidth - PROJECT_FIXED_COLUMNS_WIDTH, MIN_PROJECT_NAME_WIDTH);
+  return [
+    { key: "name", header: "project", width: nameWidth },
+    { key: "work", header: "work", width: 8, align: "right" },
+    { key: "cost", header: "cost", width: 7, align: "right" },
+    { key: "share", header: "share", width: 12 },
+  ];
+}
 
 function projectCell(row: DashboardProjectRow, key: string): string {
   switch (key) {
@@ -98,10 +114,10 @@ function projectCell(row: DashboardProjectRow, key: string): string {
   }
 }
 
-function ProjectsPanel({ rows, selectedIndex, width }: { rows: DashboardProjectRow[]; selectedIndex: number; width: number }) {
+function ProjectsPanel({ rows, selectedIndex, width, maxRows }: { rows: DashboardProjectRow[]; selectedIndex: number; width: number; maxRows: number }) {
   return (
     <Panel title="Projects" width={width}>
-      <Table columns={PROJECT_COLUMNS} rows={rows} rowKey={(row) => row.name} cell={projectCell} selectedIndex={selectedIndex} emptyText="no work recorded today" />
+      <Table columns={projectColumns(width)} rows={rows} rowKey={(row) => row.name} cell={projectCell} selectedIndex={selectedIndex} emptyText="no work recorded today" maxRows={maxRows} />
     </Panel>
   );
 }
@@ -124,14 +140,28 @@ function HubPanel({ hub, width }: { hub: DashboardHubCard; width: number }) {
 
 /** Below this main-content width, the two-column grid collapses to one column, stacking every panel. */
 const GRID_BREAKPOINT = 70;
+/** Rows the Today card's panel takes: 1 top border + 3 content lines + 1 bottom border. */
+const TODAY_PANEL_ROWS = 5;
+/** Rows the Last 7 days panel takes: 1 top border + 2 content lines + 1 bottom border. */
+const LAST7_PANEL_ROWS = 4;
+/** Rows the Hub panel takes at most: 1 top border + up to 3 content lines + 1 bottom border. */
+const HUB_PANEL_ROWS = 5;
+/** Rows the Projects panel's own chrome (border + table header) takes outside its data rows. */
+const TABLE_CHROME_ROWS = 3;
 
-function DashboardGrid({ model, selectedIndex, mainWidth }: { model: DashboardModel; selectedIndex: number; mainWidth: number }) {
+/** How many data rows the Projects table can show for a given `mainHeight`, depending on whether the grid is two columns (`grid`) or stacked to one (`stacked`). */
+function projectsMaxRows(mainHeight: number, layout: "grid" | "stacked"): number {
+  const fixedRows = layout === "grid" ? TODAY_PANEL_ROWS : TODAY_PANEL_ROWS + LAST7_PANEL_ROWS + HUB_PANEL_ROWS;
+  return Math.max(mainHeight - fixedRows - TABLE_CHROME_ROWS, 1);
+}
+
+function DashboardGrid({ model, selectedIndex, mainWidth, mainHeight }: { model: DashboardModel; selectedIndex: number; mainWidth: number; mainHeight: number }) {
   if (mainWidth < GRID_BREAKPOINT) {
     return (
       <Box flexDirection="column">
         <TodayPanel today={model.today} width={mainWidth} />
         <Last7DaysPanel points={model.last7Days} width={mainWidth} />
-        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={mainWidth} />
+        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={mainWidth} maxRows={projectsMaxRows(mainHeight, "stacked")} />
         <HubPanel hub={model.hub} width={mainWidth} />
       </Box>
     );
@@ -143,7 +173,7 @@ function DashboardGrid({ model, selectedIndex, mainWidth }: { model: DashboardMo
     <Box flexDirection="row">
       <Box flexDirection="column" width={leftWidth}>
         <TodayPanel today={model.today} width={leftWidth} />
-        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={leftWidth} />
+        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={leftWidth} maxRows={projectsMaxRows(mainHeight, "grid")} />
       </Box>
       <Box width={1} />
       <Box flexDirection="column" width={rightWidth}>
@@ -164,14 +194,24 @@ function DashboardGrid({ model, selectedIndex, mainWidth }: { model: DashboardMo
 export function TodayScreen({ load, roots, version, columns, rows, onOpenProject }: TodayScreenProps) {
   const [model, setModel] = useState<DashboardModel>(load);
   const [selected, setSelected] = useState(0);
+  const maxRowsRef = useRef(0);
 
   useInput((input, key) => {
+    const lastIndex = Math.max(model.projects.length - 1, 0);
     if (input === "r") {
       setModel(load());
     } else if (key.downArrow) {
-      setSelected((index) => Math.min(index + 1, Math.max(model.projects.length - 1, 0)));
+      setSelected((index) => Math.min(index + 1, lastIndex));
     } else if (key.upArrow) {
       setSelected((index) => Math.max(index - 1, 0));
+    } else if (key.pageDown) {
+      setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
+    } else if (key.pageUp) {
+      setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
+    } else if (key.home) {
+      setSelected(0);
+    } else if (key.end) {
+      setSelected(lastIndex);
     } else if (key.return) {
       const project = model.projects[selected];
       if (project) onOpenProject?.(project.name);
@@ -189,7 +229,10 @@ export function TodayScreen({ load, roots, version, columns, rows, onOpenProject
       sidebarStats={[`roots ${roots.length}`, `projects ${model.projects.length}`]}
       keyHints={KEY_HINTS}
     >
-      {({ mainWidth }) => <DashboardGrid model={model} selectedIndex={selected} mainWidth={mainWidth} />}
+      {({ mainWidth, mainHeight }) => {
+        maxRowsRef.current = projectsMaxRows(mainHeight, mainWidth < GRID_BREAKPOINT ? "stacked" : "grid");
+        return <DashboardGrid model={model} selectedIndex={selected} mainWidth={mainWidth} mainHeight={mainHeight} />;
+      }}
     </Layout>
   );
 }

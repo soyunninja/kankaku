@@ -4,6 +4,8 @@ import type { SyncRow } from "../domain/sync-model.ts";
 import { SCREENS } from "../domain/nav-model.ts";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
+import { windowRows } from "../domain/list-window.ts";
+import { useTheme } from "./theme.ts";
 
 export interface SyncActionResult {
   ok: boolean;
@@ -24,6 +26,8 @@ export interface SyncScreenProps {
 
 /** Fixed card width in the grid, including its border. */
 const CARD_WIDTH = 32;
+/** Estimated card height (border + up to 4 content lines: pending, synced/never, an error or result message, and a busy note), used to budget how many full rows of cards fit `mainHeight`. */
+const CARD_HEIGHT_ESTIMATE = 6;
 
 const KEY_HINTS = [
   { key: "↑↓", label: "select" },
@@ -57,11 +61,14 @@ function Card({ row, active, message, busy, width }: { row: SyncRow; active: boo
  * one-line note instead. Writes only through kankaku's own sync adapters.
  */
 export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, rows }: SyncScreenProps) {
+  const theme = useTheme();
   const [model, setModel] = useState<SyncModel>(load);
   const [selected, setSelected] = useState(0);
   const [messages, setMessages] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const selectedRef = useRef(0);
+  const maxVisibleRef = useRef(0);
+  const startRef = useRef(0);
 
   const projectRows = model.status === "ready" ? model.rows : [];
 
@@ -80,12 +87,25 @@ export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, ro
   useInput((input, key) => {
     if (model.status !== "ready") return;
 
+    const lastIndex = Math.max(projectRows.length - 1, 0);
     if (key.downArrow) {
-      selectedRef.current = Math.min(selectedRef.current + 1, Math.max(projectRows.length - 1, 0));
+      selectedRef.current = Math.min(selectedRef.current + 1, lastIndex);
       setSelected(selectedRef.current);
     } else if (key.upArrow) {
       selectedRef.current = Math.max(selectedRef.current - 1, 0);
       setSelected(selectedRef.current);
+    } else if (key.pageDown) {
+      selectedRef.current = Math.min(selectedRef.current + Math.max(maxVisibleRef.current, 1), lastIndex);
+      setSelected(selectedRef.current);
+    } else if (key.pageUp) {
+      selectedRef.current = Math.max(selectedRef.current - Math.max(maxVisibleRef.current, 1), 0);
+      setSelected(selectedRef.current);
+    } else if (key.home) {
+      selectedRef.current = 0;
+      setSelected(0);
+    } else if (key.end) {
+      selectedRef.current = lastIndex;
+      setSelected(lastIndex);
     } else if (input === "s") {
       const row = projectRows[selectedRef.current];
       if (row) runOne(row, false);
@@ -126,19 +146,35 @@ export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, ro
       sidebarStats={[`projects ${projectRows.length}`]}
       keyHints={KEY_HINTS}
     >
-      {({ mainWidth }) =>
-        projectRows.length === 0 ? (
-          <Text dimColor>no projects</Text>
-        ) : (
-          <Box flexDirection="row" flexWrap="wrap" width={mainWidth}>
-            {projectRows.map((row, index) => (
-              <Box key={row.name} marginRight={1} marginBottom={1}>
-                <Card row={row} active={index === selected} message={messages[row.name]} busy={busy.has(row.name)} width={Math.min(CARD_WIDTH, mainWidth)} />
-              </Box>
-            ))}
+      {({ mainWidth, mainHeight }) => {
+        if (projectRows.length === 0) return <Text dimColor>no projects</Text>;
+
+        const cardsPerRow = Math.max(Math.floor(mainWidth / (CARD_WIDTH + 1)), 1);
+        const visibleGridRows = Math.max(Math.floor(mainHeight / CARD_HEIGHT_ESTIMATE), 1);
+        const maxVisible = cardsPerRow * visibleGridRows;
+        maxVisibleRef.current = maxVisible;
+
+        const window = windowRows(projectRows.length, selected, maxVisible, startRef.current);
+        startRef.current = window.start;
+        const visibleRows = projectRows.slice(window.start, window.end);
+
+        return (
+          <Box flexDirection="column">
+            {window.hiddenAbove > 0 && <Text color={theme.muted}>{`↑ ${window.hiddenAbove} more`}</Text>}
+            <Box flexDirection="row" flexWrap="wrap" width={mainWidth}>
+              {visibleRows.map((row, index) => {
+                const actualIndex = window.start + index;
+                return (
+                  <Box key={row.name} marginRight={1} marginBottom={1}>
+                    <Card row={row} active={actualIndex === selected} message={messages[row.name]} busy={busy.has(row.name)} width={Math.min(CARD_WIDTH, mainWidth)} />
+                  </Box>
+                );
+              })}
+            </Box>
+            {window.hiddenBelow > 0 && <Text color={theme.muted}>{`↓ ${window.hiddenBelow} more`}</Text>}
           </Box>
-        )
-      }
+        );
+      }}
     </Layout>
   );
 }

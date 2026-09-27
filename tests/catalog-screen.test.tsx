@@ -86,3 +86,54 @@ test("renders at 80 columns without overflowing any line", () => {
   const lines = (lastFrame() ?? "").split("\n");
   assert.ok(lines.every((line) => line.length <= 80));
 });
+
+function manyClientsModel(count: number): CatalogModel {
+  return {
+    status: "ready",
+    url: "https://kankaku.soyun.ninja",
+    fetchedAt: 0,
+    ageMs: 3 * 60 * 1000,
+    stale: false,
+    clients: Array.from({ length: count }, (_, index) => ({
+      id: `c${index}`,
+      name: `Client ${index}`,
+      code: `C${index}`,
+      projects: Array.from({ length: count }, (_, projectIndex) => ({
+        id: `c${index}-p${projectIndex}`,
+        name: `project-${projectIndex}`,
+        openCount: 1,
+        doingCount: 0,
+      })),
+    })),
+  };
+}
+
+test("fits within `rows` with many clients and projects at 100×24", () => {
+  const { lastFrame } = render(
+    <CatalogScreen load={() => manyClientsModel(40)} refresh={async () => manyClientsModel(40)} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+});
+
+test("PageDown/Home/End move the client selection", async () => {
+  const { lastFrame, stdin } = render(
+    <CatalogScreen load={() => manyClientsModel(40)} refresh={async () => manyClientsModel(40)} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  const markedClient = (): string | undefined => (lastFrame() ?? "").match(/› (Client \d+)/)?.[1];
+
+  assert.equal(markedClient(), "Client 0");
+
+  stdin.write("\u001B[F"); // End
+  await nextTick();
+  assert.equal(markedClient(), "Client 39");
+
+  stdin.write("\u001B[H"); // Home
+  await nextTick();
+  assert.equal(markedClient(), "Client 0");
+
+  stdin.write("\u001B[6~"); // Page Down
+  await nextTick();
+  const afterPageDown = markedClient();
+  assert.notEqual(afterPageDown, "Client 0");
+});

@@ -58,3 +58,71 @@ test("shows the empty text when there are no rows", () => {
   );
   assert.equal((lastFrame() ?? "").includes("no rows"), true);
 });
+
+function manyRows(count: number): Row[] {
+  return Array.from({ length: count }, (_, index) => ({ id: `r${index}`, name: `project-${index}`, work: `${index}m` }));
+}
+
+test("renders every row and no indicators when everything fits within maxRows", () => {
+  const { lastFrame } = render(
+    <Table columns={columns} rows={manyRows(5)} rowKey={(row: Row) => row.id} cell={(row: Row, key: string) => (row as unknown as Record<string, string>)[key] ?? ""} maxRows={10} />,
+  );
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("project-0"), true);
+  assert.equal(frame.includes("project-4"), true);
+  assert.equal(frame.includes("more"), false);
+});
+
+test("windows to maxRows and shows a '↓ N more' indicator when the selection is near the top", () => {
+  const { lastFrame } = render(
+    <Table
+      columns={columns}
+      rows={manyRows(40)}
+      rowKey={(row: Row) => row.id}
+      cell={(row: Row, key: string) => (row as unknown as Record<string, string>)[key] ?? ""}
+      selectedIndex={0}
+      maxRows={10}
+    />,
+  );
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.equal(lines.includes("› project-0      0m"), true);
+  assert.equal(lines.some((line) => line.includes("↓") && line.includes("more")), true);
+  assert.equal(lines.some((line) => line.includes("↑") && line.includes("more")), false);
+  // header + maxRows body lines (data rows + one indicator line)
+  assert.equal(lines.length, 1 + 10);
+});
+
+test("shows both '↑ N more' and '↓ N more' when the selection sits in the middle", () => {
+  const { lastFrame } = render(
+    <Table
+      columns={columns}
+      rows={manyRows(40)}
+      rowKey={(row: Row) => row.id}
+      cell={(row: Row, key: string) => (row as unknown as Record<string, string>)[key] ?? ""}
+      selectedIndex={20}
+      maxRows={10}
+    />,
+  );
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.equal(lines.some((line) => line.includes("↑") && line.includes("more")), true);
+  assert.equal(lines.some((line) => line.includes("↓") && line.includes("more")), true);
+  assert.equal(lines.some((line) => line.includes("project-20")), true);
+  assert.equal(lines.length, 1 + 10);
+});
+
+test("shows only '↑ N more' when the selection is near the bottom", () => {
+  const { lastFrame } = render(
+    <Table
+      columns={columns}
+      rows={manyRows(40)}
+      rowKey={(row: Row) => row.id}
+      cell={(row: Row, key: string) => (row as unknown as Record<string, string>)[key] ?? ""}
+      selectedIndex={39}
+      maxRows={10}
+    />,
+  );
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.equal(lines.some((line) => line.includes("↑") && line.includes("more")), true);
+  assert.equal(lines.some((line) => line.includes("↓") && line.includes("more")), false);
+  assert.equal(lines.some((line) => line.includes("project-39")), true);
+});

@@ -24,13 +24,29 @@ function formatCost(cost: number): string {
   return `$${cost.toFixed(2)}`;
 }
 
-const TASK_COLUMNS: TableColumn<TaskRow>[] = [
-  { key: "time", header: "time", width: 5 },
-  { key: "project", header: "project", width: 12 },
-  { key: "work", header: "work", width: 7, align: "right" },
-  { key: "cost", header: "cost", width: 6, align: "right" },
-  { key: "prompt", header: "prompt", width: 24 },
-];
+/** Combined width of every fixed-width column plus their separating spaces, the row's own `› `/`  ` marker prefix, and the panel's own left/right border columns — everything the `prompt` column does not own. */
+const TASK_FIXED_COLUMNS_WIDTH = 5 + 1 + 12 + 1 + 7 + 1 + 6 + 1 + 2 + 2;
+/** Floor for the `prompt` column so a very narrow table still shows a sliver of text instead of collapsing to nothing. */
+const MIN_PROMPT_WIDTH = 4;
+
+/**
+ * `time`/`project`/`work`/`cost` are fixed-width; `prompt` absorbs
+ * whatever width is left in `tableWidth` (the panel's own outer width,
+ * including its border columns) so the row's total text never exceeds
+ * the panel's actual content width — which would otherwise wrap inside
+ * the fixed-height, `overflow: hidden` panel and silently eat rows from
+ * the scrolling window.
+ */
+function taskColumns(tableWidth: number): TableColumn<TaskRow>[] {
+  const promptWidth = Math.max(tableWidth - TASK_FIXED_COLUMNS_WIDTH, MIN_PROMPT_WIDTH);
+  return [
+    { key: "time", header: "time", width: 5 },
+    { key: "project", header: "project", width: 12 },
+    { key: "work", header: "work", width: 7, align: "right" },
+    { key: "cost", header: "cost", width: 6, align: "right" },
+    { key: "prompt", header: "prompt", width: promptWidth },
+  ];
+}
 
 function taskCell(row: TaskRow, key: string): string {
   switch (key) {
@@ -80,6 +96,8 @@ const KEY_HINTS = [
 
 /** Below this main-content width, the detail panel stacks under the table instead of beside it. */
 const DETAIL_BREAKPOINT = 70;
+/** Rows the `Panel` chrome (top border line + bottom border line) and the `Table`'s own header line take, outside its data rows. */
+const TABLE_CHROME_ROWS = 3;
 
 /**
  * The Tasks screen: a table of tasks (via `domain/tasks-model.ts`, never
@@ -100,7 +118,10 @@ export function TasksScreen({ load, roots, version, columns, rows, projectFilter
     [model.rows, projectFilter],
   );
 
+  const maxRowsRef = useRef(0);
+
   useInput((input, key) => {
+    const lastIndex = Math.max(visibleRows.length - 1, 0);
     if (input === "a") {
       const nextAll = !allRef.current;
       allRef.current = nextAll;
@@ -110,9 +131,17 @@ export function TasksScreen({ load, roots, version, columns, rows, projectFilter
     } else if (input === "r") {
       setModel(load({ all: allRef.current }));
     } else if (key.downArrow) {
-      setSelected((index) => Math.min(index + 1, Math.max(visibleRows.length - 1, 0)));
+      setSelected((index) => Math.min(index + 1, lastIndex));
     } else if (key.upArrow) {
       setSelected((index) => Math.max(index - 1, 0));
+    } else if (key.pageDown) {
+      setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
+    } else if (key.pageUp) {
+      setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
+    } else if (key.home) {
+      setSelected(0);
+    } else if (key.end) {
+      setSelected(lastIndex);
     } else if (key.escape) {
       onClearFilter?.();
     }
@@ -129,15 +158,20 @@ export function TasksScreen({ load, roots, version, columns, rows, projectFilter
       sidebarStats={[`tasks ${visibleRows.length}`, all ? "scope all" : "scope today"]}
       keyHints={KEY_HINTS}
     >
-      {({ mainWidth }) => {
+      {({ mainWidth, mainHeight }) => {
         const wide = mainWidth >= DETAIL_BREAKPOINT;
         const tableWidth = wide ? Math.floor(mainWidth * 0.62) : mainWidth;
         const detailWidth = wide ? Math.max(mainWidth - tableWidth - 1, 1) : mainWidth;
         const selectedRow = visibleRows[Math.min(selected, Math.max(visibleRows.length - 1, 0))];
 
+        // Stacked mode splits the height between the table and the detail panel below it, mirroring the width split used in wide mode.
+        const tableHeight = wide ? mainHeight : Math.max(Math.floor(mainHeight * 0.62), TABLE_CHROME_ROWS + 1);
+        const maxRows = Math.max(tableHeight - TABLE_CHROME_ROWS, 1);
+        maxRowsRef.current = maxRows;
+
         const table = (
-          <Panel title="Tasks" width={tableWidth}>
-            <Table columns={TASK_COLUMNS} rows={visibleRows} rowKey={(row) => row.id} cell={taskCell} selectedIndex={selected} emptyText="no tasks" />
+          <Panel title="Tasks" width={tableWidth} height={wide ? mainHeight : tableHeight}>
+            <Table columns={taskColumns(tableWidth)} rows={visibleRows} rowKey={(row) => row.id} cell={taskCell} selectedIndex={selected} emptyText="no tasks" maxRows={maxRows} />
           </Panel>
         );
         const detail = <DetailPanel row={selectedRow} width={detailWidth} />;

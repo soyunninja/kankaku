@@ -101,3 +101,44 @@ test("renders at 80 columns without overflowing any line", () => {
   const lines = (lastFrame() ?? "").split("\n");
   assert.ok(lines.every((line) => line.length <= 80));
 });
+
+function manyRowsModel(count: number): SyncModel {
+  return {
+    status: "ready",
+    rows: Array.from({ length: count }, (_, index) => ({
+      name: `project-${index}`,
+      dir: `/work/project-${index}`,
+      pending: 0,
+      staleOutsideWindow: 0,
+    })),
+  };
+}
+
+test("fits within `rows` with many project cards at 100×24", () => {
+  const { lastFrame } = render(
+    <SyncScreen load={() => manyRowsModel(40)} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+});
+
+test("PageDown/Home/End move the card selection with many projects", async () => {
+  const { lastFrame, stdin } = render(
+    <SyncScreen load={() => manyRowsModel(40)} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  const markedCard = (): string | undefined => (lastFrame() ?? "").match(/› (project-\d+)/)?.[1];
+
+  assert.equal(markedCard(), "project-0");
+
+  stdin.write("\u001B[F"); // End
+  await nextTick();
+  assert.equal(markedCard(), "project-39");
+
+  stdin.write("\u001B[H"); // Home
+  await nextTick();
+  assert.equal(markedCard(), "project-0");
+
+  stdin.write("\u001B[6~"); // Page Down
+  await nextTick();
+  assert.notEqual(markedCard(), "project-0");
+});
