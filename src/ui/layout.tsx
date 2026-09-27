@@ -6,6 +6,7 @@ import type { SidebarItem } from "./components/sidebar.tsx";
 import { KeyHints } from "./components/key-hints.tsx";
 import type { KeyHint } from "./components/key-hints.tsx";
 import { useTheme } from "./theme.ts";
+import type { Focus } from "../domain/nav-model.ts";
 
 /** Sidebar width in the wide (side-by-side) layout. */
 const SIDEBAR_WIDTH = 16;
@@ -48,6 +49,8 @@ export interface LayoutProps {
   activeId: string;
   sidebarStats: string[];
   keyHints: KeyHint[];
+  /** Which zone has focus (see `domain/nav-model.ts`'s "Focus zones"); colours the sidebar's active-item marker. Defaults to `"sidebar"`. */
+  focus?: Focus;
   children: (args: LayoutRenderArgs) => ReactNode;
 }
 
@@ -80,10 +83,11 @@ function TabStrip({ items, activeId }: { items: SidebarItem[]; activeId: string 
  * own panels and scrolling lists to the actual `mainWidth`/`mainHeight`
  * in whichever mode is active.
  */
-export function Layout({ columns, rows, headerLeft, headerRight, sidebarItems, activeId, sidebarStats, keyHints, children }: LayoutProps) {
+export function Layout({ columns, rows, headerLeft, headerRight, sidebarItems, activeId, sidebarStats, keyHints, focus = "sidebar", children }: LayoutProps) {
   const { stdout } = useStdout();
   const width = columns ?? stdout?.columns ?? 80;
   const height = rows ?? stdout?.rows ?? DEFAULT_ROWS;
+  const sidebarFocused = focus === "sidebar";
 
   const mode: LayoutMode = width < COLLAPSE_BREAKPOINT ? "collapsed" : width < STACK_BREAKPOINT ? "stacked" : "wide";
   const mainWidth = mode === "wide" ? Math.max(width - SIDEBAR_WIDTH, 1) : width;
@@ -108,7 +112,7 @@ export function Layout({ columns, rows, headerLeft, headerRight, sidebarItems, a
       )}
       {mode === "stacked" && (
         <Box flexDirection="column" flexGrow={1} minHeight={0}>
-          <Sidebar items={sidebarItems} activeId={activeId} stats={sidebarStats} width={width} />
+          <Sidebar items={sidebarItems} activeId={activeId} stats={sidebarStats} width={width} focused={sidebarFocused} />
           <Box flexDirection="column" flexGrow={1} minHeight={0} overflow="hidden">
             {content}
           </Box>
@@ -116,7 +120,7 @@ export function Layout({ columns, rows, headerLeft, headerRight, sidebarItems, a
       )}
       {mode === "wide" && (
         <Box flexDirection="row" flexGrow={1} minHeight={0} alignItems="stretch">
-          <Sidebar items={sidebarItems} activeId={activeId} stats={sidebarStats} width={SIDEBAR_WIDTH} />
+          <Sidebar items={sidebarItems} activeId={activeId} stats={sidebarStats} width={SIDEBAR_WIDTH} focused={sidebarFocused} />
           <Box flexDirection="column" flexGrow={1} minHeight={0} overflow="hidden">
             {content}
           </Box>

@@ -66,11 +66,119 @@ test("App switches screens on 1-4", async () => {
   assert.equal((lastFrame() ?? "").includes("› Today"), true);
 });
 
-test("enter on a Today project opens Tasks filtered to it", async () => {
+test("enter first focuses the main zone, then opens the selected Today project", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
+  stdin.write("\r");
+  await nextTick();
+  // First `enter` (sidebar focused) only moves focus to main: no navigation yet.
+  const afterFirstEnter = lastFrame() ?? "";
+  assert.equal(afterFirstEnter.includes("filtered:"), false);
+  assert.equal(afterFirstEnter.includes("› Today"), true);
+  assert.equal(afterFirstEnter.includes("← menu"), true);
+
   stdin.write("\r");
   await nextTick();
   const frame = lastFrame() ?? "";
   assert.equal(frame.includes("› Tasks"), true);
   assert.equal(frame.includes("filtered: kankaku-tui"), true);
+});
+
+test("sidebar focus: down/up move the active screen (clamped), without opening it", async () => {
+  const { lastFrame, stdin } = render(<App {...appProps()} />);
+  assert.equal((lastFrame() ?? "").includes("choose"), true); // sidebar-focus footer hints
+
+  stdin.write("\u001B[A"); // up arrow, already on the first screen: clamps
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("› Today"), true);
+
+  stdin.write("\u001B[B"); // down arrow
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("› Tasks"), true);
+
+  stdin.write("\u001B[B");
+  await nextTick();
+  stdin.write("\u001B[B");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("› Sync"), true);
+
+  stdin.write("\u001B[B"); // down arrow, already on the last screen: clamps
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("› Sync"), true);
+});
+
+test("right arrow and tab, like enter, focus the main zone from the sidebar", async () => {
+  for (const key of ["\u001B[C", "\t"]) {
+    const { lastFrame, stdin } = render(<App {...appProps()} />);
+    assert.equal((lastFrame() ?? "").includes("choose"), true);
+    stdin.write(key);
+    await nextTick();
+    assert.equal((lastFrame() ?? "").includes("← menu"), true);
+  }
+});
+
+test("left arrow and tab return focus to the sidebar from the main zone", async () => {
+  for (const key of ["\u001B[D", "\t"]) {
+    const { lastFrame, stdin } = render(<App {...appProps()} />);
+    stdin.write("\r"); // focus main
+    await nextTick();
+    assert.equal((lastFrame() ?? "").includes("← menu"), true);
+    stdin.write(key);
+    await nextTick();
+    assert.equal((lastFrame() ?? "").includes("choose"), true);
+  }
+});
+
+test("digit keys switch screens without changing which zone is focused", async () => {
+  const { lastFrame, stdin } = render(<App {...appProps()} />);
+  stdin.write("\r"); // focus main
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("← menu"), true);
+
+  stdin.write("2");
+  await nextTick();
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("› Tasks"), true);
+  assert.equal(frame.includes("← menu"), true); // still main-focused
+});
+
+test("while the sidebar is focused, arrow keys never reach the active screen's own list", async () => {
+  const { lastFrame, stdin } = render(<App {...appProps()} />);
+  // On Today, sidebar focused by default: down arrow moves the active
+  // screen (to Tasks) instead of the Projects selection.
+  stdin.write("\u001B[B");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("› Tasks"), true);
+});
+
+test("esc on Tasks with a project filter clears it first, the next esc returns to the sidebar", async () => {
+  const { lastFrame, stdin } = render(<App {...appProps()} />);
+  stdin.write("\r"); // focus main on Today
+  await nextTick();
+  stdin.write("\r"); // open the selected project in Tasks, filtered
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("filtered: kankaku-tui"), true);
+  assert.equal((lastFrame() ?? "").includes("← menu"), true); // still main-focused
+
+  stdin.write("\u001B"); // first esc: clears the filter, stays on Tasks, stays main-focused
+  await nextTick();
+  const afterFirstEsc = lastFrame() ?? "";
+  assert.equal(afterFirstEsc.includes("filtered:"), false);
+  assert.equal(afterFirstEsc.includes("› Tasks"), true);
+  assert.equal(afterFirstEsc.includes("← menu"), true);
+
+  stdin.write("\u001B"); // second esc: no filter left to consume, returns to the sidebar
+  await nextTick();
+  const afterSecondEsc = lastFrame() ?? "";
+  assert.equal(afterSecondEsc.includes("choose"), true);
+});
+
+test("esc on a screen without a project filter returns straight to the sidebar", async () => {
+  const { lastFrame, stdin } = render(<App {...appProps()} />);
+  stdin.write("\r"); // focus main on Today
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("← menu"), true);
+
+  stdin.write("\u001B");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("choose"), true);
 });

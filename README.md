@@ -138,11 +138,33 @@ Projects table (work, cost and a share bar per project) and a Hub card
 
 ## Keys (TUI)
 
-Tab bar: `1` Today, `2` Tasks, `3` Catalog, `4` Sync. `q` quits from any
-screen. The app fills the whole terminal; every scrolling list (Tasks,
-Catalog's Clients/Projects, Today's Projects, Sync's cards) additionally
-takes `PageUp`/`PageDown` to move a full window at a time and `Home`/`End`
-to jump to the first/last row.
+The app has two focus zones — the sidebar and the active screen's own main
+content — and one of them always has focus (`domain/nav-model.ts`'s
+`NavState.focus`, starting on the sidebar). `1`-`4` switch the Today/Tasks/
+Catalog/Sync tab bar and `q` quits from anywhere, in either zone; every
+other key belongs to whichever zone currently has focus, so a screen's own
+list never moves by accident while you are still picking a screen.
+
+- **Sidebar focused** (the app's own starting state) — `↑`/`↓` move
+  between screens, and the screen switches as you move, so you see each
+  one before committing to it. `enter`, `→` or `Tab` focus the main zone
+  (the screen you last landed on).
+- **Main zone focused** — the active screen's own keys work as below.
+  `←` or `Tab` return focus to the sidebar. `esc` also returns to the
+  sidebar, unless the screen consumes it first: on Tasks with a project
+  filter set (from Today's `enter`), the first `esc` clears the filter
+  and the next `esc` returns to the sidebar.
+
+The focused zone is visible in the frame: the sidebar's active-item marker
+is in the accent colour when the sidebar is focused and muted otherwise,
+the focused screen's primary panel gets the accent border, and the footer
+key hints change — the sidebar's own hints while it is focused, the
+screen's hints plus `← menu` while the main zone is focused.
+
+The app fills the whole terminal; every scrolling list (Tasks, Catalog's
+Clients/Projects, Today's Projects, Sync's cards) additionally takes
+`PageUp`/`PageDown` to move a full window at a time and `Home`/`End` to
+jump to the first/last row.
 
 - **Today** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the Projects
   selection, `enter` opens the selected project in Tasks (filtered to

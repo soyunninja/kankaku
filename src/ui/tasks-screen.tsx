@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { formatMinutes } from "../domain/today-model.ts";
 import type { TaskRow, TasksModel } from "../domain/tasks-model.ts";
-import { SCREENS } from "../domain/nav-model.ts";
+import { SCREENS, hintsFor } from "../domain/nav-model.ts";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
 import { Table } from "./components/table.tsx";
@@ -14,6 +14,8 @@ export interface TasksScreenProps {
   version: string;
   columns?: number;
   rows?: number;
+  /** Whether the main zone (this screen) has focus; when `false`, this screen's own list/action keys are inert. Defaults to `true` for a standalone render. */
+  focused?: boolean;
   /** Restrict the table to one project's rows (set by `enter` on a Today project row). */
   projectFilter?: string;
   /** `esc`: drop `projectFilter`. Omitted when the caller does not wire navigation. */
@@ -107,7 +109,7 @@ const TABLE_CHROME_ROWS = 3;
  * that project and `esc` clears it through `onClearFilter`. Never writes
  * anything to disk.
  */
-export function TasksScreen({ load, roots, version, columns, rows, projectFilter, onClearFilter }: TasksScreenProps) {
+export function TasksScreen({ load, roots, version, columns, rows, focused = true, projectFilter, onClearFilter }: TasksScreenProps) {
   const allRef = useRef(false);
   const [all, setAll] = useState(false);
   const [model, setModel] = useState<TasksModel>(() => load({ all: false }));
@@ -120,32 +122,35 @@ export function TasksScreen({ load, roots, version, columns, rows, projectFilter
 
   const maxRowsRef = useRef(0);
 
-  useInput((input, key) => {
-    const lastIndex = Math.max(visibleRows.length - 1, 0);
-    if (input === "a") {
-      const nextAll = !allRef.current;
-      allRef.current = nextAll;
-      setAll(nextAll);
-      setModel(load({ all: nextAll }));
-      setSelected(0);
-    } else if (input === "r") {
-      setModel(load({ all: allRef.current }));
-    } else if (key.downArrow) {
-      setSelected((index) => Math.min(index + 1, lastIndex));
-    } else if (key.upArrow) {
-      setSelected((index) => Math.max(index - 1, 0));
-    } else if (key.pageDown) {
-      setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
-    } else if (key.pageUp) {
-      setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
-    } else if (key.home) {
-      setSelected(0);
-    } else if (key.end) {
-      setSelected(lastIndex);
-    } else if (key.escape) {
-      onClearFilter?.();
-    }
-  });
+  useInput(
+    (input, key) => {
+      const lastIndex = Math.max(visibleRows.length - 1, 0);
+      if (input === "a") {
+        const nextAll = !allRef.current;
+        allRef.current = nextAll;
+        setAll(nextAll);
+        setModel(load({ all: nextAll }));
+        setSelected(0);
+      } else if (input === "r") {
+        setModel(load({ all: allRef.current }));
+      } else if (key.downArrow) {
+        setSelected((index) => Math.min(index + 1, lastIndex));
+      } else if (key.upArrow) {
+        setSelected((index) => Math.max(index - 1, 0));
+      } else if (key.pageDown) {
+        setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
+      } else if (key.pageUp) {
+        setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
+      } else if (key.home) {
+        setSelected(0);
+      } else if (key.end) {
+        setSelected(lastIndex);
+      } else if (key.escape) {
+        onClearFilter?.();
+      }
+    },
+    { isActive: focused },
+  );
 
   return (
     <Layout
@@ -156,7 +161,8 @@ export function TasksScreen({ load, roots, version, columns, rows, projectFilter
       sidebarItems={SCREENS}
       activeId="tasks"
       sidebarStats={[`tasks ${visibleRows.length}`, all ? "scope all" : "scope today"]}
-      keyHints={KEY_HINTS}
+      keyHints={hintsFor("tasks", focused ? "main" : "sidebar", KEY_HINTS)}
+      focus={focused ? "main" : "sidebar"}
     >
       {({ mainWidth, mainHeight }) => {
         const wide = mainWidth >= DETAIL_BREAKPOINT;
@@ -170,7 +176,7 @@ export function TasksScreen({ load, roots, version, columns, rows, projectFilter
         maxRowsRef.current = maxRows;
 
         const table = (
-          <Panel title="Tasks" width={tableWidth} height={wide ? mainHeight : tableHeight}>
+          <Panel title="Tasks" width={tableWidth} height={wide ? mainHeight : tableHeight} active={focused}>
             <Table columns={taskColumns(tableWidth)} rows={visibleRows} rowKey={(row) => row.id} cell={taskCell} selectedIndex={selected} emptyText="no tasks" maxRows={maxRows} />
           </Panel>
         );

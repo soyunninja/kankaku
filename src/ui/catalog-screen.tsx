@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { formatMinutes } from "../domain/today-model.ts";
 import type { CatalogClientRow, CatalogModel, CatalogProjectRow } from "../domain/catalog-model.ts";
-import { SCREENS } from "../domain/nav-model.ts";
+import { SCREENS, hintsFor } from "../domain/nav-model.ts";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
 import { Table } from "./components/table.tsx";
@@ -15,6 +15,8 @@ export interface CatalogScreenProps {
   version: string;
   columns?: number;
   rows?: number;
+  /** Whether the main zone (this screen) has focus; when `false`, this screen's own list/action keys are inert. Defaults to `true` for a standalone render. */
+  focused?: boolean;
 }
 
 const CLIENT_COLUMNS: TableColumn<CatalogClientRow>[] = [{ key: "name", header: "client", width: 20 }];
@@ -61,7 +63,7 @@ const TABLE_CHROME_ROWS = 3;
  * refreshes against the hub; `↑↓` move the client selection. Without hub
  * credentials, or with no cache yet, shows a one-line note instead.
  */
-export function CatalogScreen({ load, refresh, roots, version, columns, rows }: CatalogScreenProps) {
+export function CatalogScreen({ load, refresh, roots, version, columns, rows, focused = true }: CatalogScreenProps) {
   const [model, setModel] = useState<CatalogModel>(load);
   const [refreshing, setRefreshing] = useState(false);
   const [selected, setSelected] = useState(0);
@@ -69,28 +71,31 @@ export function CatalogScreen({ load, refresh, roots, version, columns, rows }: 
 
   const clients = model.status === "ready" ? model.clients : [];
 
-  useInput((input, key) => {
-    const lastIndex = Math.max(clients.length - 1, 0);
-    if (input === "r" && !refreshing) {
-      setRefreshing(true);
-      void refresh().then((next) => {
-        setModel(next);
-        setRefreshing(false);
-      });
-    } else if (key.downArrow) {
-      setSelected((index) => Math.min(index + 1, lastIndex));
-    } else if (key.upArrow) {
-      setSelected((index) => Math.max(index - 1, 0));
-    } else if (key.pageDown) {
-      setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
-    } else if (key.pageUp) {
-      setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
-    } else if (key.home) {
-      setSelected(0);
-    } else if (key.end) {
-      setSelected(lastIndex);
-    }
-  });
+  useInput(
+    (input, key) => {
+      const lastIndex = Math.max(clients.length - 1, 0);
+      if (input === "r" && !refreshing) {
+        setRefreshing(true);
+        void refresh().then((next) => {
+          setModel(next);
+          setRefreshing(false);
+        });
+      } else if (key.downArrow) {
+        setSelected((index) => Math.min(index + 1, lastIndex));
+      } else if (key.upArrow) {
+        setSelected((index) => Math.max(index - 1, 0));
+      } else if (key.pageDown) {
+        setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
+      } else if (key.pageUp) {
+        setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
+      } else if (key.home) {
+        setSelected(0);
+      } else if (key.end) {
+        setSelected(lastIndex);
+      }
+    },
+    { isActive: focused },
+  );
 
   if (model.status === "unavailable") {
     return (
@@ -101,7 +106,8 @@ export function CatalogScreen({ load, refresh, roots, version, columns, rows }: 
         sidebarItems={SCREENS}
         activeId="catalog"
         sidebarStats={[`roots ${roots.length}`]}
-        keyHints={KEY_HINTS}
+        keyHints={hintsFor("catalog", focused ? "main" : "sidebar", KEY_HINTS)}
+        focus={focused ? "main" : "sidebar"}
       >
         {() => <Text dimColor>{model.reason ?? "no catalog cached yet"}</Text>}
       </Layout>
@@ -120,7 +126,8 @@ export function CatalogScreen({ load, refresh, roots, version, columns, rows }: 
       sidebarItems={SCREENS}
       activeId="catalog"
       sidebarStats={[`clients ${clients.length}`]}
-      keyHints={KEY_HINTS}
+      keyHints={hintsFor("catalog", focused ? "main" : "sidebar", KEY_HINTS)}
+      focus={focused ? "main" : "sidebar"}
     >
       {({ mainWidth, mainHeight }) => {
         const wide = mainWidth >= DETAIL_BREAKPOINT;
@@ -135,7 +142,7 @@ export function CatalogScreen({ load, refresh, roots, version, columns, rows }: 
         maxRowsRef.current = clientsMaxRows;
 
         const clientsPanel = (
-          <Panel title="Clients" headerRight={ageText} width={leftWidth} height={clientsHeight}>
+          <Panel title="Clients" headerRight={ageText} width={leftWidth} height={clientsHeight} active={focused}>
             <Table columns={CLIENT_COLUMNS} rows={clients} rowKey={(client) => client.id} cell={(client) => clientCell(client)} selectedIndex={selected} emptyText="no clients" maxRows={clientsMaxRows} />
           </Panel>
         );

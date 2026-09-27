@@ -3,7 +3,7 @@ import { Box, Text, useInput } from "ink";
 import { formatMinutes } from "../domain/today-model.ts";
 import type { TodayRow } from "../domain/today-model.ts";
 import type { DashboardHubCard, DashboardModel, DashboardProjectRow, DayPoint } from "../domain/dashboard-model.ts";
-import { SCREENS } from "../domain/nav-model.ts";
+import { SCREENS, hintsFor } from "../domain/nav-model.ts";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
 import { Table } from "./components/table.tsx";
@@ -18,6 +18,8 @@ export interface TodayScreenProps {
   version: string;
   columns?: number;
   rows?: number;
+  /** Whether the main zone (this screen) has focus; when `false`, this screen's own list/action keys are inert. Defaults to `true` for a standalone render. */
+  focused?: boolean;
   /** `enter` on the selected project row: open it in Tasks, filtered. Omitted when the caller does not wire navigation (e.g. a standalone render). */
   onOpenProject?: (project: string) => void;
 }
@@ -114,9 +116,9 @@ function projectCell(row: DashboardProjectRow, key: string): string {
   }
 }
 
-function ProjectsPanel({ rows, selectedIndex, width, maxRows }: { rows: DashboardProjectRow[]; selectedIndex: number; width: number; maxRows: number }) {
+function ProjectsPanel({ rows, selectedIndex, width, maxRows, active }: { rows: DashboardProjectRow[]; selectedIndex: number; width: number; maxRows: number; active: boolean }) {
   return (
-    <Panel title="Projects" width={width}>
+    <Panel title="Projects" width={width} active={active}>
       <Table columns={projectColumns(width)} rows={rows} rowKey={(row) => row.name} cell={projectCell} selectedIndex={selectedIndex} emptyText="no work recorded today" maxRows={maxRows} />
     </Panel>
   );
@@ -155,13 +157,25 @@ function projectsMaxRows(mainHeight: number, layout: "grid" | "stacked"): number
   return Math.max(mainHeight - fixedRows - TABLE_CHROME_ROWS, 1);
 }
 
-function DashboardGrid({ model, selectedIndex, mainWidth, mainHeight }: { model: DashboardModel; selectedIndex: number; mainWidth: number; mainHeight: number }) {
+function DashboardGrid({
+  model,
+  selectedIndex,
+  mainWidth,
+  mainHeight,
+  focused,
+}: {
+  model: DashboardModel;
+  selectedIndex: number;
+  mainWidth: number;
+  mainHeight: number;
+  focused: boolean;
+}) {
   if (mainWidth < GRID_BREAKPOINT) {
     return (
       <Box flexDirection="column">
         <TodayPanel today={model.today} width={mainWidth} />
         <Last7DaysPanel points={model.last7Days} width={mainWidth} />
-        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={mainWidth} maxRows={projectsMaxRows(mainHeight, "stacked")} />
+        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={mainWidth} maxRows={projectsMaxRows(mainHeight, "stacked")} active={focused} />
         <HubPanel hub={model.hub} width={mainWidth} />
       </Box>
     );
@@ -173,7 +187,7 @@ function DashboardGrid({ model, selectedIndex, mainWidth, mainHeight }: { model:
     <Box flexDirection="row">
       <Box flexDirection="column" width={leftWidth}>
         <TodayPanel today={model.today} width={leftWidth} />
-        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={leftWidth} maxRows={projectsMaxRows(mainHeight, "grid")} />
+        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={leftWidth} maxRows={projectsMaxRows(mainHeight, "grid")} active={focused} />
       </Box>
       <Box width={1} />
       <Box flexDirection="column" width={rightWidth}>
@@ -191,32 +205,35 @@ function DashboardGrid({ model, selectedIndex, mainWidth, mainHeight }: { model:
  * Projects selection; `enter` opens the selected project in Tasks via
  * `onOpenProject`. Never writes anything to disk.
  */
-export function TodayScreen({ load, roots, version, columns, rows, onOpenProject }: TodayScreenProps) {
+export function TodayScreen({ load, roots, version, columns, rows, focused = true, onOpenProject }: TodayScreenProps) {
   const [model, setModel] = useState<DashboardModel>(load);
   const [selected, setSelected] = useState(0);
   const maxRowsRef = useRef(0);
 
-  useInput((input, key) => {
-    const lastIndex = Math.max(model.projects.length - 1, 0);
-    if (input === "r") {
-      setModel(load());
-    } else if (key.downArrow) {
-      setSelected((index) => Math.min(index + 1, lastIndex));
-    } else if (key.upArrow) {
-      setSelected((index) => Math.max(index - 1, 0));
-    } else if (key.pageDown) {
-      setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
-    } else if (key.pageUp) {
-      setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
-    } else if (key.home) {
-      setSelected(0);
-    } else if (key.end) {
-      setSelected(lastIndex);
-    } else if (key.return) {
-      const project = model.projects[selected];
-      if (project) onOpenProject?.(project.name);
-    }
-  });
+  useInput(
+    (input, key) => {
+      const lastIndex = Math.max(model.projects.length - 1, 0);
+      if (input === "r") {
+        setModel(load());
+      } else if (key.downArrow) {
+        setSelected((index) => Math.min(index + 1, lastIndex));
+      } else if (key.upArrow) {
+        setSelected((index) => Math.max(index - 1, 0));
+      } else if (key.pageDown) {
+        setSelected((index) => Math.min(index + Math.max(maxRowsRef.current, 1), lastIndex));
+      } else if (key.pageUp) {
+        setSelected((index) => Math.max(index - Math.max(maxRowsRef.current, 1), 0));
+      } else if (key.home) {
+        setSelected(0);
+      } else if (key.end) {
+        setSelected(lastIndex);
+      } else if (key.return) {
+        const project = model.projects[selected];
+        if (project) onOpenProject?.(project.name);
+      }
+    },
+    { isActive: focused },
+  );
 
   return (
     <Layout
@@ -227,11 +244,12 @@ export function TodayScreen({ load, roots, version, columns, rows, onOpenProject
       sidebarItems={SCREENS}
       activeId="today"
       sidebarStats={[`roots ${roots.length}`, `projects ${model.projects.length}`]}
-      keyHints={KEY_HINTS}
+      keyHints={hintsFor("today", focused ? "main" : "sidebar", KEY_HINTS)}
+      focus={focused ? "main" : "sidebar"}
     >
       {({ mainWidth, mainHeight }) => {
         maxRowsRef.current = projectsMaxRows(mainHeight, mainWidth < GRID_BREAKPOINT ? "stacked" : "grid");
-        return <DashboardGrid model={model} selectedIndex={selected} mainWidth={mainWidth} mainHeight={mainHeight} />;
+        return <DashboardGrid model={model} selectedIndex={selected} mainWidth={mainWidth} mainHeight={mainHeight} focused={focused} />;
       }}
     </Layout>
   );

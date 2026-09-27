@@ -13,6 +13,8 @@ export interface SidebarProps {
   /** Lines shown below a divider, under the nav items (e.g. `"roots 1"`, `"projects 3"`). */
   stats: string[];
   width: number;
+  /** Whether the sidebar zone itself has focus: the active item's marker and label use `theme.accent` when `true`, `theme.muted` when `false`. Defaults to `true`. */
+  focused?: boolean;
 }
 
 /**
@@ -22,14 +24,18 @@ export interface SidebarProps {
  * the whole column, so the divider is a plain `─` fill line rather than a
  * true `├─…─┤` junction.
  */
-export function Sidebar({ items, activeId, stats, width }: SidebarProps) {
+export function Sidebar({ items, activeId, stats, width, focused = true }: SidebarProps) {
   const theme = useTheme();
   const inner = Math.max(width - 2, 1);
 
   return (
     <Box flexDirection="column" borderStyle="single" borderColor={theme.border} width={width}>
       {items.map((item) => (
-        <Text key={item.id} color={item.id === activeId ? theme.accent : theme.text} bold={item.id === activeId}>
+        <Text
+          key={item.id}
+          color={item.id === activeId ? (focused ? theme.accent : theme.muted) : theme.text}
+          bold={item.id === activeId}
+        >
           {`${item.id === activeId ? "› " : "  "}${item.label}`}
         </Text>
       ))}

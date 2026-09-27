@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { SyncRow } from "../domain/sync-model.ts";
-import { SCREENS } from "../domain/nav-model.ts";
+import { SCREENS, hintsFor } from "../domain/nav-model.ts";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
 import { windowRows } from "../domain/list-window.ts";
@@ -22,6 +22,8 @@ export interface SyncScreenProps {
   version: string;
   columns?: number;
   rows?: number;
+  /** Whether the main zone (this screen) has focus; when `false`, this screen's own list/action keys are inert. Defaults to `true` for a standalone render. */
+  focused?: boolean;
 }
 
 /** Fixed card width in the grid, including its border. */
@@ -60,7 +62,7 @@ function Card({ row, active, message, busy, width }: { row: SyncRow; active: boo
  * card while it runs and once it settles. Without hub credentials shows a
  * one-line note instead. Writes only through kankaku's own sync adapters.
  */
-export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, rows }: SyncScreenProps) {
+export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, rows, focused = true }: SyncScreenProps) {
   const theme = useTheme();
   const [model, setModel] = useState<SyncModel>(load);
   const [selected, setSelected] = useState(0);
@@ -84,53 +86,65 @@ export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, ro
     });
   };
 
-  useInput((input, key) => {
-    if (model.status !== "ready") return;
+  useInput(
+    (input, key) => {
+      if (model.status !== "ready") return;
 
-    const lastIndex = Math.max(projectRows.length - 1, 0);
-    if (key.downArrow) {
-      selectedRef.current = Math.min(selectedRef.current + 1, lastIndex);
-      setSelected(selectedRef.current);
-    } else if (key.upArrow) {
-      selectedRef.current = Math.max(selectedRef.current - 1, 0);
-      setSelected(selectedRef.current);
-    } else if (key.pageDown) {
-      selectedRef.current = Math.min(selectedRef.current + Math.max(maxVisibleRef.current, 1), lastIndex);
-      setSelected(selectedRef.current);
-    } else if (key.pageUp) {
-      selectedRef.current = Math.max(selectedRef.current - Math.max(maxVisibleRef.current, 1), 0);
-      setSelected(selectedRef.current);
-    } else if (key.home) {
-      selectedRef.current = 0;
-      setSelected(0);
-    } else if (key.end) {
-      selectedRef.current = lastIndex;
-      setSelected(lastIndex);
-    } else if (input === "s") {
-      const row = projectRows[selectedRef.current];
-      if (row) runOne(row, false);
-    } else if (input === "f") {
-      const row = projectRows[selectedRef.current];
-      if (row) runOne(row, true);
-    } else if (input === "S") {
-      setBusy(new Set(projectRows.map((row) => row.name)));
-      void syncAll().then((results) => {
-        setMessages((prev) => {
-          const next = { ...prev };
-          results.forEach((result, index) => {
-            const row = projectRows[index];
-            if (row) next[row.name] = result.message;
+      const lastIndex = Math.max(projectRows.length - 1, 0);
+      if (key.downArrow) {
+        selectedRef.current = Math.min(selectedRef.current + 1, lastIndex);
+        setSelected(selectedRef.current);
+      } else if (key.upArrow) {
+        selectedRef.current = Math.max(selectedRef.current - 1, 0);
+        setSelected(selectedRef.current);
+      } else if (key.pageDown) {
+        selectedRef.current = Math.min(selectedRef.current + Math.max(maxVisibleRef.current, 1), lastIndex);
+        setSelected(selectedRef.current);
+      } else if (key.pageUp) {
+        selectedRef.current = Math.max(selectedRef.current - Math.max(maxVisibleRef.current, 1), 0);
+        setSelected(selectedRef.current);
+      } else if (key.home) {
+        selectedRef.current = 0;
+        setSelected(0);
+      } else if (key.end) {
+        selectedRef.current = lastIndex;
+        setSelected(lastIndex);
+      } else if (input === "s") {
+        const row = projectRows[selectedRef.current];
+        if (row) runOne(row, false);
+      } else if (input === "f") {
+        const row = projectRows[selectedRef.current];
+        if (row) runOne(row, true);
+      } else if (input === "S") {
+        setBusy(new Set(projectRows.map((row) => row.name)));
+        void syncAll().then((results) => {
+          setMessages((prev) => {
+            const next = { ...prev };
+            results.forEach((result, index) => {
+              const row = projectRows[index];
+              if (row) next[row.name] = result.message;
+            });
+            return next;
           });
-          return next;
+          setBusy(new Set());
         });
-        setBusy(new Set());
-      });
-    }
-  });
+      }
+    },
+    { isActive: focused },
+  );
 
   if (model.status === "unavailable") {
     return (
-      <Layout columns={columns} rows={rows} headerLeft={`>_ kankaku ${version}`} sidebarItems={SCREENS} activeId="sync" sidebarStats={[`roots ${roots.length}`]} keyHints={KEY_HINTS}>
+      <Layout
+        columns={columns}
+        rows={rows}
+        headerLeft={`>_ kankaku ${version}`}
+        sidebarItems={SCREENS}
+        activeId="sync"
+        sidebarStats={[`roots ${roots.length}`]}
+        keyHints={hintsFor("sync", focused ? "main" : "sidebar", KEY_HINTS)}
+        focus={focused ? "main" : "sidebar"}
+      >
         {() => <Text dimColor>{model.reason}</Text>}
       </Layout>
     );
@@ -144,7 +158,8 @@ export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, ro
       sidebarItems={SCREENS}
       activeId="sync"
       sidebarStats={[`projects ${projectRows.length}`]}
-      keyHints={KEY_HINTS}
+      keyHints={hintsFor("sync", focused ? "main" : "sidebar", KEY_HINTS)}
+      focus={focused ? "main" : "sidebar"}
     >
       {({ mainWidth, mainHeight }) => {
         if (projectRows.length === 0) return <Text dimColor>no projects</Text>;
@@ -166,7 +181,7 @@ export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, ro
                 const actualIndex = window.start + index;
                 return (
                   <Box key={row.name} marginRight={1} marginBottom={1}>
-                    <Card row={row} active={actualIndex === selected} message={messages[row.name]} busy={busy.has(row.name)} width={Math.min(CARD_WIDTH, mainWidth)} />
+                    <Card row={row} active={actualIndex === selected && focused} message={messages[row.name]} busy={busy.has(row.name)} width={Math.min(CARD_WIDTH, mainWidth)} />
                   </Box>
                 );
               })}

@@ -1,6 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { INITIAL_NAV_STATE, SCREENS, buildTabBar, clearProjectFilter, openProjectInTasks, screenForKey, switchScreen } from "../src/domain/nav-model.ts";
+import {
+  INITIAL_NAV_STATE,
+  SCREENS,
+  buildTabBar,
+  clearProjectFilter,
+  focusMain,
+  focusSidebar,
+  hintsFor,
+  moveSidebar,
+  openProjectInTasks,
+  screenForKey,
+  switchScreen,
+} from "../src/domain/nav-model.ts";
 
 test("SCREENS lists the four screens in order with their switch key", () => {
   assert.deepEqual(
@@ -43,20 +55,72 @@ test("buildTabBar marks exactly the active screen and keeps the fixed order", ()
   );
 });
 
-test("INITIAL_NAV_STATE starts on Today with no project filter", () => {
-  assert.deepEqual(INITIAL_NAV_STATE, { screen: "today" });
+test("INITIAL_NAV_STATE starts on Today, focused on the sidebar, with no project filter", () => {
+  assert.deepEqual(INITIAL_NAV_STATE, { screen: "today", focus: "sidebar" });
 });
 
-test("switchScreen changes the active screen and keeps the project filter", () => {
-  const withFilter = { screen: "today" as const, projectFilter: "kankaku" };
-  assert.deepEqual(switchScreen(withFilter, "catalog"), { screen: "catalog", projectFilter: "kankaku" });
+test("switchScreen changes the active screen and keeps the project filter and focus", () => {
+  const withFilter = { screen: "today" as const, focus: "main" as const, projectFilter: "kankaku" };
+  assert.deepEqual(switchScreen(withFilter, "catalog"), { screen: "catalog", focus: "main", projectFilter: "kankaku" });
 });
 
-test("openProjectInTasks switches to Tasks and sets the project filter", () => {
-  assert.deepEqual(openProjectInTasks(INITIAL_NAV_STATE, "kankaku-tui"), { screen: "tasks", projectFilter: "kankaku-tui" });
+test("openProjectInTasks switches to Tasks, sets the project filter and keeps focus", () => {
+  assert.deepEqual(openProjectInTasks(INITIAL_NAV_STATE, "kankaku-tui"), { screen: "tasks", focus: "sidebar", projectFilter: "kankaku-tui" });
+  const mainFocused = { screen: "today" as const, focus: "main" as const };
+  assert.deepEqual(openProjectInTasks(mainFocused, "kankaku-tui"), { screen: "tasks", focus: "main", projectFilter: "kankaku-tui" });
 });
 
-test("clearProjectFilter drops the filter and keeps the current screen", () => {
-  const state = { screen: "tasks" as const, projectFilter: "kankaku-tui" };
-  assert.deepEqual(clearProjectFilter(state), { screen: "tasks" });
+test("clearProjectFilter drops the filter and keeps the current screen and focus", () => {
+  const state = { screen: "tasks" as const, focus: "main" as const, projectFilter: "kankaku-tui" };
+  assert.deepEqual(clearProjectFilter(state), { screen: "tasks", focus: "main" });
+});
+
+test("focusMain switches focus to the main zone, keeping the rest of the state", () => {
+  const state = { screen: "tasks" as const, focus: "sidebar" as const, projectFilter: "kankaku" };
+  assert.deepEqual(focusMain(state), { screen: "tasks", focus: "main", projectFilter: "kankaku" });
+});
+
+test("focusSidebar switches focus to the sidebar, keeping the rest of the state", () => {
+  const state = { screen: "tasks" as const, focus: "main" as const, projectFilter: "kankaku" };
+  assert.deepEqual(focusSidebar(state), { screen: "tasks", focus: "sidebar", projectFilter: "kankaku" });
+});
+
+test("moveSidebar steps to the next/previous screen in SCREENS order", () => {
+  const state = { screen: "tasks" as const, focus: "sidebar" as const };
+  assert.deepEqual(moveSidebar(state, 1), { screen: "catalog", focus: "sidebar" });
+  assert.deepEqual(moveSidebar(state, -1), { screen: "today", focus: "sidebar" });
+});
+
+test("moveSidebar clamps at the first and last screen instead of wrapping", () => {
+  const first = { screen: "today" as const, focus: "sidebar" as const };
+  assert.deepEqual(moveSidebar(first, -1), first);
+  const last = { screen: "sync" as const, focus: "sidebar" as const };
+  assert.deepEqual(moveSidebar(last, 1), last);
+});
+
+test("moveSidebar keeps an existing project filter", () => {
+  const state = { screen: "today" as const, focus: "sidebar" as const, projectFilter: "kankaku" };
+  assert.deepEqual(moveSidebar(state, 1), { screen: "tasks", focus: "sidebar", projectFilter: "kankaku" });
+});
+
+test("hintsFor returns the fixed sidebar hints when the sidebar is focused, regardless of extras", () => {
+  const extras = [{ key: "a", label: "today/all" }];
+  assert.deepEqual(hintsFor("tasks", "sidebar", extras), [
+    { key: "↑↓", label: "choose" },
+    { key: "enter/→", label: "open" },
+    { key: "1-4", label: "screens" },
+    { key: "q", label: "quit" },
+  ]);
+});
+
+test("hintsFor appends '← menu' to the screen's own hints when the main zone is focused", () => {
+  const extras = [
+    { key: "↑↓", label: "select" },
+    { key: "r", label: "refresh" },
+  ];
+  assert.deepEqual(hintsFor("catalog", "main", extras), [
+    { key: "↑↓", label: "select" },
+    { key: "r", label: "refresh" },
+    { key: "←", label: "menu" },
+  ]);
 });
