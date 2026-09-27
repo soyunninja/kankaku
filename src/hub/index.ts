@@ -7,7 +7,9 @@
  * for which ones and why.
  */
 export * from "../adapters/cached-catalog.ts";
+export * from "../adapters/export-writer.ts";
 export * from "../adapters/file-modes.ts";
+export * from "../adapters/hub-actions.ts";
 export * from "../adapters/hub-credentials.ts";
 export * from "../adapters/jsonl-work-log.ts";
 export * from "../adapters/kankaku-dir.ts";
@@ -15,5 +17,9 @@ export * from "../adapters/lazy-jsonl-work-log.ts";
 export * from "../adapters/pocketbase-catalog.ts";
 export * from "../adapters/pocketbase-client.ts";
 export * from "../adapters/pocketbase-sink.ts";
+export * from "../adapters/project-config.ts";
+export * from "../adapters/report-data.ts";
+export * from "../adapters/report.ts";
+export * from "../adapters/report-views.ts";
 export * from "../adapters/sync-runner.ts";
 export * from "../adapters/sync-state-store.ts";

@@ -6,15 +6,14 @@
  * see odd/tasks/kankaku-panel.md P4.
  */
 import type { CatalogSnapshot } from "../ports/catalog.ts";
-import type { SyncCommandDeps } from "./kankaku-command.ts";
-import type { SyncSummary } from "./sync-runner.ts";
+import type { SyncStatusSnapshot, SyncSummary } from "./sync-runner.ts";
 
 /**
  * `/kankaku sync status`'s report lines: the watermark, the pending count,
  * how many tasks fell outside this run's revisit window (R3), and the last
  * error, when any. Exact body of `handleSyncCommand`'s `status` branch.
  */
-export function buildSyncStatusLines(status: ReturnType<SyncCommandDeps["status"]>): string[] {
+export function buildSyncStatusLines(status: SyncStatusSnapshot): string[] {
   const { state, pending, staleOutsideWindow } = status;
   const lines = [state?.syncedThrough ? `synced through ${state.syncedThrough}` : "never synced", `pending: ${pending}`];
   if (staleOutsideWindow > 0) {

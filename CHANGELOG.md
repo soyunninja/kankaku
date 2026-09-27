@@ -3,6 +3,17 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **`kankaku/hub` now publishes report formatting, the five report views,
+  the hub action line-builders, the export writer and the project config
+  helpers** (`report.ts`, `report-views.ts`, `hub-actions.ts`,
+  `export-writer.ts`, `project-config.ts`), so a future standalone TUI can
+  reuse them without importing anything that touches `@earendil-works/*`.
+  No behaviour change.
+
 ## 0.7.1 — 2026-09-25
 
 ### Changed

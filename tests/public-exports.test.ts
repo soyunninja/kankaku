@@ -65,6 +65,16 @@ test("a plain child node process (no TS loader) can import each dist barrel and 
     const hub = await import(${JSON.stringify(join(REPO_ROOT, "dist", "hub", "index.js"))});
     if (typeof hub.PocketBaseClient !== "function") throw new Error("hub.PocketBaseClient missing");
     if (typeof hub.runSync !== "function") throw new Error("hub.runSync missing");
+    if (typeof hub.formatReport !== "function") throw new Error("hub.formatReport missing");
+    if (typeof hub.summarize !== "function") throw new Error("hub.summarize missing");
+    if (typeof hub.buildSummaryView !== "function") throw new Error("hub.buildSummaryView missing");
+    if (typeof hub.buildTasksView !== "function") throw new Error("hub.buildTasksView missing");
+    if (typeof hub.buildExportContent !== "function") throw new Error("hub.buildExportContent missing");
+    if (typeof hub.buildSyncStatusLines !== "function") throw new Error("hub.buildSyncStatusLines missing");
+    if (typeof hub.formatSyncSummaryLines !== "function") throw new Error("hub.formatSyncSummaryLines missing");
+    if (typeof hub.writeExport !== "function") throw new Error("hub.writeExport missing");
+    if (typeof hub.readProjectTargetIds !== "function") throw new Error("hub.readProjectTargetIds missing");
+    if (typeof hub.writeProjectTargetIds !== "function") throw new Error("hub.writeProjectTargetIds missing");
 
     console.log("OK");
   `;

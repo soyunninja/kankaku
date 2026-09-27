@@ -264,18 +264,25 @@ export function pendingCount(tasks: TaskView[], state: ReturnType<SyncStateStore
 }
 
 /**
+ * {@link computeSyncStatus}'s return shape, exported so a caller (e.g.
+ * `hub-actions.ts#buildSyncStatusLines`, or a future standalone TUI reusing
+ * `kankaku/hub`) can depend on this type without importing anything that
+ * touches `@earendil-works/*` — see AGENTS.md "Code conventions".
+ */
+export interface SyncStatusSnapshot {
+  state: SyncState | undefined;
+  pending: number;
+  staleOutsideWindow: number;
+}
+
+/**
  * `/kankaku sync status`: the persisted state, a locally-computed pending
  * count, and (R3) how many tasks changed since their last sync but fall
  * outside this run's revisit window — a `sync all` needed to pick them up
  * (see `domain/sync-plan.ts#SyncPlan.staleOutsideWindow`, and README "Hub
  * (PocketBase)" > "Sync" > "Limitations"). No network.
  */
-export function computeSyncStatus(
-  log: WorkLog,
-  stateStore: SyncStateStore,
-  target: string,
-  windowHours?: number,
-): { state: ReturnType<SyncStateStore["read"]>; pending: number; staleOutsideWindow: number } {
+export function computeSyncStatus(log: WorkLog, stateStore: SyncStateStore, target: string, windowHours?: number): SyncStatusSnapshot {
   const state = stateStore.read();
   const tasks = buildTasks(log.readAll());
   const plan = planSync(tasks, state, { target, ...(windowHours !== undefined ? { windowHours } : {}) });

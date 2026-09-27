@@ -9,7 +9,7 @@
 import { buildSessions, buildTasks } from "../domain/task-view.ts";
 import { exportRows, toCsv, toJson } from "../domain/export.ts";
 import type { WorkRecord } from "../domain/work-record.ts";
-import type { KankakuReportData } from "./kankaku-command.ts";
+import type { KankakuReportData } from "./report-data.ts";
 import { countUncertain, formatClients, formatProjects, formatReport, formatSessions, formatTasks, localDay, summarize, summarizeByClient, summarizeByProject } from "./report.ts";
 
 /** Shared by every view except `buildTasksView`: `all` includes every day, otherwise only today's local day. */

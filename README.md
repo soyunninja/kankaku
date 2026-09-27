@@ -1329,8 +1329,16 @@ separate CLI or another agent's plugin (e.g. the `kankaku-claude` package):
   adapters against.
 - `kankaku/hub` — the pi-free adapters: the PocketBase HTTP client and
   catalog/sink, `runSync`, the JSONL work log, the cached catalog, hub
-  credentials, and related filesystem helpers. Nothing reachable from this
-  entry point ever imports a pi package type.
+  credentials, and related filesystem helpers; also the report formatters
+  and the five report view builders (`formatReport`, `summarize`,
+  `buildSummaryView`, `buildTasksView`, etc.), the hub action line-builders
+  (`buildSyncStatusLines`, `formatSyncSummaryLines`, ...), the export
+  writer (`writeExport`) and the project config reader/writer
+  (`readProjectTargetIds`, `writeProjectTargetIds`). These exist so a
+  standalone CLI or TUI (e.g. a future Ink-based one) can render the exact
+  same reports and hub actions as the `/kankaku` subcommands and panel,
+  without reimplementing them. Nothing reachable from this entry point ever
+  imports a pi package type.
 
 ```js
 import { runSync } from "kankaku/hub";

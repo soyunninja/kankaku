@@ -7,24 +7,20 @@ import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import { findAmbiguousToolNames } from "../domain/subagent-profile.ts";
 import type { SubagentProfile } from "../domain/subagent-profile.ts";
 import type { RejectedChildEnvMarker } from "../config.ts";
-import type { SyncState } from "../domain/sync-plan.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
 import type { Catalog } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
 import { buildSyncStatusLines, formatBackfillLines, formatCatalogRefreshLines, formatSyncSummaryLines } from "./hub-actions.ts";
 import { buildClientsView, buildExportContent, buildProjectsView, buildSessionsView, buildSummaryView, buildTasksView } from "./report-views.ts";
-import type { SyncSummary, SyncTrigger } from "./sync-runner.ts";
+import type { SyncStatusSnapshot, SyncSummary, SyncTrigger } from "./sync-runner.ts";
 import type { SessionClient } from "./session-client.ts";
 import { readNonDefaultSessionDir } from "./session-dir.ts";
 import type { SessionTarget } from "./session-target.ts";
+import type { KankakuReportData } from "./report-data.ts";
+
+export type { KankakuReportData } from "./report-data.ts";
 
 const REPORT_ENTRY_TYPE = "kankaku-report";
-
-/** Durable report rendered inside the chat transcript; never sent to the LLM. */
-export interface KankakuReportData {
-  title: string;
-  lines: string[];
-}
 
 /** Notify the user of an error through the UI, when one is available. */
 export function notifyError(ctx: ExtensionContext, error: unknown): void {
@@ -217,7 +213,7 @@ export interface SyncCommandDeps {
    * count, and (R3) how many tasks changed since their last sync but fall
    * outside this run's revisit window — needs `sync all`. No network.
    */
-  status: () => { state: SyncState | undefined; pending: number; staleOutsideWindow: number };
+  status: () => SyncStatusSnapshot;
 }
 
 export interface KankakuCommandDeps {
