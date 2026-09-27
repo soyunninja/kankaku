@@ -3,6 +3,16 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 0.1.2 — 2026-09-27
+
+### Fixed
+
+- **An installed `kankaku` did nothing**: npm runs the binary through the
+  `node_modules/.bin/kankaku` symlink, so the entrypoint's main-module
+  guard compared the link path with the real file and never ran. Real
+  paths are compared now; a regression test runs the CLI through a
+  symlink, and the packed tarball was verified through npm's own bin.
+
 ## 0.1.1 — 2026-09-27
 
 ### Fixed
