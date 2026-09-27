@@ -52,6 +52,7 @@ function wizardFacts(): WizardFacts {
     agentFacts: { pi: undefined, gentleShell: undefined, claudeCode: undefined, codex: undefined, opencode: undefined },
     hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" },
     roots: { current: undefined, defaultRoots: ["/work"], path: "/home/.kankaku/tui.json" },
+    homeDir: "/home",
   };
 }
 
@@ -218,7 +219,7 @@ test("esc on a screen without a project filter returns straight to the sidebar",
 test("startInWizard opens the app straight into the setup wizard instead of the Dashboard", () => {
   const { lastFrame } = render(<App {...appProps()} wizard={{ facts: wizardFacts(), actions: wizardActions() }} startInWizard />);
   const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("Setup · Detect"), true);
+  assert.equal(frame.includes("Setup · Agents"), true);
   assert.equal(frame.includes("› Dashboard"), false);
 });
 
@@ -241,11 +242,11 @@ test("finishing the wizard (Done -> Enter) switches to the Dashboard in place, r
       startInWizard
     />,
   );
-  assert.equal((lastFrame() ?? "").includes("Setup · Detect"), true);
+  assert.equal((lastFrame() ?? "").includes("Setup · Agents"), true);
   assert.equal(loads, 0);
 
-  for (let i = 0; i < 5; i += 1) {
-    stdin.write("\r"); // detect -> agents -> hub -> roots -> review -> apply
+  for (let i = 0; i < 4; i += 1) {
+    stdin.write("\r"); // agents -> hub -> roots -> review -> apply
     await nextTick();
   }
   await nextTick(); // let the (empty) plan's apply effect settle
@@ -265,5 +266,5 @@ test("while the wizard is active, the app's own global keys (q, digits, arrows) 
   const { lastFrame, stdin } = render(<App {...appProps()} wizard={{ facts: wizardFacts(), actions: wizardActions() }} startInWizard />);
   stdin.write("1"); // would switch to Dashboard on the normal shell
   await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Detect"), true);
+  assert.equal((lastFrame() ?? "").includes("Setup · Agents"), true);
 });

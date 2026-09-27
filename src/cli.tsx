@@ -321,7 +321,7 @@ function gatherWizardFacts(deps: CliDeps): WizardFacts {
     path: tuiPath,
   };
 
-  return { agentFacts, hub, roots };
+  return { agentFacts, hub, roots, homeDir: deps.homeDir };
 }
 
 /** Runs `adapters/setup/local-hub.ts#installLocalHub` for real, sharing one `ScriptRunner`/timer setup between the wizard's `installLocalHub` action and `apply`'s own `install-local-hub` handling. */

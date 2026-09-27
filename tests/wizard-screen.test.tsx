@@ -15,6 +15,7 @@ function baseFacts(overrides: Partial<WizardFacts> = {}): WizardFacts {
     agentFacts: baseAgentFacts(),
     hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" },
     roots: { current: undefined, defaultRoots: ["/work"], path: "/home/.kankaku/tui.json" },
+    homeDir: "/home",
     ...overrides,
   };
 }
@@ -49,14 +50,14 @@ function nextTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 60));
 }
 
-test("Detect step: renders the agent facts and Esc quits the wizard", async () => {
+test("Agents step (first step): renders the agent facts and Esc quits the wizard", async () => {
   const { actions } = fakeActions();
   let quit = 0;
   const { lastFrame, stdin } = render(
     <SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => (quit += 1)} columns={100} rows={24} />,
   );
   const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("Setup · Detect"), true);
+  assert.equal(frame.includes("Setup · Agents"), true);
   assert.equal(frame.includes("pi"), true);
 
   stdin.write("\u001B");
@@ -65,12 +66,16 @@ test("Detect step: renders the agent facts and Esc quits the wizard", async () =
 });
 
 test("Agents step: Space toggles the cursor row's selection, disabled rows never toggle", async () => {
-  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), pi: { settingsPath: "/home/.pi/agent/settings.json", packages: [] } } });
+  const facts = baseFacts({
+    agentFacts: {
+      ...baseAgentFacts(),
+      pi: { settingsPath: "/home/.pi/agent/settings.json", packages: [] },
+      codex: { configPath: "/home/.codex/config.toml" },
+    },
+  });
   const { actions } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
-  stdin.write("\r"); // detect -> agents
-  await nextTick();
   assert.equal((lastFrame() ?? "").includes("Setup · Agents"), true);
   assert.equal((lastFrame() ?? "").includes("[ ] pi"), true);
 
@@ -78,16 +83,15 @@ test("Agents step: Space toggles the cursor row's selection, disabled rows never
   await nextTick();
   assert.equal((lastFrame() ?? "").includes("[x] pi"), true);
 
-  // codex/opencode rows are disabled, with the "no adapter yet" note.
+  // codex is present but has no adapter yet; opencode isn't present at all.
   assert.equal((lastFrame() ?? "").includes("no adapter yet"), true);
+  assert.equal((lastFrame() ?? "").includes("not installed"), true);
 });
 
 test("Claude step: Enter with an empty checkout shows the error and stays on the step", async () => {
   const { actions } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
-  stdin.write("\r"); // detect -> agents
-  await nextTick();
   stdin.write("\u001B[B"); // pi -> gentle-shell
   await nextTick();
   stdin.write("\u001B[B"); // gentle-shell -> claude-code
@@ -110,8 +114,6 @@ test("Hub step (existing mode): 'c' runs the health check and shows the result",
   const { actions, calls } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
-  stdin.write("\r"); // detect -> agents
-  await nextTick();
   stdin.write("\r"); // agents -> hub (claude not selected: skipped)
   await nextTick();
   assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
@@ -127,8 +129,6 @@ test("Hub step (local mode, no checkout found): shows the manual commands, 'm' a
   const { actions } = fakeActions({ findHubCheckout: () => undefined });
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
-  stdin.write("\r"); // detect -> agents
-  await nextTick();
   stdin.write("\r"); // agents -> hub
   await nextTick();
   stdin.write("\u001B[A"); // skip -> local (up arrow)
@@ -151,8 +151,6 @@ test("Hub step (local mode, checkout found): prefills the checkout path from fin
   const { actions } = fakeActions({ findHubCheckout: () => "/home/dev/kankaku-hub" });
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
-  stdin.write("\r"); // detect -> agents
-  await nextTick();
   stdin.write("\r"); // agents -> hub
   await nextTick();
   stdin.write("\u001B[A"); // skip -> local
@@ -165,8 +163,6 @@ test("Review step: lists the plan's label and file, Roots step renders along the
   const { actions } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
-  stdin.write("\r"); // detect -> agents
-  await nextTick();
   stdin.write(" "); // select pi (cursor starts on the first row)
   await nextTick();
   stdin.write("\r"); // agents -> hub
@@ -189,8 +185,6 @@ test("Apply step: runs every planned action through actions.apply in order and s
   let done = 0;
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => (done += 1)} onQuit={() => {}} columns={100} rows={24} />);
 
-  stdin.write("\r"); // detect -> agents
-  await nextTick();
   stdin.write(" "); // select pi
   await nextTick();
   stdin.write("\r"); // agents -> hub
@@ -217,4 +211,61 @@ test("Apply step: runs every planned action through actions.apply in order and s
   stdin.write("\r");
   await nextTick();
   assert.equal(done, 1);
+});
+
+// ---- R2: no sidebar, progress in the panel title ----
+
+test("no sidebar: the panel's top border spans the full terminal width, not a reduced main width", () => {
+  const { actions } = fakeActions();
+  const { lastFrame } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+  const lines = (lastFrame() ?? "").split("\n");
+  const topBorder = lines.find((line) => line.includes("╭")) ?? "";
+  assert.equal(topBorder.length, 100);
+});
+
+test("no sidebar: no left-hand step list with a › step marker or ✓ completed marker", () => {
+  const { actions } = fakeActions();
+  const { lastFrame } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("✓ Agents"), false);
+  assert.equal(frame.includes("✓ Hub"), false);
+});
+
+test("title carries progress numbering: Agents 1/5 once Claude Code is selected", async () => {
+  const { actions } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  stdin.write("\u001B[B"); // pi -> gentle-shell
+  await nextTick();
+  stdin.write("\u001B[B"); // gentle-shell -> claude-code
+  await nextTick();
+  stdin.write(" "); // select claude-code (not configured -> the Claude step is needed)
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Agents 1/5"), true);
+});
+
+test("title numbers only the steps shown this run: Claude skipped drops the total to 4", async () => {
+  const { actions } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  assert.equal((lastFrame() ?? "").includes("Setup · Agents 1/4"), true);
+
+  stdin.write("\r"); // agents -> hub (claude not selected)
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Hub 2/4"), true);
+});
+
+test("title has no numbering on Done", async () => {
+  const { actions } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  for (let i = 0; i < 4; i += 1) {
+    stdin.write("\r"); // agents -> hub -> roots -> review -> apply
+    await nextTick();
+  }
+  await nextTick(); // let the (empty) plan's apply effect settle
+  stdin.write("\r"); // apply finished -> done
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
+  assert.equal((lastFrame() ?? "").includes("Setup · Done 5/4"), false);
 });

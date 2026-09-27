@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Box, Text, useInput } from "ink";
+import { Box, Text, useInput, useStdout } from "ink";
 import {
   applyResult,
   back,
+  claudeStepNeeded,
   createWizardState,
   hintsForStep,
   next,
@@ -14,12 +15,13 @@ import {
   setHubMode,
   setLocalCheckout,
   setRoots,
+  shortenHome,
   toggleAgent,
 } from "../../domain/setup-wizard.ts";
 import type { ApplyResult, HubField, HubMode, WizardAction, WizardFacts, WizardState, WizardStep } from "../../domain/setup-wizard.ts";
 import type { AgentId, AgentStatus } from "../../domain/setup-plan.ts";
-import { Layout } from "../layout.tsx";
-import type { SidebarItem } from "../components/sidebar.tsx";
+import { HeaderBar } from "../components/header-bar.tsx";
+import { KeyHints } from "../components/key-hints.tsx";
 import { Panel } from "../components/panel.tsx";
 import { Table } from "../components/table.tsx";
 import type { TableColumn } from "../components/table.tsx";
@@ -29,6 +31,13 @@ import { Radio } from "../components/radio.tsx";
 import type { RadioOption } from "../components/radio.tsx";
 import { TextInput } from "../components/text-input.tsx";
 import { useTheme } from "../theme.ts";
+
+/** Fallback terminal height when neither `rows` nor `useStdout().rows` is available (matches `ui/layout.tsx`'s own fallback). */
+const DEFAULT_ROWS = 24;
+/** Rows used by the header line. */
+const HEADER_ROWS = 1;
+/** Rows used by the footer key-hints line. */
+const FOOTER_ROWS = 1;
 
 /**
  * The wizard's own dependency surface, built by `cli.tsx` from the real
@@ -55,7 +64,7 @@ export interface SetupWizardProps {
   actions: WizardActions;
   /** Called once, from the Done step, when Enter is pressed. */
   onDone: () => void;
-  /** Called from the Detect step when Esc is pressed (the wizard's own quit). */
+  /** Called from the Agents step (the first step) when Esc is pressed (the wizard's own quit). */
   onQuit: () => void;
   /** Shown in the header bar, matching every other screen. Omitted in a standalone render. */
   version?: string;
@@ -63,19 +72,32 @@ export interface SetupWizardProps {
   rows?: number;
 }
 
-/** The seven steps shown in the sidebar; `apply` has no entry of its own (it is the Review step's own execution, not a step the user navigates to). */
-const SIDEBAR_STEPS: WizardStep[] = ["detect", "agents", "claude", "hub", "roots", "review", "done"];
-
+/** Panel titles for every step. Used verbatim for `apply`/`done` (never numbered); `agents`/`claude`/`hub`/`roots`/`review` get a `n/total` suffix from {@link panelTitle}. */
 const STEP_TITLES: Record<WizardStep, string> = {
-  detect: "Detect",
   agents: "Agents",
-  claude: "Claude",
+  claude: "Claude Code",
   hub: "Hub",
   roots: "Roots",
   review: "Review",
   apply: "Apply",
   done: "Done",
 };
+
+/** The steps a run numbers in its panel title, in order; `claude` is dropped from this list when the run doesn't need it (see {@link numberedStepsForRun}). `apply` and `done` are never numbered — `apply` is Review's own execution and `done` is the terminal summary. */
+const NUMBERED_STEPS: WizardStep[] = ["agents", "claude", "hub", "roots", "review"];
+
+/** The steps that will actually be shown for this run, e.g. `["agents", "hub", "roots", "review"]` when Claude Code is skipped. */
+function numberedStepsForRun(state: WizardState): WizardStep[] {
+  return NUMBERED_STEPS.filter((step) => step !== "claude" || claudeStepNeeded(state));
+}
+
+/** `[ Setup · Agents 1/5 ]`-style progress title: `n/total` over only the steps this run will show; `apply`/`done` render unnumbered. */
+function panelTitle(state: WizardState): string {
+  const title = STEP_TITLES[state.step];
+  const steps = numberedStepsForRun(state);
+  const index = steps.indexOf(state.step);
+  return index === -1 ? `Setup · ${title}` : `Setup · ${title} ${index + 1}/${steps.length}`;
+}
 
 const AGENT_TITLES: Record<AgentId, string> = {
   pi: "pi",
@@ -85,48 +107,10 @@ const AGENT_TITLES: Record<AgentId, string> = {
   opencode: "OpenCode",
 };
 
-/** The sidebar's own active id: `apply` has no sidebar row, so it maps to `review` (the step it is executing). */
-function sidebarActiveId(step: WizardStep): WizardStep {
-  return step === "apply" ? "review" : step;
-}
-
-function wizardSidebarItems(step: WizardStep): SidebarItem[] {
-  const activeIndex = SIDEBAR_STEPS.indexOf(sidebarActiveId(step));
-  return SIDEBAR_STEPS.map((entry, index) => ({
-    id: entry,
-    key: String(index + 1),
-    label: index < activeIndex ? `✓ ${STEP_TITLES[entry]}` : STEP_TITLES[entry],
-  }));
-}
-
-function agentStateLabel(agent: AgentStatus): string {
-  if (!agent.adapterAvailable) return "no adapter";
-  if (!agent.present) return "not found";
-  return agent.configured ? "configured" : "present";
-}
-
-const DETECT_FIXED_COLUMNS_WIDTH = 14 + 1 + 12 + 1 + 2 + 2;
-
-function detectColumns(panelWidth: number): TableColumn<AgentStatus>[] {
-  const detailWidth = Math.max(panelWidth - DETECT_FIXED_COLUMNS_WIDTH, 10);
-  return [
-    { key: "agent", header: "agent", width: 14 },
-    { key: "state", header: "state", width: 12 },
-    { key: "detail", header: "detail", width: detailWidth },
-  ];
-}
-
-function detectCell(row: AgentStatus, key: string): string {
-  switch (key) {
-    case "agent":
-      return AGENT_TITLES[row.id];
-    case "state":
-      return agentStateLabel(row);
-    case "detail":
-      return row.detail;
-    default:
-      return "";
-  }
+/** The Agents checklist row's note: presence/configured state for pi/gentle-shell/Claude Code (always checkable), or why an agent with no adapter yet (Codex/OpenCode, always disabled) can't be. */
+function agentNote(agent: AgentStatus, homeDir: string): string {
+  if (!agent.adapterAvailable) return agent.present ? "no adapter yet" : "not installed";
+  return agent.configured ? `configured (${shortenHome(agent.detail, homeDir)})` : "not configured";
 }
 
 const REVIEW_FIXED_COLUMNS_WIDTH = 30 + 1 + 2 + 2;
@@ -149,17 +133,21 @@ function applyResultLine(result: ApplyResult): string {
   return `${result.outcome} ${result.action.file}${detail}`;
 }
 
-function agentChecklistItems(agents: AgentStatus[], selected: Record<AgentId, boolean>): ChecklistItem[] {
-  return agents.map((agent) => {
-    const disabled = agent.id === "codex" || agent.id === "opencode";
-    return {
-      id: agent.id,
-      label: AGENT_TITLES[agent.id],
-      checked: selected[agent.id] === true,
-      disabled,
-      note: disabled ? "no adapter yet" : undefined,
-    };
-  });
+/**
+ * Detection is folded into the Agents checklist itself (R1): each row's
+ * label already carries the agent's presence/configured state, e.g.
+ * `pi — configured (~/.pi/agent/settings.json)` or `gentle-shell — not
+ * configured`; disabled rows (no adapter yet) read `Codex — no adapter
+ * yet` or `OpenCode — not installed`. `note` is left unset so `Checklist`
+ * never appends its own `(note)` suffix on top.
+ */
+function agentChecklistItems(agents: AgentStatus[], selected: Record<AgentId, boolean>, homeDir: string): ChecklistItem[] {
+  return agents.map((agent) => ({
+    id: agent.id,
+    label: `${AGENT_TITLES[agent.id]} — ${agentNote(agent, homeDir)}`,
+    checked: selected[agent.id] === true,
+    disabled: !agent.adapterAvailable,
+  }));
 }
 
 const HUB_MODE_OPTIONS: RadioOption<HubMode>[] = [
@@ -178,10 +166,15 @@ function healthLine(healthOk: boolean | undefined, checking: boolean): string {
 }
 
 /**
- * `kankaku setup`'s interactive wizard: one full-screen step at a time
- * inside the shared `Layout` frame, driven by `domain/setup-wizard.ts`'s
- * pure reducers. Enter advances (validating first), Esc goes back (quits
- * from Detect, via `onQuit`); `q` quits from anywhere a text field isn't
+ * `kankaku setup`'s interactive wizard: one full-screen step at a time,
+ * driven by `domain/setup-wizard.ts`'s pure reducers. Unlike every other
+ * screen it renders its own header/panel/footer frame directly instead of
+ * `ui/layout.tsx`'s `Layout` — there is no sidebar to show, since the
+ * wizard's progress lives in the panel's own title instead (`panelTitle`,
+ * e.g. `Setup · Agents 1/5`, numbering only the steps this run will
+ * actually show — Claude Code is dropped when it isn't needed). Enter
+ * advances (validating first), Esc goes back (quits from Agents, the
+ * first step, via `onQuit`); `q` quits from anywhere a text field isn't
  * currently capturing keystrokes.
  */
 export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, rows }: SetupWizardProps) {
@@ -234,7 +227,7 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
     }
 
     if (key.escape) {
-      if (state.step === "detect") {
+      if (state.step === "agents") {
         onQuit();
         return;
       }
@@ -264,29 +257,22 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
     }
   });
 
-  const stepTitle = STEP_TITLES[state.step];
   const hints = hintsForStep(state.step);
 
-  return (
-    <Layout
-      columns={columns}
-      rows={rows}
-      headerLeft={`>_ kankaku setup${version ? ` ${version}` : ""}`}
-      sidebarItems={wizardSidebarItems(state.step)}
-      activeId={sidebarActiveId(state.step)}
-      sidebarStats={[]}
-      keyHints={hints}
-      focus="main"
-    >
-      {({ mainWidth, mainHeight }) => (
-        <Panel title={`Setup · ${stepTitle}`} width={mainWidth} height={mainHeight} active>
-          {state.step === "detect" && (
-            <Table columns={detectColumns(mainWidth)} rows={state.agents} rowKey={(row) => row.id} cell={detectCell} emptyText="no agents detected" />
-          )}
+  const { stdout } = useStdout();
+  const width = columns ?? stdout?.columns ?? 80;
+  const height = rows ?? stdout?.rows ?? DEFAULT_ROWS;
+  const mainWidth = width;
+  const mainHeight = Math.max(height - HEADER_ROWS - FOOTER_ROWS, 0);
 
+  return (
+    <Box flexDirection="column" width={width} height={height}>
+      <HeaderBar left={`>_ kankaku setup${version ? ` ${version}` : ""}`} width={width} />
+      <Box flexDirection="column" flexGrow={1} minHeight={0}>
+        <Panel title={panelTitle(state)} width={mainWidth} height={mainHeight} active>
           {state.step === "agents" && (
             <Checklist
-              items={agentChecklistItems(state.agents, state.selected)}
+              items={agentChecklistItems(state.agents, state.selected, facts.homeDir)}
               cursor={agentCursor}
               onToggle={(id) => setState((s) => toggleAgent(s, id as AgentId))}
               onMove={(delta) => setAgentCursor((c) => Math.min(Math.max(c + delta, 0), state.agents.length - 1))}
@@ -379,7 +365,8 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
             </Box>
           )}
         </Panel>
-      )}
-    </Layout>
+      </Box>
+      <KeyHints hints={hints} />
+    </Box>
   );
 }

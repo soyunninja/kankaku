@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   createWizardState,
   guessClaudeCheckout,
+  shortenHome,
   toggleAgent,
   setClaudeCheckout,
   setHubMode,
@@ -29,6 +30,7 @@ function baseFacts(overrides: Partial<WizardFacts> = {}): WizardFacts {
     agentFacts: baseAgentFacts(),
     hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "~/desarrollo/soyun.ninja/kankaku-hub" },
     roots: { current: undefined, defaultRoots: ["/work"], path: "/home/.kankaku/tui.json" },
+    homeDir: "/home",
     ...overrides,
   };
 }
@@ -45,7 +47,7 @@ test("createWizardState: builds agents via detectAgents, in the fixed order", ()
     state.agents.map((a) => a.id),
     ["pi", "gentle-shell", "claude-code", "codex", "opencode"],
   );
-  assert.equal(state.step, "detect");
+  assert.equal(state.step, "agents");
   assert.deepEqual(state.plan, []);
   assert.deepEqual(state.results, []);
   assert.deepEqual(state.errors, {});
@@ -211,11 +213,6 @@ test("setHubLocalManual: acknowledges manual install and clears the checkout err
 
 // ---- next() ----
 
-test("next: detect -> agents", () => {
-  const state = stateAt("detect");
-  assert.equal(next(state, baseFacts()).step, "agents");
-});
-
 test("next: agents -> claude when Claude is selected and not configured", () => {
   const facts = baseFacts();
   const state = toggleAgent(stateAt("agents", {}, facts), "claude-code");
@@ -352,8 +349,8 @@ test("next: done is terminal", () => {
 
 // ---- back() ----
 
-test("back: agents -> detect", () => {
-  assert.equal(back(stateAt("agents")).step, "detect");
+test("back: agents is a no-op (first step)", () => {
+  assert.equal(back(stateAt("agents")).step, "agents");
 });
 
 test("back: claude -> agents", () => {
@@ -377,10 +374,6 @@ test("back: roots -> hub", () => {
 
 test("back: review -> roots", () => {
   assert.equal(back(stateAt("review")).step, "roots");
-});
-
-test("back: detect is a no-op", () => {
-  assert.equal(back(stateAt("detect")).step, "detect");
 });
 
 test("back: apply is a no-op", () => {
@@ -528,11 +521,13 @@ test("applyResult: keeps prior results and appends in order", () => {
 
 // ---- hintsForStep ----
 
-test("hintsForStep: agents includes toggle, move, next, back and quit", () => {
+test("hintsForStep: agents (first step) includes toggle, move, next and quit, no back", () => {
   const hints = hintsForStep("agents");
   const keys = hints.map((h) => h.key);
   assert.equal(keys.includes("space"), true);
+  assert.equal(keys.includes("enter"), true);
   assert.equal(keys.includes("q"), true);
+  assert.equal(keys.includes("esc"), false);
 });
 
 test("hintsForStep: apply has no back/next, only quit", () => {
@@ -548,4 +543,22 @@ test("hintsForStep: review offers apply instead of next", () => {
 test("hintsForStep: done offers to open the dashboard", () => {
   const hints = hintsForStep("done");
   assert.equal(hints.some((h) => h.label === "open dashboard"), true);
+});
+
+// ---- shortenHome ----
+
+test("shortenHome: replaces a homeDir prefix with '~'", () => {
+  assert.equal(shortenHome("/home/.pi/agent/settings.json", "/home"), "~/.pi/agent/settings.json");
+});
+
+test("shortenHome: the home directory itself becomes '~'", () => {
+  assert.equal(shortenHome("/home", "/home"), "~");
+});
+
+test("shortenHome: a path outside homeDir is returned unchanged", () => {
+  assert.equal(shortenHome("/other/place", "/home"), "/other/place");
+});
+
+test("shortenHome: a sibling directory that merely shares the homeDir prefix is not shortened", () => {
+  assert.equal(shortenHome("/homework/file", "/home"), "/homework/file");
 });

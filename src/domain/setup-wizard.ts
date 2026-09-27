@@ -8,7 +8,7 @@
 import { detectAgents } from "./setup-plan.ts";
 import type { AgentDetectionFacts, AgentId, AgentStatus } from "./setup-plan.ts";
 
-export type WizardStep = "detect" | "agents" | "claude" | "hub" | "roots" | "review" | "apply" | "done";
+export type WizardStep = "agents" | "claude" | "hub" | "roots" | "review" | "apply" | "done";
 
 export type HubMode = "existing" | "local" | "skip";
 
@@ -77,6 +77,8 @@ export interface WizardFacts {
   agentFacts: AgentDetectionFacts;
   hub: WizardHubFacts;
   roots: WizardRootsFacts;
+  /** The user's home directory, used only to shorten a displayed file path with `~` (see {@link shortenHome}). */
+  homeDir: string;
 }
 
 export interface WizardKeyHint {
@@ -91,6 +93,20 @@ export function guessClaudeCheckout(statusLineCommand: string | undefined): stri
   if (!statusLineCommand) return "";
   const match = CLAUDE_STATUS_LINE_RE.exec(statusLineCommand);
   return match ? match[1]! : "";
+}
+
+/**
+ * Shorten `path` for display by replacing a leading `homeDir` with `~`.
+ * Only a real path-boundary match counts (`homeDir` itself, or `homeDir`
+ * followed by `/`) — a sibling directory that merely shares the prefix
+ * (e.g. `/homework` vs `/home`) is left unchanged. `path` is returned as-is
+ * when it doesn't start under `homeDir`.
+ */
+export function shortenHome(path: string, homeDir: string): string {
+  if (homeDir === "") return path;
+  if (path === homeDir) return "~";
+  if (path.startsWith(`${homeDir}/`)) return `~${path.slice(homeDir.length)}`;
+  return path;
 }
 
 function clearError(errors: WizardState["errors"], key: WizardErrorKey): WizardState["errors"] {
@@ -112,7 +128,7 @@ export function createWizardState(facts: WizardFacts): WizardState {
   const selected = Object.fromEntries(agents.map((agent) => [agent.id, agent.configured])) as Record<AgentId, boolean>;
 
   return {
-    step: "detect",
+    step: "agents",
     agents,
     selected,
     claudeCheckout: guessClaudeCheckout(facts.agentFacts.claudeCode?.statusLineCommand),
@@ -131,8 +147,8 @@ export function createWizardState(facts: WizardFacts): WizardState {
   };
 }
 
-/** Whether the Claude Code step should be shown: Claude is selected and not already configured. */
-function claudeStepNeeded(state: WizardState): boolean {
+/** Whether the Claude Code step should be shown: Claude is selected and not already configured. Exported so `ui/setup/wizard-screen.tsx` can number only the steps that will actually be shown for this run. */
+export function claudeStepNeeded(state: WizardState): boolean {
   const claude = state.agents.find((agent) => agent.id === "claude-code");
   return state.selected["claude-code"] === true && claude !== undefined && !claude.configured;
 }
@@ -255,9 +271,6 @@ export function planFromWizard(state: WizardState, facts: WizardFacts): WizardAc
 /** Advance from the current step: validates it, sets `errors` and stays when invalid, otherwise moves on. */
 export function next(state: WizardState, facts: WizardFacts): WizardState {
   switch (state.step) {
-    case "detect":
-      return { ...state, step: "agents", errors: {} };
-
     case "agents":
       return { ...state, step: claudeStepNeeded(state) ? "claude" : "hub", errors: {} };
 
@@ -295,13 +308,11 @@ export function next(state: WizardState, facts: WizardFacts): WizardState {
   }
 }
 
-/** Move back to the previous step, mirroring `next`'s claude-step skip. Terminal/first steps (`detect`, `apply`, `done`) are no-ops. */
+/** Move back to the previous step, mirroring `next`'s claude-step skip. Terminal/first steps (`agents`, `apply`, `done`) are no-ops. */
 export function back(state: WizardState): WizardState {
   switch (state.step) {
-    case "detect":
-      return state;
     case "agents":
-      return { ...state, step: "detect", errors: {} };
+      return state;
     case "claude":
       return { ...state, step: "agents", errors: {} };
     case "hub":
@@ -325,10 +336,9 @@ export function applyResult(state: WizardState, result: ApplyResult): WizardStat
 export function hintsForStep(step: WizardStep): WizardKeyHint[] {
   const quit: WizardKeyHint = { key: "q", label: "quit" };
   switch (step) {
-    case "detect":
-      return [{ key: "enter", label: "next" }, quit];
     case "agents":
-      return [{ key: "space", label: "toggle" }, { key: "↑↓", label: "move" }, { key: "enter", label: "next" }, { key: "esc", label: "back" }, quit];
+      // The first step: esc quits (handled by the caller), so it isn't hinted as "back" here.
+      return [{ key: "space", label: "toggle" }, { key: "↑↓", label: "move" }, { key: "enter", label: "next" }, quit];
     case "claude":
       return [{ key: "enter", label: "next" }, { key: "esc", label: "back" }, quit];
     case "hub":
