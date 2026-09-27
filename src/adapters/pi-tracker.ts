@@ -12,11 +12,13 @@ import type { WorkLog } from "../ports/work-log.ts";
 import { createSessionClient } from "./session-client.ts";
 import { readNonDefaultSessionDir } from "./session-dir.ts";
 import type { SessionTarget } from "./session-target.ts";
+import type { HubAssign } from "./hub-assign.ts";
 import { createStatusBar } from "./status-bar.ts";
 import { appendReportEntry, notifyError, registerKankakuCommand } from "./kankaku-command.ts";
 import type { KankakuCommandDeps, SyncCommandDeps } from "./kankaku-command.ts";
 import { openKankakuPanel } from "./panel/kankaku-panel.ts";
 import { createAboutScreen } from "./panel/screens/about.ts";
+import { createAssignScreen } from "./panel/screens/assign.ts";
 import { createDoctorScreen } from "./panel/screens/doctor.ts";
 import { createExportScreen } from "./panel/screens/export.ts";
 import { createReportScreen } from "./panel/screens/report.ts";
@@ -117,6 +119,13 @@ export interface PiTrackerDeps {
   hubConfigError?: string;
   /** Present only when the hub is configured; forwarded to `/kankaku sync [all|status]` and `/kankaku backfill`. */
   sync?: SyncCommandDeps;
+  /**
+   * Present only when the hub is configured; forwarded to `/kankaku assign`
+   * so a mis-assigned `task_entries` row can be moved from pi without opening
+   * the hub's web app. See `adapters/hub-assign.ts` and
+   * `kankaku-command.ts#KankakuCommandDeps.hubAssign`.
+   */
+  hubAssign?: HubAssign;
   /** Forwarded to `/kankaku doctor`; see `kankaku-command.ts#KankakuCommandDeps.registryHealth`. */
   registryHealth?: () => RegistryClassification;
   /** Forwarded to `/kankaku doctor` (F2); see `kankaku-command.ts#KankakuCommandDeps.ancestorDetectionAvailable`. */
@@ -302,6 +311,7 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
     sessionTarget: deps.sessionTarget,
     catalog: deps.catalog,
     sync: deps.sync,
+    hubAssign: deps.hubAssign,
     registryHealth: deps.registryHealth,
     ancestorDetectionAvailable: deps.ancestorDetectionAvailable,
     roleOverride: deps.roleOverride,
@@ -361,6 +371,16 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
                   refreshIdleStatus,
                   pinReport: (report) => appendReportEntry(pi, ctx, report),
                 }),
+              }
+            : {}),
+          // Present only when the hub is configured — mirrors `sync`'s own
+          // hub-only root-menu row (`domain/panel-model.ts#rootMenu`). Wired
+          // with the same `hubAssign`/`catalog` deps `/kankaku assign`
+          // receives (`commandDeps` above), so panel and subcommand share
+          // one hub reader and one catalog snapshot source.
+          ...(deps.hubAssign
+            ? {
+                assign: createAssignScreen({ hubAssign: deps.hubAssign, catalog: deps.catalog }),
               }
             : {}),
           export: createExportScreen({

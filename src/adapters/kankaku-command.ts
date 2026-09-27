@@ -2,6 +2,8 @@ import type { AutocompleteItem } from "@earendil-works/pi-tui";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { isValidClient } from "../domain/client-label.ts";
+import { resolveHubAssignment } from "../domain/hub-assign.ts";
+import type { HubAssignResolution } from "../domain/hub-assign.ts";
 import { detectSameProcessOverlaps, orphanSubagents, uncertainRecords } from "../domain/task-view.ts";
 import { formatWorkTargetLabel } from "../domain/work-target.ts";
 import { findAmbiguousToolNames } from "../domain/subagent-profile.ts";
@@ -9,9 +11,19 @@ import type { SubagentProfile } from "../domain/subagent-profile.ts";
 import type { RejectedChildEnvMarker } from "../config.ts";
 import type { SyncState } from "../domain/sync-plan.ts";
 import type { RegistryClassification } from "../domain/registry-health.ts";
-import type { Catalog } from "../ports/catalog.ts";
+import type { Catalog, CatalogSnapshot } from "../ports/catalog.ts";
 import type { WorkLog } from "../ports/work-log.ts";
-import { buildSyncStatusLines, formatBackfillLines, formatCatalogRefreshLines, formatSyncSummaryLines } from "./hub-actions.ts";
+import {
+  ASSIGN_NO_PROJECT_LABEL,
+  buildSyncStatusLines,
+  describeAssignFailure,
+  formatAssignResultLines,
+  formatAssignRowLabel,
+  formatBackfillLines,
+  formatCatalogRefreshLines,
+  formatSyncSummaryLines,
+} from "./hub-actions.ts";
+import type { HubAssign } from "./hub-assign.ts";
 import { buildClientsView, buildExportContent, buildProjectsView, buildSessionsView, buildSummaryView, buildTasksView } from "./report-views.ts";
 import type { SyncSummary, SyncTrigger } from "./sync-runner.ts";
 import type { SessionClient } from "./session-client.ts";
@@ -196,7 +208,24 @@ export function buildDoctorLines(deps: KankakuCommandDeps, ctx: ExtensionContext
 
 const COMMAND_TOKENS = ["all", "tasks", "sessions", "client", "clients", "export", "doctor"];
 /** Only offered when the hub is configured, so completions are unchanged for users without one. */
-const HUB_COMMAND_TOKENS = ["target", "task", "projects", "catalog", "sync", "backfill"];
+const HUB_COMMAND_TOKENS = ["target", "task", "projects", "catalog", "sync", "backfill", "assign"];
+
+/**
+ * `label -> item` options sorted by name, for the interactive assign
+ * pickers. A name collision is disambiguated with ` (code)`, mirroring
+ * `target-picker.ts`'s private `labelOptions` (not exported, so this is a
+ * small self-contained equivalent rather than a reach for a private helper).
+ */
+function hubLabelOptions<T extends { name: string; code?: string }>(items: T[]): Array<{ label: string; item: T }> {
+  const sorted = [...items].sort((a, b) => a.name.localeCompare(b.name));
+  const nameCounts = new Map<string, number>();
+  for (const item of sorted) nameCounts.set(item.name, (nameCounts.get(item.name) ?? 0) + 1);
+  return sorted.map((item) => {
+    const collides = (nameCounts.get(item.name) ?? 0) > 1;
+    return { label: collides && item.code ? `${item.name} (${item.code})` : item.name, item };
+  });
+}
+
 const TARGET_TOKENS = ["pick", "clear"];
 const TASK_TOKENS = ["pick", "clear"];
 const CATALOG_TOKENS = ["refresh"];
@@ -241,6 +270,13 @@ export interface KankakuCommandDeps {
   catalog?: Catalog;
   /** Present only when the hub is configured. Drives `/kankaku sync [all|status]` and `/kankaku backfill`. */
   sync?: SyncCommandDeps;
+  /**
+   * Present only when the hub is configured. Drives `/kankaku assign`: move
+   * an already-synced `task_entries` row's `client`/`project` without opening
+   * the web app. Never sends any other field — see README "Hub
+   * (PocketBase)" > "Assignment is create-only".
+   */
+  hubAssign?: HubAssign;
   /**
    * Read-only machine-wide process-registry health snapshot (see
    * `adapters/machine-process-registry.ts#health`), for `/kankaku doctor`
@@ -569,6 +605,165 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
   }
 
   /**
+   * PATCH `taskId`'s `{ client, project }` pair and report the outcome, or
+   * notify as an error when the row is no longer in the hub. Shared by the
+   * direct and interactive forms of `/kankaku assign`.
+   */
+  async function runAssign(
+    hubAssign: HubAssign,
+    taskId: string,
+    resolution: Extract<HubAssignResolution, { kind: "resolved" }>,
+    ctx: ExtensionContext,
+  ): Promise<void> {
+    const outcome = await hubAssign.assign(taskId, resolution.payload);
+    if (outcome.kind === "not-found") {
+      notifyError(ctx, new Error(`no synced task entry with task_id ${taskId}`));
+      return;
+    }
+
+    showReport(ctx, {
+      title: "assign",
+      lines: formatAssignResultLines({
+        taskId,
+        client: resolution.client,
+        ...(resolution.project !== undefined ? { project: resolution.project } : {}),
+      }),
+    });
+  }
+
+  /**
+   * Resolve `/kankaku assign`'s `<n|task_id>` selector: a bare number indexes
+   * the most recent synced rows (1-based, as shown by the interactive
+   * picker); anything else is treated as a `task_id` and looked up directly
+   * (a record id is a UUID — `domain/work-tracker.ts#randomUUID` — so a bare
+   * number can never be a real one). Notifies (and returns `undefined`) when
+   * the position is out of range.
+   */
+  async function resolveAssignSelector(hubAssign: HubAssign, selector: string, ctx: ExtensionContext): Promise<string | undefined> {
+    if (!/^\d+$/.test(selector)) return selector;
+
+    const rows = await hubAssign.listRecent();
+    const row = rows[Number(selector) - 1];
+    if (!row) {
+      notifyError(ctx, new Error(`no synced task entry at position ${selector} (${rows.length} available)`));
+      return undefined;
+    }
+    return row.taskId;
+  }
+
+  /** `/kankaku assign`'s no-argument flow: pick a row, then the client, then the project; every step reports through the UI. */
+  async function runInteractiveAssign(hubAssign: HubAssign, snapshot: CatalogSnapshot, ctx: ExtensionContext): Promise<void> {
+    if (!ctx.hasUI) {
+      notifyError(ctx, new Error("assign expects <n|task_id> <client> <project>"));
+      return;
+    }
+
+    const rows = await hubAssign.listRecent();
+    if (rows.length === 0) {
+      notifyError(ctx, new Error("no synced task entries found"));
+      return;
+    }
+
+    const rowOptions = rows.map((row, index) => ({ label: formatAssignRowLabel(row, index + 1, snapshot), row }));
+    const rowChoice = await ctx.ui.select("kankaku — task entry", rowOptions.map((option) => option.label));
+    const row = rowChoice !== undefined ? rowOptions.find((option) => option.label === rowChoice)?.row : undefined;
+    if (!row) {
+      showReport(ctx, { title: "assign", lines: ["assignment cancelled"] });
+      return;
+    }
+
+    const clientOptions = hubLabelOptions(snapshot.clients.filter((client) => client.active && !client.unassigned));
+    if (clientOptions.length === 0) {
+      notifyError(ctx, new Error("no assignable client in the catalog"));
+      return;
+    }
+    const clientChoice = await ctx.ui.select("kankaku — client", clientOptions.map((option) => option.label));
+    const client = clientChoice !== undefined ? clientOptions.find((option) => option.label === clientChoice)?.item : undefined;
+    if (!client) {
+      showReport(ctx, { title: "assign", lines: ["assignment cancelled"] });
+      return;
+    }
+
+    const projectOptions = hubLabelOptions(snapshot.projects.filter((project) => project.active && project.clientId === client.id));
+    const projectChoice = await ctx.ui.select("kankaku — project", [
+      ...projectOptions.map((option) => option.label),
+      ASSIGN_NO_PROJECT_LABEL,
+    ]);
+    if (projectChoice === undefined) {
+      showReport(ctx, { title: "assign", lines: ["assignment cancelled"] });
+      return;
+    }
+    const project =
+      projectChoice === ASSIGN_NO_PROJECT_LABEL ? undefined : projectOptions.find((option) => option.label === projectChoice)?.item;
+    if (projectChoice !== ASSIGN_NO_PROJECT_LABEL && !project) {
+      showReport(ctx, { title: "assign", lines: ["assignment cancelled"] });
+      return;
+    }
+
+    // Same resolver as the direct form, fed by code (falling back to name),
+    // so the two paths can never build a different payload.
+    const resolution = resolveHubAssignment(
+      snapshot,
+      client.code || client.name,
+      project !== undefined ? project.code || project.name : undefined,
+    );
+    if (resolution.kind !== "resolved") {
+      notifyError(ctx, new Error(describeAssignFailure(resolution)));
+      return;
+    }
+
+    await runAssign(hubAssign, row.taskId, resolution, ctx);
+  }
+
+  /**
+   * Handle `/kankaku assign [<n|task_id> <client> <project>]`; `rest`
+   * excludes the leading `assign` token. With no arguments it is
+   * interactive: pick a synced `task_entries` row, then the client, then the
+   * project. With arguments it opens no dialog at all, and the project is
+   * **required** there: clearing the relation is only ever reached through
+   * the interactive form's explicit "(no project)" option, never by omitting
+   * an argument and silently dropping a project someone meant to keep. Only
+   * the row's `client`/`project` pair is ever written — a re-sync never
+   * touches it again (README "Hub (PocketBase)" > "Assignment is
+   * create-only").
+   */
+  async function handleAssignCommand(rest: string[], ctx: ExtensionContext): Promise<void> {
+    const hubAssign = deps.hubAssign;
+    if (!hubAssign) {
+      notifyError(ctx, new Error("hub is not configured"));
+      return;
+    }
+
+    if (rest.length > 0 && rest.length !== 3) {
+      notifyError(ctx, new Error("assign expects <n|task_id> <client> <project>"));
+      return;
+    }
+
+    const snapshot = deps.catalog?.read();
+    if (!snapshot) {
+      notifyError(ctx, new Error("catalog unavailable; run '/kankaku catalog refresh'"));
+      return;
+    }
+
+    if (rest.length === 0) {
+      await runInteractiveAssign(hubAssign, snapshot, ctx);
+      return;
+    }
+
+    const [selector, clientReference, projectReference] = rest;
+    const taskId = await resolveAssignSelector(hubAssign, selector, ctx);
+    if (taskId === undefined) return;
+
+    const resolution = resolveHubAssignment(snapshot, clientReference, projectReference);
+    if (resolution.kind !== "resolved") {
+      notifyError(ctx, new Error(describeAssignFailure(resolution)));
+      return;
+    }
+
+    await runAssign(hubAssign, taskId, resolution, ctx);
+  }
+
+  /**
    * Handle `/kankaku doctor`: builds the lines (shared with the panel's
    * doctor screen — see {@link buildDoctorLines}) and shows them as the
    * durable report.
@@ -605,7 +800,8 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       "'task clear' to drop the link, " +
       "'catalog refresh' to force a catalog refresh, 'projects' for per-project totals today ('projects all' for every day), " +
       "'sync' to push pending tasks to the hub ('sync all' for a full re-evaluation, 'sync status' for the watermark/pending count/last error), " +
-      "'backfill' to run a full sync and report how many tasks went to Sin determinar, grouped by their old label. " +
+      "'backfill' to run a full sync and report how many tasks went to Sin determinar, grouped by their old label, " +
+      "'assign' to move an already-synced task entry to another client/project ('assign <n|task_id> <client> <project>' to skip the dialogs). " +
       "With a hub configured, 'client <name>' instead validates against the catalog (code or name) and sets the target.",
     getArgumentCompletions: (argumentPrefix: string): AutocompleteItem[] => {
       const clientMatch = /^client\s+(\S*)$/.exec(argumentPrefix);
@@ -674,6 +870,11 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
 
         if (tokens[0] === "backfill") {
           await handleBackfillCommand(ctx);
+          return;
+        }
+
+        if (tokens[0] === "assign") {
+          await handleAssignCommand(tokens.slice(1), ctx);
           return;
         }
 

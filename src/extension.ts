@@ -13,6 +13,7 @@ import { resolveHubCredentials, safeHomeDir } from "./adapters/hub-credentials.t
 import { PocketBaseClient } from "./adapters/pocketbase-client.ts";
 import { createPocketBaseCatalogFetcher } from "./adapters/pocketbase-catalog.ts";
 import { CachedCatalog } from "./adapters/cached-catalog.ts";
+import { createHubAssign } from "./adapters/hub-assign.ts";
 import { createSessionTarget } from "./adapters/session-target.ts";
 import { resolveKankakuDir, resolveWritableTarget } from "./adapters/kankaku-dir.ts";
 import { SyncStateStore } from "./adapters/sync-state-store.ts";
@@ -27,6 +28,7 @@ import { getProcessIdentityMemo } from "./adapters/process-identity-memo.ts";
 import { resolveAgentVersion, resolvePluginVersion } from "./adapters/agent-info.ts";
 import type { Catalog } from "./ports/catalog.ts";
 import type { SessionTarget } from "./adapters/session-target.ts";
+import type { HubAssign } from "./adapters/hub-assign.ts";
 import type { SyncCommandDeps } from "./adapters/kankaku-command.ts";
 import type { WorkLog } from "./ports/work-log.ts";
 import type { InflightStore } from "./ports/inflight-store.ts";
@@ -183,6 +185,7 @@ export default function kankaku(pi: ExtensionAPI): void {
   let machine: string | undefined;
   let hubConfigError: string | undefined;
   let sync: SyncCommandDeps | undefined;
+  let hubAssign: HubAssign | undefined;
   let autoSyncEnabled: boolean | undefined;
   let hubUrl: string | undefined;
 
@@ -276,6 +279,12 @@ export default function kankaku(pi: ExtensionAPI): void {
       status: () => computeSyncStatus(log, syncStateStore, credentials.url, syncConfig.windowHours),
     };
     autoSyncEnabled = syncConfig.auto;
+
+    // `/kankaku assign` (README "Hub (PocketBase)" > "Assignment is
+    // create-only"): moves a mis-assigned row from pi instead of the web
+    // app. Read/assign only — the sync path above is untouched, and this
+    // adapter can never send a field outside the `{ client, project }` pair.
+    hubAssign = createHubAssign({ client });
   }
 
   createPiTracker(pi, {
@@ -313,6 +322,7 @@ export default function kankaku(pi: ExtensionAPI): void {
     ...(machine !== undefined ? { machine } : {}),
     ...(hubConfigError !== undefined ? { hubConfigError } : {}),
     ...(sync !== undefined ? { sync } : {}),
+    ...(hubAssign !== undefined ? { hubAssign } : {}),
     ...(autoSyncEnabled !== undefined ? { autoSyncEnabled } : {}),
     config,
     kankakuDir: resolvedDir,

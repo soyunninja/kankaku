@@ -3,6 +3,19 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **`/kankaku assign`**: move an already-synced `task_entries` row to
+  another client/project — the one assignment a re-sync deliberately never
+  touches, so until now a mis-assigned row could only be moved in the hub's
+  web app. Interactive (row, client, project, with `(no project)` to clear
+  the relation) or direct (`<n|task_id> <client> <project>`, where the
+  project is required), plus an **Assign** screen in the `/kankaku` panel
+  that shares the resolver and the wording with the subcommand. Only the
+  row's `client`/`project` pair is ever written.
+
 ## 0.7.1 — 2026-09-25
 
 ### Changed

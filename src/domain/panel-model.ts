@@ -2,14 +2,15 @@
  * Pure model for the `/kankaku` panel (see odd/tasks/kankaku-panel.md): the
  * set of screens, the root menu, an immutable navigation stack, the
  * title/footer-hint text every adapter screen renders from, and pure row
- * builders (e.g. {@link buildTargetRows}) that turn kankaku state into row
+ * builders (e.g. {@link buildTargetRows}, {@link buildAssignRows}) that turn
+ * kankaku state into row
  * models for a screen's `SettingsList`. No I/O, no pi imports — see
  * AGENTS.md "Architecture (hexagonal)".
  */
 
-import type { WorkTarget } from "./work-target.ts";
+import type { Client, Project, WorkTarget } from "./work-target.ts";
 
-export type PanelScreenId = "root" | "target" | "report" | "sync" | "export" | "doctor" | "about";
+export type PanelScreenId = "root" | "target" | "report" | "sync" | "assign" | "export" | "doctor" | "about";
 
 /** One row of the root menu (`rootMenu`): a section the panel can navigate to. */
 export interface PanelMenuItem {
@@ -26,16 +27,17 @@ const ROOT_MENU_ITEMS: PanelMenuItem[] = [
   { id: "target", label: "Target", description: "Billing client, project, hub task, legacy label", hubOnly: false },
   { id: "report", label: "Report", description: "Today/all totals, tasks, sessions, clients, projects", hubOnly: false },
   { id: "sync", label: "Sync", description: "Status, sync now, sync all, backfill, catalog refresh", hubOnly: true },
+  { id: "assign", label: "Assign", description: "Move a synced task entry to another client/project", hubOnly: true },
   { id: "export", label: "Export", description: "Write today's or every task as csv/json", hubOnly: false },
   { id: "doctor", label: "Doctor", description: "Orphan/uncertain subagent counts, ancestor detection", hubOnly: false },
   { id: "about", label: "About", description: "Versions, KANKAKU_DIR, env-only config", hubOnly: false },
 ];
 
 /**
- * The root menu's rows, in a fixed order. `hubOnly` rows (only `sync`;
- * `target` is not hub-only — see `ROOT_MENU_ITEMS`'s comment) are omitted
- * entirely when the hub is not configured, so the panel offers exactly what
- * `/kankaku` itself would today.
+ * The root menu's rows, in a fixed order. `hubOnly` rows (only `sync` and
+ * `assign`; `target` is not hub-only — see `ROOT_MENU_ITEMS`'s comment) are
+ * omitted entirely when the hub is not configured, so the panel offers
+ * exactly what `/kankaku` itself would today.
  */
 export function rootMenu(options: { hubConfigured: boolean }): PanelMenuItem[] {
   return ROOT_MENU_ITEMS.filter((item) => options.hubConfigured || !item.hubOnly);
@@ -78,6 +80,7 @@ const SCREEN_TITLES: Record<Exclude<PanelScreenId, "root">, string> = {
   target: "Target",
   report: "Report",
   sync: "Sync",
+  assign: "Assign",
   export: "Export",
   doctor: "Doctor",
   about: "About",
@@ -206,6 +209,81 @@ export function buildTargetRows(input: TargetRowsInput): PanelRow[] {
   });
 
   return rows;
+}
+
+/**
+ * One synced `task_entries` row offered by the assign screen's task-entry
+ * submenu, already labelled by the caller with
+ * `adapters/hub-actions.ts#formatAssignRowLabel` (the same label the
+ * `/kankaku assign` picker shows), so this module never reaches for a
+ * catalog or a hub.
+ */
+export interface AssignRowOption {
+  taskId: string;
+  /** The row's rendered label, its trailing `[<task_id>]` included. */
+  label: string;
+}
+
+/**
+ * Pure input for {@link buildAssignRows}: every field is state the caller
+ * (`adapters/panel/screens/assign.ts`) has **already** read — the synced
+ * rows from `HubAssign#listRecent()` and the catalog snapshot's clients and
+ * projects. This function performs no I/O and never touches the hub.
+ */
+export interface AssignRowsInput {
+  /** The synced rows `HubAssign#listRecent()` returned, already labelled (see {@link AssignRowOption}). */
+  syncedRows: AssignRowOption[];
+  /** Every client the caller deems assignable (active, never "Sin determinar"). */
+  clients: Client[];
+  /** The projects of the chosen client, when one is chosen. */
+  projects: Project[];
+  selectedTaskId?: string;
+  selectedClientId?: string;
+  selectedProjectId?: string;
+}
+
+/**
+ * Build the assign screen's four rows — `task-entry`, `client`, `project`
+ * and `assign` — from the already-read synced rows and catalog snapshot.
+ *
+ * The `project` row carries the "pick a client first" hint only while no
+ * client is chosen (mirroring {@link buildTargetRows}), and an unresolved
+ * selection always falls back to `— none —` so a stale id can never render
+ * a name that no longer exists.
+ */
+export function buildAssignRows(input: AssignRowsInput): PanelRow[] {
+  const task = input.syncedRows.find((row) => row.taskId === input.selectedTaskId);
+  const client = input.clients.find((candidate) => candidate.id === input.selectedClientId);
+  const project =
+    client !== undefined
+      ? input.projects.find((candidate) => candidate.id === input.selectedProjectId && candidate.clientId === client.id)
+      : undefined;
+
+  return [
+    {
+      id: "task-entry",
+      label: "Task entry",
+      value: task?.label ?? NONE_VALUE,
+      description: "the synced task entry to reassign",
+    },
+    {
+      id: "client",
+      label: "Client",
+      value: client !== undefined ? `${client.name} (${client.code})` : NONE_VALUE,
+    },
+    {
+      id: "project",
+      label: "Project",
+      value: project?.name ?? NONE_VALUE,
+      ...(client === undefined ? { description: "pick a client first" } : {}),
+    },
+    {
+      id: "assign",
+      label: "Assign",
+      value: "write client/project to the hub",
+      description: "PATCHes only the row's client/project pair",
+    },
+  ];
 }
 
 /**

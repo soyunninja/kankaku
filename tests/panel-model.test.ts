@@ -18,12 +18,13 @@ test("rootMenu lists every screen, in order, when the hub is configured", () => 
   const items = rootMenu({ hubConfigured: true });
   assert.deepEqual(
     items.map((item) => item.id),
-    ["target", "report", "sync", "export", "doctor", "about"],
+    ["target", "report", "sync", "assign", "export", "doctor", "about"],
   );
   // target is NOT hub-only: the legacy `/kankaku client <name>` label lives on
   // this same screen and works with no hub configured at all.
   assert.equal(items.find((item) => item.id === "target")!.hubOnly, false);
   assert.equal(items.find((item) => item.id === "sync")!.hubOnly, true);
+  assert.equal(items.find((item) => item.id === "assign")!.hubOnly, true);
   assert.equal(items.find((item) => item.id === "report")!.hubOnly, false);
   assert.equal(items.find((item) => item.id === "export")!.hubOnly, false);
   assert.equal(items.find((item) => item.id === "doctor")!.hubOnly, false);
@@ -81,6 +82,7 @@ test("panelTitle renders '>_ kankaku' at root and '>_ kankaku · <Screen>' elsew
     target: ">_ kankaku · Target",
     report: ">_ kankaku · Report",
     sync: ">_ kankaku · Sync",
+    assign: ">_ kankaku · Assign",
     export: ">_ kankaku · Export",
     doctor: ">_ kankaku · Doctor",
     about: ">_ kankaku · About",
@@ -131,6 +133,14 @@ test("footerHints on a non-root screen includes the search hint when searchable"
   assert.deepEqual(
     hints.map((hint) => hint.key),
     ["↑↓", "enter", "/", "esc/←", "q"],
+  );
+});
+
+test("footerHints on the assign screen matches every other non-root screen", () => {
+  const hints = footerHints("assign", { searchable: false });
+  assert.deepEqual(
+    hints.map((hint) => hint.key),
+    ["↑↓", "enter", "esc/←", "q"],
   );
 });
 

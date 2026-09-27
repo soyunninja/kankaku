@@ -6,6 +6,7 @@ import { BUILTIN_SUBAGENT_PROFILES, buildConfiguredProfile } from "../src/domain
 import type { SubagentProfile } from "../src/domain/subagent-profile.ts";
 import type { SyncState } from "../src/domain/sync-plan.ts";
 import type { SyncSummary } from "../src/adapters/sync-runner.ts";
+import type { HubAssign, HubAssignOutcome, SyncedTaskEntryRow } from "../src/adapters/hub-assign.ts";
 import type { SessionClient } from "../src/adapters/session-client.ts";
 import { createSessionTarget } from "../src/adapters/session-target.ts";
 import type { ClientSourceName } from "../src/domain/client-label.ts";
@@ -795,7 +796,7 @@ test("getArgumentCompletions includes target/projects/catalog only when the hub 
   const tokens = (await pi.commands.get("kankaku")!.getArgumentCompletions!("")) as Array<{ value: string }>;
   assert.deepEqual(
     tokens.map((t) => t.value).sort(),
-    ["all", "backfill", "catalog", "client", "clients", "doctor", "export", "projects", "sessions", "sync", "target", "task", "tasks"],
+    ["all", "assign", "backfill", "catalog", "client", "clients", "doctor", "export", "projects", "sessions", "sync", "target", "task", "tasks"],
   );
 });
 
@@ -1376,4 +1377,404 @@ test("getArgumentCompletions offers 'all'/'status' after 'sync '", async () => {
     completions.map((c) => c.value),
     ["all", "status"],
   );
+});
+
+const ASSIGN_SNAPSHOT: CatalogSnapshot = {
+  fetchedAt: 0,
+  url: "https://pb.example.com",
+  clients: [
+    { id: "c-acme", name: "Acme", code: "acme", active: true },
+    { id: "c-globex", name: "Globex", code: "globex", active: true },
+  ],
+  projects: [
+    { id: "p-portal", name: "Portal", code: "portal", clientId: "c-acme", repoPaths: [], active: true },
+    { id: "p-app", name: "App", code: "app", clientId: "c-globex", repoPaths: [], active: true },
+  ],
+};
+
+const ASSIGN_ROW_LABEL = "1. 2026-01-02 10:00:00.000Z — Acme · Portal — hello [task-1]";
+const ASSIGN_NO_PROJECT_LABEL = "(no project)";
+
+class FakeHubAssign implements HubAssign {
+  rows: SyncedTaskEntryRow[] = [];
+  listCalls = 0;
+  assignCalls: Array<{ taskId: string; payload: { client: string; project: string } }> = [];
+  assignOutcome: HubAssignOutcome = { kind: "assigned", recordId: "rec-1" };
+
+  async listRecent(_limit?: number): Promise<SyncedTaskEntryRow[]> {
+    this.listCalls += 1;
+    return this.rows;
+  }
+
+  async assign(taskId: string, payload: { client: string; project: string }): Promise<HubAssignOutcome> {
+    this.assignCalls.push({ taskId, payload });
+    return this.assignOutcome;
+  }
+}
+
+function assignCtx(overrides: Record<string, unknown> = {}): ExtensionContext {
+  return makeCtx(overrides);
+}
+
+test("'assign <n> <client> <project>' reassigns the row at that position with no dialog", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  hubAssign.rows = [
+    { id: "rec-1", taskId: "task-1", client: "c-acme", project: "p-portal" },
+    { id: "rec-2", taskId: "task-2", client: "c-acme", project: "p-portal" },
+  ];
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  let selectCalls = 0;
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands.get("kankaku")!.handler(
+    "assign 2 globex app",
+    assignCtx({ ui: { notify: () => {}, setStatus: () => {}, select: async () => (selectCalls += 1, undefined) } }),
+  );
+
+  assert.deepEqual(hubAssign.assignCalls, [{ taskId: "task-2", payload: { client: "c-globex", project: "p-app" } }]);
+  assert.equal(selectCalls, 0);
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.equal(data.title, "assign");
+  assert.deepEqual(data.lines, ["assigned task-2 to Globex (globex) · App"]);
+});
+
+test("'assign <task_id> <client>' notifies a usage error and never writes (the direct form requires a project)", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign task-9 GLOBEX",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.equal(notified[0]?.type, "error");
+  assert.match(notified[0]?.message ?? "", /assign expects/);
+  assert.deepEqual(hubAssign.assignCalls, []);
+  assert.equal(hubAssign.listCalls, 0);
+});
+
+test("'assign' notifies an error for an unknown client and never writes", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign task-9 nope portal",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.equal(notified[0]?.type, "error");
+  assert.match(notified[0]?.message ?? "", /unknown client: nope/);
+  assert.deepEqual(hubAssign.assignCalls, []);
+});
+
+test("'assign' notifies an error for an unknown project", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign task-9 acme nope",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.match(notified[0]?.message ?? "", /unknown project: nope/);
+  assert.deepEqual(hubAssign.assignCalls, []);
+});
+
+test("'assign' notifies an error when the project belongs to another client", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign task-9 acme app",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.match(notified[0]?.message ?? "", /does not belong to client Acme/);
+  assert.deepEqual(hubAssign.assignCalls, []);
+});
+
+test("'assign' notifies an error for a position outside the listed rows", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  hubAssign.rows = [{ id: "rec-1", taskId: "task-1", client: "c-acme", project: "p-portal" }];
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign 9 acme portal",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.match(notified[0]?.message ?? "", /no synced task entry at position 9/);
+  assert.deepEqual(hubAssign.assignCalls, []);
+});
+
+test("'assign' with only a selector notifies a usage error", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign 3",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.equal(notified[0]?.type, "error");
+  assert.match(notified[0]?.message ?? "", /assign expects/);
+});
+
+test("'assign' notifies 'hub is not configured' when no hubAssign is present", async () => {
+  const pi = new FakePi();
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.match(notified[0]?.message ?? "", /not configured/);
+});
+
+test("'assign' notifies an error when the row's task_id is no longer in the hub", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  hubAssign.assignOutcome = { kind: "not-found" };
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign task-9 acme portal",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.match(notified[0]?.message ?? "", /no synced task entry with task_id task-9/);
+});
+
+test("'assign' notifies an error when no catalog snapshot is available", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  const catalog = new FakeCatalog();
+  const notified: Array<{ message: string; type?: string }> = [];
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler(
+      "assign task-9 acme portal",
+      assignCtx({ ui: { notify: (message: string, type?: string) => notified.push({ message, type }), setStatus: () => {} } }),
+    );
+
+  assert.match(notified[0]?.message ?? "", /catalog/);
+  assert.deepEqual(hubAssign.assignCalls, []);
+});
+
+test("interactive 'assign' picks the row, client and project, then reports the outcome", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  hubAssign.rows = [
+    { id: "rec-1", taskId: "task-1", prompt: "hello", startedAt: "2026-01-02 10:00:00.000Z", client: "c-acme", project: "p-portal" },
+  ];
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  const selectResponses = [ASSIGN_ROW_LABEL, "Acme", "Portal"];
+  let selectIndex = 0;
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands.get("kankaku")!.handler(
+    "assign",
+    assignCtx({
+      ui: { notify: () => {}, setStatus: () => {}, select: async () => selectResponses[selectIndex++] },
+    }),
+  );
+
+  assert.deepEqual(hubAssign.assignCalls, [{ taskId: "task-1", payload: { client: "c-acme", project: "p-portal" } }]);
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.deepEqual(data.lines, ["assigned task-1 to Acme (acme) · Portal"]);
+});
+
+test("interactive 'assign' accepts no project", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  hubAssign.rows = [
+    { id: "rec-1", taskId: "task-1", prompt: "hello", startedAt: "2026-01-02 10:00:00.000Z", client: "c-acme", project: "p-portal" },
+  ];
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+  const selectResponses = [ASSIGN_ROW_LABEL, "Globex", ASSIGN_NO_PROJECT_LABEL];
+  let selectIndex = 0;
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands.get("kankaku")!.handler(
+    "assign",
+    assignCtx({ ui: { notify: () => {}, setStatus: () => {}, select: async () => selectResponses[selectIndex++] } }),
+  );
+
+  assert.deepEqual(hubAssign.assignCalls, [{ taskId: "task-1", payload: { client: "c-globex", project: "" } }]);
+});
+
+test("interactive 'assign' reports a cancellation when the row picker is dismissed", async () => {
+  const pi = new FakePi();
+  const hubAssign = new FakeHubAssign();
+  hubAssign.rows = [
+    { id: "rec-1", taskId: "task-1", prompt: "hello", startedAt: "2026-01-02 10:00:00.000Z", client: "c-acme", project: "p-portal" },
+  ];
+  const catalog = new FakeCatalog();
+  catalog.snapshot = ASSIGN_SNAPSHOT;
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    catalog,
+    hubAssign,
+  });
+
+  await pi.commands
+    .get("kankaku")!
+    .handler("assign", assignCtx({ ui: { notify: () => {}, setStatus: () => {}, select: async () => undefined } }));
+
+  assert.deepEqual(hubAssign.assignCalls, []);
+  const data = pi.entries.at(-1)!.data as { title: string; lines: string[] };
+  assert.deepEqual(data.lines, ["assignment cancelled"]);
+});
+
+test("getArgumentCompletions includes 'assign' when the hub is configured", async () => {
+  const pi = new FakePi();
+
+  registerKankakuCommand(pi as unknown as ExtensionAPI, {
+    log: new FakeWorkLog(),
+    sessionClient: new FakeSessionClient(),
+    refreshIdleStatus: () => {},
+    sessionTarget: createSessionTarget({
+      role: "orchestrator",
+      catalog: new FakeCatalog(),
+      resolveProjectConfigIds: () => undefined,
+      persistProjectConfig: () => {},
+    }),
+    hubAssign: new FakeHubAssign(),
+  });
+
+  const completions = pi.commands.get("kankaku")!.getArgumentCompletions!("") as Array<{ value: string }>;
+  assert.ok(completions.map((c) => c.value).includes("assign"));
 });

@@ -732,6 +732,10 @@ action is reachable:
   the same five views `/kankaku`'s subcommands produce.
 - **Sync** (hub only) — status, sync now, sync all, backfill, and a
   catalog refresh.
+- **Assign** (hub only) — move an already-synced task entry to another
+  client/project: pick the row, then the client, then the project. The
+  same three steps `/kankaku assign` below performs, with the same
+  wording, since both share one resolver and one set of lines.
 - **Export** — write today's or every task as csv/json.
 - **Doctor** — orphan/uncertain subagent counts and ancestor-detection
   availability.
@@ -795,6 +799,18 @@ The following are available only when a hub is configured (see "Hub
 - `/kankaku task` (or `/kankaku task pick`) — link this session to an
   open/doing hub task of the effective project. `/kankaku task clear`
   drops the link. See "Linking to a hub task" below.
+- `/kankaku assign` — move an **already-synced** `task_entries` row to
+  another client/project, the one assignment a re-sync deliberately never
+  touches (see "Assignment is create-only" below). With no arguments it
+  walks the row, the client and the project through dialogs, offering
+  `(no project)` as the explicit way to clear the relation; with
+  `<n|task_id> <client> <project>` it opens no dialog at all — and there
+  the project is required, so a project someone meant to keep can never
+  be dropped by leaving an argument out. `<n>` is the position in the
+  recent-rows list the dialog would have shown; `<client>` and
+  `<project>` match a catalog code or name, case-insensitively, exactly
+  like `/kankaku client <name>`. Only `client` and `project` are ever
+  written.
 - `/kankaku catalog refresh` — force a catalog refresh and report the
   client/project counts.
 - `/kankaku projects` — one line per project (work/waiting/wall time, cost,
@@ -1015,18 +1031,18 @@ current wall-clock time — see "Limitations" below for what that means for
 a background subagent that settles long after its orchestrator, and after
 the directory has otherwise gone quiet.
 
-**Assignment is create-only.** You (or whoever reassigns work in the hub's
-web app) can move a task from one client/project to another directly in
-PocketBase — for example, moving a "Sin determinar" row to its real
-client once you have identified it. A later re-sync of that same task
-**must never undo that**: on create kankaku sends the full row, including
-`client`/`project`/`task`/`legacy_client_label`; on every subsequent update
-it sends measurement fields only (`wall_ms`, `cost`, `status`, ...) and
-never touches assignment fields again. `task` (the linked `tasks` relation)
-is create-only for the exact same reason: reassigning which task a row
-belongs to in the web app is never undone by a later sync. If you need
-kankaku itself to change a task's assignment, do it in the web app, not by
-re-syncing.
+**Assignment is create-only.** You (or whoever reassigns work) can move a
+row from one client/project to another either in the hub's web app or from
+pi with `/kankaku assign` — for example, moving a "Sin determinar" row to
+its real client once you have identified it. A later re-sync of that same
+task **must never undo that**: on create kankaku sends the full row,
+including `client`/`project`/`task`/`legacy_client_label`; on every
+subsequent update it sends measurement fields only (`wall_ms`, `cost`,
+`status`, ...) and never touches assignment fields again. `task` (the
+linked `tasks` relation) is create-only for the exact same reason:
+reassigning which task a row belongs to is never undone by a later sync.
+If you need kankaku itself to change a task's assignment, do it in the web
+app or with `/kankaku assign`, not by re-syncing.
 
 **Historical ("Sin determinar") records.** A record with no `clientId`, or
 whose `clientId` no longer resolves in the catalog, is routed to the hub's
