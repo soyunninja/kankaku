@@ -496,6 +496,14 @@ export function createPiTracker(pi: ExtensionAPI, deps: PiTrackerDeps): void {
       ...(roleConfidence !== undefined ? { roleConfidence } : {}),
       ...(deps.orchestratorRef !== undefined ? { orchestratorRef: deps.orchestratorRef } : {}),
       ...(deps.profile !== undefined ? { profile: deps.profile } : {}),
+      // Who measured this record, not who later syncs it — see
+      // `domain/work-record.ts#WorkRecordMetadata.agent`. Always stamped for
+      // every record this process appends; the versions are the same ones
+      // `extension.ts` already resolves for the `about` screen.
+      agent: "pi",
+      ...(deps.agentVersion !== undefined ? { agentVersion: deps.agentVersion } : {}),
+      plugin: "kankaku",
+      ...(deps.pluginVersion !== undefined ? { pluginVersion: deps.pluginVersion } : {}),
     };
   }
 

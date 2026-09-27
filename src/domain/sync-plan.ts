@@ -134,6 +134,16 @@ export function computeTaskContentHash(task: TaskView): string {
       // `undefined` is dropped by the serialiser, so a task that never knew
       // its reasoning effort keeps the hash it had before this field existed.
       thinkingLevel: task.orchestrator.thinkingLevel,
+      // A task gaining a who-measured identity
+      // (domain/hub-entry.ts#resolveTaskIdentity) must resync, since it
+      // changes which agent/plugin the row is attributed to; the version
+      // fields are left out on purpose so a version-only bump alone does not
+      // force a resync. The keys are added CONDITIONALLY: `stableStringify`
+      // renders an `undefined` value as `"agent":undefined`, so an
+      // unconditional key would change every legacy task's hash and force a
+      // full resync right after upgrading (see the golden-hash test).
+      ...(task.orchestrator.agent !== undefined ? { agent: task.orchestrator.agent } : {}),
+      ...(task.orchestrator.plugin !== undefined ? { plugin: task.orchestrator.plugin } : {}),
     }),
   );
 }

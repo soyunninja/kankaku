@@ -96,6 +96,10 @@ Each line in `worklog.jsonl` is one JSON object:
   "projectId": "pocketbase-record-id",
   "projectName": "Portal",
   "machine": "laptop",
+  "agent": "pi",
+  "agentVersion": "0.87.1",
+  "plugin": "kankaku",
+  "pluginVersion": "0.7.1",
   "prompt": "first 200 chars of the first prompt",
   "startedAt": "2026-09-10T16:00:00.000Z",
   "settledAt": "2026-09-10T16:04:10.000Z",
@@ -158,6 +162,19 @@ it is available on a task's orchestrator record (`TaskView.sessionDir`) for
 anything that wants to reconstruct the exact `pi --session-dir <dir>
 --session <id>` resume command locally. When a hub is configured it is also
 sent as `session_dir` on every sync (see "Hub (PocketBase)" > "Sync" >
+"Agent and measurement quality").
+
+`agent`, `agentVersion`, `plugin` and `pluginVersion` are optional and
+identify who *measured* this record, not who later syncs it: a worklog can
+be synced by a process that did not write it (a standalone `kankaku` TUI
+syncing pi's records; a session syncing a directory another agent also
+wrote to), so this identity travels with the record instead of being
+resolved fresh by whichever process happens to push it to the hub. For a
+record this package writes, `agent` is always `"pi"` and `plugin` is always
+`"kankaku"`; `agentVersion`/`pluginVersion` are included when known and
+omitted rather than guessed. Neither field bumps `WORK_RECORD_SCHEMA` — an
+older record without them stays valid and falls back to the syncing
+process's own identity on create only (see "Hub (PocketBase)" > "Sync" >
 "Agent and measurement quality").
 
 ## Task and session views
@@ -1038,25 +1055,39 @@ in the web app, from the unassigned queue.
 **Agent and measurement quality.** Every `task_entries` row also carries
 who produced it and how well each figure was measured, so the hub can
 label what it has instead of silently blending incompatible numbers from
-different agents: `agent` (`"pi"`), `agent_version` (pi's own version,
-when it could be determined — never guessed, omitted otherwise), `plugin`
-(`"kankaku"`), `plugin_version` (this package's own version),
-`waiting_quality` (always `"measured"` for kankaku/pi — it always
-instruments waiting time), `cost_quality` (`"measured"` when the task's
-own record or any joined subagent observed a real provider cost figure on
-at least one turn; `"unknown"` when none did, e.g. a subscription/OAuth
-provider that reports no cost — kankaku has no token-price estimator, so
-it never sends `"estimated"`), and `subagent_linkage` (`"not_applicable"`
-when the task opened no subagent spans; `"linked"` when at least as many
-child records were joined as spans were opened; `"unlinked"` otherwise —
-a task-level approximation, since there is no per-span correlation id
-today, see "Subagents" > "Limitations"). These are measurement fields, not
-assignment: sent on every create *and* update, and included in the sync
-content hash, so a background subagent that joins later — improving
-`cost_quality`/`subagent_linkage` without changing any other number —
-still triggers a resync. An older hub predating these fields simply
-ignores them (PocketBase silently drops unrecognized fields on write); no
-capability probing is needed.
+different agents: `agent` (`"pi"` for this package), `agent_version` (the
+agent's own version, when it could be determined — never guessed, omitted
+otherwise), `plugin` (`"kankaku"`), `plugin_version` (this package's own
+version), `waiting_quality` (always `"measured"` for kankaku/pi — it
+always instruments waiting time), `cost_quality` (`"measured"` when the
+task's own record or any joined subagent observed a real provider cost
+figure on at least one turn; `"unknown"` when none did, e.g. a
+subscription/OAuth provider that reports no cost — kankaku has no
+token-price estimator, so it never sends `"estimated"`), and
+`subagent_linkage` (`"not_applicable"` when the task opened no subagent
+spans; `"linked"` when at least as many child records were joined as spans
+were opened; `"unlinked"` otherwise — a task-level approximation, since
+there is no per-span correlation id today, see "Subagents" >
+"Limitations"). These are measurement fields, not assignment, but
+`agent`/`agent_version`/`plugin`/`plugin_version` specifically identify
+who *measured* the task, not who *syncs* it: they are taken from the
+orchestrator record's own `agent`/`agentVersion`/`plugin`/`pluginVersion`
+(see "Record schema") when it carries one, and only fall back to the
+syncing process's own identity for a legacy record written before this
+field existed. On create, `agent`/`plugin` are always sent (from the
+record or the fallback). On update, all four are sent when the record
+carries an identity, and OMITTED ENTIRELY for a legacy record — so a
+re-sync by a *different* process (a standalone `kankaku` TUI, or a
+different agent syncing a shared directory) can never overwrite a row's
+original identity with its own. `waiting_quality`/`cost_quality`/
+`subagent_linkage` are unaffected by this and are always sent on both
+create and update. All of these are included in the sync content hash
+(the record's own `agent`/`plugin`, not their versions), so a background
+subagent that joins later, or a task that first gains a who-measured
+identity — improving `cost_quality`/`subagent_linkage`/`agent` without
+changing any other number — still triggers a resync. An older hub
+predating these fields simply ignores them (PocketBase silently drops
+unrecognized fields on write); no capability probing is needed.
 
 **Session directory.** `session_dir` carries a task's non-default session
 directory (`TaskView.sessionDir`, see "Record schema") to the hub, so a

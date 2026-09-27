@@ -14,6 +14,20 @@ follow semver. Dates are the day the version was cut.
   reuse them without importing anything that touches `@earendil-works/*`.
   No behaviour change.
 
+### Changed
+
+- **The agent/plugin identity on a synced hub row now travels with the
+  record that measured it, not with whichever process later syncs it.**
+  `WorkRecord` gains optional `agent`/`agentVersion`/`plugin`/
+  `pluginVersion` fields, stamped by every record this package writes
+  (`agent: "pi"`, `plugin: "kankaku"`). A `task_entries` create now prefers
+  the orchestrator record's own identity over the syncing process's, and an
+  update omits `agent`/`agent_version`/`plugin`/`plugin_version` entirely
+  for a legacy record with no such identity — so a standalone `kankaku` TUI
+  (or a different agent) syncing a worklog it did not write can no longer
+  overwrite a row's original identity with its own. Additive; no schema
+  bump.
+
 ## 0.7.1 — 2026-09-25
 
 ### Changed

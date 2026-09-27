@@ -253,6 +253,26 @@ test("push sends agent_version/plugin_version when injected, on both create and 
   assert.equal(row!["plugin_version"], "0.4.6");
 });
 
+test("push sends the record's own agent identity, not the syncing sink's configured one, when the orchestrator record carries it (who measured, not who syncs)", async () => {
+  const fake = createFakeClient();
+  const sink = new PocketBaseSink({
+    client: fake.client,
+    clients: [client, unassignedClient],
+    projects: [project],
+    tasks: [],
+    machine: "laptop",
+    promptMode: "none",
+    syncRecords: false,
+    agent: "unknown", // this sink's own identity — must not win over the record's
+  });
+  const task = makeTask({ clientId: "client-1" }, { agent: "pi" });
+
+  await sink.push([task]);
+
+  const [row] = Array.from(fake.collections.get("task_entries")!.values());
+  assert.equal(row!["agent"], "pi");
+});
+
 // ASSUMPTION (verified by the hub team, see kankaku-hub docs/contract.md
 // "Agent and measurement quality"): PocketBase's REST API silently ignores
 // unknown/unrecognized fields on create and update — it never rejects a

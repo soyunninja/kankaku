@@ -184,6 +184,24 @@ test("isWorkRecord rejects an orchestratorRef whose dir is present but not a str
   assert.equal(isWorkRecord({ ...makeRecord(), orchestratorRef: { pid: 42, project: "/x", startedAt: "t", dir: 42 } }), false);
 });
 
+test("isWorkRecord accepts a record carrying the who-measured identity fields (agent/agentVersion/plugin/pluginVersion)", () => {
+  const record = makeRecord({ agent: "pi", agentVersion: "0.87.1", plugin: "kankaku", pluginVersion: "0.7.1" });
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord accepts a record without agent/plugin identity fields (an older record predating this feature stays valid)", () => {
+  const record = makeRecord();
+  assert.equal("agent" in record, false);
+  assert.equal(isWorkRecord(record), true);
+});
+
+test("isWorkRecord rejects a non-string agent/agentVersion/plugin/pluginVersion", () => {
+  assert.equal(isWorkRecord({ ...makeRecord(), agent: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), agentVersion: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), plugin: 42 }), false);
+  assert.equal(isWorkRecord({ ...makeRecord(), pluginVersion: 42 }), false);
+});
+
 test("finiteOrZero returns the number for finite values", () => {
   assert.equal(finiteOrZero(5), 5);
   assert.equal(finiteOrZero(0), 0);

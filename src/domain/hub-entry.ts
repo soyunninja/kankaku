@@ -207,10 +207,12 @@ export interface TaskEntryPayload {
   legacy_client_label: string;
   repo_project: string;
   schema: number;
+  /** Coding agent that MEASURED this task, lowercase slug — the orchestrator record's own {@link WorkRecordMetadata.agent} when it carries one (who measured, not who syncs), else `ctx.agent` (the syncing process's own identity) as a legacy fallback. See {@link WorkRecordMetadata.agent}. */
   agent: string;
   agent_version?: string;
   /** Non-default session directory, see `TaskView.sessionDir`. A measurement field, not assignment: sent on both create and update. */
   session_dir?: string;
+  /** The integration that wrote this task's records, lowercase slug — same record-wins-over-ctx rule as {@link agent}. */
   plugin: string;
   plugin_version?: string;
   waiting_quality: WaitingQuality;
@@ -218,12 +220,59 @@ export interface TaskEntryPayload {
   subagent_linkage: SubagentLinkage;
 }
 
-/** `TaskEntryPayload` minus the assignment fields — what an update sends. See the module docs' CRITICAL rule. */
-export type TaskEntryUpdatePayload = Omit<TaskEntryPayload, "client" | "project" | "task" | "legacy_client_label">;
+/**
+ * `TaskEntryPayload` minus the assignment fields — what an update sends. See
+ * the module docs' CRITICAL rule.
+ *
+ * `agent`/`agent_version`/`plugin`/`plugin_version` are optional here (unlike
+ * on `TaskEntryPayload`, where they are always sent on create): an update for
+ * a task whose orchestrator record carries no who-measured identity (a
+ * legacy record, written before this feature existed) omits them entirely,
+ * so a re-sync by a DIFFERENT process never overwrites a row's original
+ * identity with its own. See {@link buildTaskEntryUpdatePayload}.
+ */
+export type TaskEntryUpdatePayload = Omit<
+  TaskEntryPayload,
+  "client" | "project" | "task" | "legacy_client_label" | "agent" | "agent_version" | "plugin" | "plugin_version"
+> & {
+  agent?: string;
+  agent_version?: string;
+  plugin?: string;
+  plugin_version?: string;
+};
+
+/**
+ * The who-measured identity (`agent`/`agentVersion`/`plugin`/`pluginVersion`)
+ * for a task's payload: the orchestrator record's own fields, taken as a
+ * unit, when it carries an `agent` — a missing version on the record is
+ * omitted, never backfilled from `ctx` — otherwise `ctx`'s identity (the
+ * syncing process's own), exactly as before this feature existed. See
+ * `domain/work-record.ts#WorkRecordMetadata.agent`'s doc comment.
+ */
+function resolveTaskIdentity(
+  task: TaskView,
+  ctx: HubEntryContext,
+): { agent: string; agentVersion?: string; plugin: string; pluginVersion?: string } {
+  const orchestrator = task.orchestrator;
+  if (orchestrator.agent !== undefined) {
+    // The record's four fields are taken as a unit. A record written by an
+    // integration that stamped `agent` but not `plugin` gets the syncing
+    // context's `plugin` ONLY on create, so the row is never blank; the
+    // update payload below never resends a plugin the record does not own.
+    return {
+      agent: orchestrator.agent,
+      agentVersion: orchestrator.agentVersion,
+      plugin: orchestrator.plugin ?? ctx.plugin,
+      pluginVersion: orchestrator.plugin !== undefined ? orchestrator.pluginVersion : undefined,
+    };
+  }
+  return { agent: ctx.agent, agentVersion: ctx.agentVersion, plugin: ctx.plugin, pluginVersion: ctx.pluginVersion };
+}
 
 /** Build the full `task_entries` payload for a **create** request — every field, including assignment. */
 export function buildTaskEntryCreatePayload(task: TaskView, ctx: HubEntryContext): TaskEntryPayload {
   const assignment = resolveTaskAssignment(task, ctx.clients, ctx.projects, ctx.tasks);
+  const identity = resolveTaskIdentity(task, ctx);
   return {
     task_id: task.id,
     client: assignment.clientId,
@@ -253,11 +302,11 @@ export function buildTaskEntryCreatePayload(task: TaskView, ctx: HubEntryContext
     legacy_client_label: assignment.legacyClientLabel,
     repo_project: task.project,
     schema: task.orchestrator.schema,
-    agent: ctx.agent,
-    ...(ctx.agentVersion !== undefined ? { agent_version: ctx.agentVersion } : {}),
+    agent: identity.agent,
+    ...(identity.agentVersion !== undefined ? { agent_version: identity.agentVersion } : {}),
     ...(task.sessionDir !== undefined ? { session_dir: task.sessionDir } : {}),
-    plugin: ctx.plugin,
-    ...(ctx.pluginVersion !== undefined ? { plugin_version: ctx.pluginVersion } : {}),
+    plugin: identity.plugin,
+    ...(identity.pluginVersion !== undefined ? { plugin_version: identity.pluginVersion } : {}),
     waiting_quality: computeWaitingQuality(),
     cost_quality: computeCostQuality(task),
     subagent_linkage: computeSubagentLinkage(task),
@@ -269,10 +318,40 @@ export function buildTaskEntryCreatePayload(task: TaskView, ctx: HubEntryContext
  * fields only — never `client`, `project`, `task` or `legacy_client_label`,
  * so a re-sync can never undo a reassignment made in the web. See the
  * module docs' CRITICAL rule.
+ *
+ * `agent`/`agent_version`/`plugin`/`plugin_version` are included ONLY when
+ * the orchestrator record itself carries a who-measured `agent` — otherwise
+ * they are OMITTED entirely (never sent as `ctx`'s own identity), so a
+ * re-sync of a legacy record by a different process never overwrites the
+ * row's original identity in the hub. See `domain/work-record.ts`'s
+ * "Measurement rules" and {@link resolveTaskIdentity}.
  */
 export function buildTaskEntryUpdatePayload(task: TaskView, ctx: HubEntryContext): TaskEntryUpdatePayload {
-  const { client: _client, project: _project, task: _task, legacy_client_label: _legacy, ...rest } = buildTaskEntryCreatePayload(task, ctx);
-  return rest;
+  const {
+    client: _client,
+    project: _project,
+    task: _task,
+    legacy_client_label: _legacy,
+    agent,
+    agent_version,
+    plugin,
+    plugin_version,
+    ...rest
+  } = buildTaskEntryCreatePayload(task, ctx);
+
+  if (task.orchestrator.agent === undefined) return rest;
+
+  // `plugin`/`plugin_version` are resent only when the record itself carries
+  // them; a record with `agent` but no `plugin` must never have the syncing
+  // process's plugin written over the row's original one.
+  const recordHasPlugin = task.orchestrator.plugin !== undefined;
+  return {
+    ...rest,
+    agent,
+    ...(agent_version !== undefined ? { agent_version } : {}),
+    ...(recordHasPlugin ? { plugin } : {}),
+    ...(recordHasPlugin && plugin_version !== undefined ? { plugin_version } : {}),
+  };
 }
 
 /** One `work_records` row — raw per-`WorkRecord` detail, always `rollup: false`. */

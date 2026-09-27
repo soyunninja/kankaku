@@ -9,6 +9,7 @@ import {
   taskWorkRecords,
 } from "../src/domain/hub-entry.ts";
 import type { HubEntryContext } from "../src/domain/hub-entry.ts";
+import { buildTasks } from "../src/domain/task-view.ts";
 import type { TaskView } from "../src/domain/task-view.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 import type { Client, HubTask, Project } from "../src/domain/work-target.ts";
@@ -374,6 +375,51 @@ test("taskWorkRecords returns the orchestrator followed by every subagent", () =
   );
 });
 
+test("buildTaskEntryCreatePayload uses the record's own agent/plugin identity over ctx when the orchestrator record carries one (who measured, not who syncs)", () => {
+  const task = makeTask({}, { agent: "claude-code", agentVersion: "1.2.3", plugin: "kankaku-claude", pluginVersion: "0.1.0" });
+  const payload = buildTaskEntryCreatePayload(task, ctx); // ctx says agent: "pi" / plugin: "kankaku" — a different process syncing this record
+  assert.equal(payload.agent, "claude-code");
+  assert.equal(payload.agent_version, "1.2.3");
+  assert.equal(payload.plugin, "kankaku-claude");
+  assert.equal(payload.plugin_version, "0.1.0");
+});
+
+test("buildTaskEntryCreatePayload falls back to ctx (the syncing process's own identity) for a legacy record with no agent", () => {
+  const task = makeTask({}); // makeRecord's default carries no agent field
+  const payload = buildTaskEntryCreatePayload(task, ctx);
+  assert.equal(payload.agent, "pi");
+  assert.equal(payload.agent_version, "0.85.1");
+  assert.equal(payload.plugin, "kankaku");
+  assert.equal(payload.plugin_version, "0.4.6");
+});
+
+test("buildTaskEntryCreatePayload takes the record's identity as a unit: a missing version on the record is omitted, never taken from ctx", () => {
+  const task = makeTask({}, { agent: "claude-code", plugin: "kankaku-claude" }); // no agentVersion/pluginVersion on the record
+  const payload = buildTaskEntryCreatePayload(task, ctx); // ctx does carry agentVersion/pluginVersion
+  assert.equal(payload.agent, "claude-code");
+  assert.equal(payload.plugin, "kankaku-claude");
+  assert.equal("agent_version" in payload, false);
+  assert.equal("plugin_version" in payload, false);
+});
+
+test("buildTaskEntryUpdatePayload carries the record's own agent/plugin identity when the orchestrator record carries one", () => {
+  const task = makeTask({}, { agent: "claude-code", agentVersion: "1.2.3", plugin: "kankaku-claude", pluginVersion: "0.1.0" });
+  const update = buildTaskEntryUpdatePayload(task, ctx);
+  assert.equal(update.agent, "claude-code");
+  assert.equal(update.agent_version, "1.2.3");
+  assert.equal(update.plugin, "kankaku-claude");
+  assert.equal(update.plugin_version, "0.1.0");
+});
+
+test("buildTaskEntryUpdatePayload omits agent/agent_version/plugin/plugin_version entirely for a legacy record (no orchestrator.agent), so a re-sync by another process never overwrites the row's original identity", () => {
+  const task = makeTask({}); // legacy: no agent on the orchestrator record
+  const update = buildTaskEntryUpdatePayload(task, ctx);
+  assert.equal(Object.prototype.hasOwnProperty.call(update, "agent"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(update, "agent_version"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(update, "plugin"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(update, "plugin_version"), false);
+});
+
 test("the model's reasoning effort (thinkingLevel) travels to the hub on both payloads, and is omitted when unknown", () => {
   const task = makeTask({}, { thinkingLevel: "high" });
   assert.equal(buildTaskEntryCreatePayload(task, ctx).thinking_level, "high");
@@ -382,4 +428,19 @@ test("the model's reasoning effort (thinkingLevel) travels to the hub on both pa
 
   assert.equal("thinking_level" in buildTaskEntryCreatePayload(makeTask(), ctx), false);
   assert.equal("thinking_level" in buildWorkRecordPayload(makeRecord(), "te-1", { machine: "laptop", promptMode: "none" }), false);
+});
+
+test("a record that carries agent but no plugin never borrows the syncing context's plugin on update, and only on create", () => {
+  const record = makeRecord({ id: "a", agent: "codex" });
+  const task = buildTasks([record])[0]!;
+  const tuiCtx: HubEntryContext = { ...ctx, agent: "unknown", plugin: "kankaku-tui", pluginVersion: "0.1.0" };
+
+  const created = buildTaskEntryCreatePayload(task, tuiCtx);
+  assert.equal(created.agent, "codex");
+  assert.equal(created.plugin, "kankaku-tui", "create falls back to the context's plugin so the row is never blank");
+
+  const updated = buildTaskEntryUpdatePayload(task, tuiCtx);
+  assert.equal(updated.agent, "codex");
+  assert.equal("plugin" in updated, false, "update must not resend the syncer's plugin for a record that has none");
+  assert.equal("plugin_version" in updated, false);
 });

@@ -828,6 +828,49 @@ test("buildRecord omits profile entirely when not configured (an orchestrator, o
   assert.equal(log.records[0]?.profile, undefined);
 });
 
+test("buildRecord stamps agent 'pi' and plugin 'kankaku', plus their versions when known — the who-measured identity travels with the record", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, {
+    tracker,
+    log,
+    inflight: new FakeInflightStore(),
+    role: "orchestrator",
+    pid: 1,
+    parentPid: 0,
+    agentVersion: "0.87.1",
+    pluginVersion: "0.7.1",
+  });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.agent, "pi");
+  assert.equal(log.records[0]?.plugin, "kankaku");
+  assert.equal(log.records[0]?.agentVersion, "0.87.1");
+  assert.equal(log.records[0]?.pluginVersion, "0.7.1");
+});
+
+test("buildRecord omits agentVersion/pluginVersion when not known, but always stamps agent/plugin", async () => {
+  const tracker = new WorkTracker({ clock: new FakeClock(0), interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });
+  const log = new FakeWorkLog();
+  const pi = new FakePi();
+  const ctx = makeFakeCtx();
+
+  createPiTracker(pi as never, { tracker, log, inflight: new FakeInflightStore(), role: "orchestrator", pid: 1, parentPid: 0 });
+
+  await pi.fire("before_agent_start", { type: "before_agent_start", prompt: "hi", systemPrompt: "", systemPromptOptions: {} }, ctx);
+  await pi.fire("agent_settled", { type: "agent_settled" }, ctx);
+
+  assert.equal(log.records[0]?.agent, "pi");
+  assert.equal(log.records[0]?.plugin, "kankaku");
+  assert.equal("agentVersion" in log.records[0]!, false);
+  assert.equal("pluginVersion" in log.records[0]!, false);
+});
+
 test("buildRecord fills client from env config and sessionName from pi.getSessionName()", async () => {
   const clock = new FakeClock(0);
   const tracker = new WorkTracker({ clock, interactiveTools: [], subagentProfiles: BUILTIN_SUBAGENT_PROFILES as SubagentProfile[] });

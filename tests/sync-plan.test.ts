@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { computeTaskContentHash, MAX_CORRECTIONS_PER_RUN, planSync, pruneHashes } from "../src/domain/sync-plan.ts";
 import type { SyncState } from "../src/domain/sync-plan.ts";
+import { buildTasks } from "../src/domain/task-view.ts";
 import type { TaskView } from "../src/domain/task-view.ts";
 import type { WorkRecord } from "../src/domain/work-record.ts";
 
@@ -272,6 +273,12 @@ test("computeTaskContentHash does not depend on hubTaskId (assignment field; lin
   assert.equal(computeTaskContentHash(unlinkedTask), computeTaskContentHash(linkedTask));
 });
 
+test("computeTaskContentHash changes when the orchestrator record gains a who-measured agent/plugin identity", () => {
+  const withoutIdentity = makeTask("a", 0, 10);
+  const withIdentity = makeTask("a", 0, 10, { orchestrator: makeRecord({ id: "a", startedAt: iso(0), settledAt: iso(10), agent: "pi", plugin: "kankaku" }) });
+  assert.notEqual(computeTaskContentHash(withoutIdentity), computeTaskContentHash(withIdentity));
+});
+
 test("pruneHashes (G2) keeps a hash for a task that fell out of the revisit window, as long as the task itself still exists — pruning by window is exactly the bug that made every old task look permanently changed", () => {
   const oldTask = makeTask("old", 0, 10);
   const recentTask = makeTask("recent", 100000, 100010);
@@ -420,4 +427,17 @@ test("a change of reasoning effort alone changes the content hash, so the hub ro
   const base = makeTask("a", 0, 10);
   const withLevel = { ...base, orchestrator: { ...base.orchestrator, thinkingLevel: "high" } };
   assert.notEqual(computeTaskContentHash(base), computeTaskContentHash(withLevel));
+});
+
+test("computeTaskContentHash of a legacy task (no who-measured identity) is byte-identical to the pre-identity hash, so upgrading never forces a resync of every old task", () => {
+  // Golden value captured on the commit before record-level identity existed
+  // (cb1299a), for exactly this record; a key rendered as `"agent":undefined`
+  // would silently change it.
+  const legacy: WorkRecord = {
+    schema: 1, id: "r1", prompt: "p", startedAt: "2026-09-25T09:00:00.000Z", settledAt: "2026-09-25T09:10:00.000Z",
+    wallMs: 600000, waitingMs: 0, workMs: 600000, runs: 1, turns: 1, tools: {}, subagents: [], segments: {},
+    usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.1 }, status: "completed", role: "orchestrator",
+    pid: 1, parentPid: 0, project: "/p",
+  };
+  assert.equal(computeTaskContentHash(buildTasks([legacy])[0]!), "0e721354");
 });

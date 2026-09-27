@@ -201,6 +201,23 @@ export interface WorkRecordMetadata {
    * (SUBAGENT-REQ-017). Never set on an `orchestrator` record.
    */
   profile?: string;
+  /**
+   * Coding agent that MEASURED this record, lowercase slug (e.g. `"pi"`).
+   * Who measured, not who syncs — a different process (a standalone
+   * `kankaku` TUI, or a session for a different agent sharing the same
+   * `worklog.jsonl`) may later push this record to the hub, and must never
+   * overwrite this identity with its own. See kankaku-hub `docs/contract.md`
+   * "Agent and measurement quality" and `domain/hub-entry.ts`. Optional and
+   * additive: `WORK_RECORD_SCHEMA` is unchanged and an older record without
+   * it still validates.
+   */
+  agent?: string;
+  /** The measuring agent's own version, when it could be determined without a hot-path cost. Never guessed — omitted rather than sent wrong. */
+  agentVersion?: string;
+  /** The integration that wrote this record, lowercase slug (e.g. `"kankaku"`). Same who-measured-not-who-syncs rule as {@link agent}. */
+  plugin?: string;
+  /** This integration's own version, from its `package.json`, read once. */
+  pluginVersion?: string;
 }
 
 export type WorkRecord = WorkRecordCore & WorkRecordMetadata;
@@ -294,6 +311,10 @@ export function isWorkRecord(value: unknown): value is WorkRecord {
     (record["roleConfidence"] === undefined || record["roleConfidence"] === "uncertain") &&
     (record["orchestratorRef"] === undefined || isOrchestratorRef(record["orchestratorRef"])) &&
     (record["costObserved"] === undefined || record["costObserved"] === true) &&
-    (record["profile"] === undefined || typeof record["profile"] === "string")
+    (record["profile"] === undefined || typeof record["profile"] === "string") &&
+    (record["agent"] === undefined || typeof record["agent"] === "string") &&
+    (record["agentVersion"] === undefined || typeof record["agentVersion"] === "string") &&
+    (record["plugin"] === undefined || typeof record["plugin"] === "string") &&
+    (record["pluginVersion"] === undefined || typeof record["pluginVersion"] === "string")
   );
 }

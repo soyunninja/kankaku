@@ -326,17 +326,39 @@ lives, the four core flows, how to run and release, and the gotchas.
   is create-only".
 - `agent`/`agent_version`/`plugin`/`plugin_version`/`waiting_quality`/
   `cost_quality`/`subagent_linkage` on a `task_entries` row are
-  **measurement** fields, the opposite of assignment: sent on both create
-  and update (`domain/hub-entry.ts`'s `HubEntryContext` and
+  **measurement** fields, the opposite of assignment. `waiting_quality`,
+  `cost_quality` and `subagent_linkage` are sent on both create and update
+  from `HubEntryContext`/the `TaskView` (`domain/hub-entry.ts`'s
   `buildTaskEntryCreatePayload`), and included in
   `domain/sync-plan.ts#computeTaskContentHash` so a change to either
   quality field (e.g. a background subagent joining later) still triggers
-  a resync. `agent_version`/`plugin_version` are resolved once, at
-  extension load (`adapters/agent-info.ts`), and omitted — never
-  guessed — when they cannot be determined. `WorkRecord.costObserved`
-  (optional, set by `domain/work-tracker.ts#onTurnEnd` when any turn
-  reports a real finite `cost`) is what `cost_quality` is computed from;
-  adding it did not bump `WORK_RECORD_SCHEMA`.
+  a resync. `WorkRecord.costObserved` (optional, set by
+  `domain/work-tracker.ts#onTurnEnd` when any turn reports a real finite
+  `cost`) is what `cost_quality` is computed from; adding it did not bump
+  `WORK_RECORD_SCHEMA`.
+  **`agent`/`agent_version`/`plugin`/`plugin_version` are who *measured*
+  the task, not who *syncs* it**: a worklog can be synced by a process
+  that did not write it (a standalone `kankaku` TUI syncing pi's or
+  another agent's records; a session syncing a directory another agent
+  also wrote to), and rows must never end up attributed to the syncer.
+  `WorkRecordMetadata.agent`/`agentVersion`/`plugin`/`pluginVersion`
+  (`domain/work-record.ts`) carry this identity ON THE RECORD itself,
+  stamped once by `adapters/pi-tracker.ts#buildRecord` for every record
+  this process appends (`agent: "pi"`, `plugin: "kankaku"`, plus the
+  versions `adapters/agent-info.ts` already resolves at extension load).
+  `domain/hub-entry.ts#resolveTaskIdentity` picks the source: the
+  orchestrator record's own four fields, taken as a unit, when it carries
+  an `agent` (a missing version on the record is omitted, never
+  backfilled from `ctx`) — otherwise `HubEntryContext`'s own
+  `agent`/`agentVersion`/`plugin`/`pluginVersion`, exactly as before this
+  field existed, as the fallback for a legacy record written before it.
+  `buildTaskEntryCreatePayload` always sends `agent`/`plugin` (required),
+  either way. `buildTaskEntryUpdatePayload` sends all four ONLY when the
+  orchestrator record carries an `agent`; for a legacy record it OMITS
+  them entirely, so a re-sync by a different process's `ctx` can never
+  overwrite a row's original identity. `domain/sync-plan.ts#computeTaskContentHash`
+  includes the record-level `agent`/`plugin` (not their versions) so a
+  task that gains this identity still triggers a resync.
 - **An ambiguous subagent-profile match contributes nothing that affects
   money or joins** (C1). When 2+ profiles register the same tool name and
   neither can be told apart (`domain/subagent-profile.ts#resolveToolProfile`,
