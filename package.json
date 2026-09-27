@@ -1,6 +1,6 @@
 {
   "name": "kankaku-tui",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Terminal app that shows today's kankaku work across every project on disk",
   "license": "MIT",
   "type": "module",
