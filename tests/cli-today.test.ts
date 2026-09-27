@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runCli } from "../src/cli.tsx";
@@ -114,5 +114,23 @@ test("real spawn: node --import tsx src/cli.tsx today --roots <tmp> prints the p
     assert.match(output, /demo\s+tasks 1/);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("real spawn through a symlink (how npm's bin/kankaku runs it) still executes the CLI", () => {
+  // npm installs the binary as `node_modules/.bin/kankaku -> ../kankaku-tui/dist/cli.js`,
+  // so process.argv[1] is the symlink path while import.meta.url is the real
+  // file; a main-module guard that compares them literally never runs.
+  const root = makeProjectRoot(today());
+  const linkDir = mkdtempSync(join(tmpdir(), "kankaku-bin-"));
+  const link = join(linkDir, "kankaku");
+  const repoRoot = new URL("..", import.meta.url).pathname;
+  symlinkSync(join(repoRoot, "src", "cli.tsx"), link);
+  try {
+    const output = execFileSync("node", ["--import", "tsx", link, "today", "--roots", root], { cwd: repoRoot, encoding: "utf8" });
+    assert.match(output, /demo\s+tasks 1/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+    rmSync(linkDir, { recursive: true, force: true });
   }
 });

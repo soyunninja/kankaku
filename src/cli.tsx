@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { homedir, hostname } from "node:os";
 import { resolve } from "node:path";
+import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { render } from "ink";
 import { buildTasks, localDay } from "kankaku/domain";
@@ -384,7 +385,26 @@ function dashboardActionsDeps(deps: CliDeps, roots: string[]): DashboardActions 
   };
 }
 
-const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
+/**
+ * Run the entrypoint only when this file is the script Node was started
+ * with. npm installs the binary as a symlink (`node_modules/.bin/kankaku ->
+ * ../kankaku-tui/dist/cli.js`), so `process.argv[1]` is the link while
+ * `import.meta.url` is the real file: compare real paths, or an installed
+ * `kankaku` silently does nothing.
+ */
+function isMainModule(): boolean {
+  const script = process.argv[1];
+  if (script === undefined) return false;
+  let real = script;
+  try {
+    real = realpathSync(script);
+  } catch {
+    // A missing or unreadable path cannot be this module; fall through with the literal.
+  }
+  return import.meta.url === pathToFileURL(real).href;
+}
+
+const isMain = isMainModule();
 
 if (isMain) {
   const realDeps: CliDeps = {
