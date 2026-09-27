@@ -24,6 +24,8 @@ import type { TasksModel } from "./domain/tasks-model.ts";
 import { buildTasksModel } from "./domain/tasks-model.ts";
 import { buildSyncRows } from "./domain/sync-model.ts";
 import type { SyncModel, SyncScreenProps } from "./ui/sync-screen.tsx";
+import { DEFAULT_THEME, ThemeProvider, resolveTheme } from "./ui/theme.ts";
+import type { Theme } from "./ui/theme.ts";
 
 export interface CliDeps {
   homeDir: string;
@@ -31,7 +33,7 @@ export interface CliDeps {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   exit: (code: number) => void;
-  renderApp: (roots: string[]) => void;
+  renderApp: (roots: string[], theme: Theme) => void;
   /** Injectable for tests; defaults to `process.env` at the real entry point. */
   env?: NodeJS.ProcessEnv;
   /** Injectable for tests; defaults to `Date.now` at the real entry point. */
@@ -42,7 +44,8 @@ export interface CliDeps {
   fetch?: typeof fetch;
 }
 
-const USAGE = "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]] [--roots a,b]\n";
+const USAGE =
+  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]] [--roots a,b] [--theme name]\n";
 
 /** Load today's model for `roots`: discover projects, read their worklogs, build rows. */
 export function loadToday(roots: string[]): TodayModel {
@@ -102,6 +105,15 @@ function parseRoots(argv: string[], deps: Pick<CliDeps, "homeDir" | "cwd">): { r
   const roots = value.split(",").filter((root) => root.length > 0);
   const rest = [...argv.slice(0, flagIndex), ...argv.slice(flagIndex + 2)];
   return { roots, rest };
+}
+
+/** Strip `--theme <name>` from `argv` (present anywhere), returning its value (if any) and the rest. */
+function parseThemeFlag(argv: string[]): { theme: string | undefined; rest: string[] } {
+  const flagIndex = argv.indexOf("--theme");
+  if (flagIndex === -1) return { theme: undefined, rest: argv };
+  const value = argv[flagIndex + 1];
+  const rest = [...argv.slice(0, flagIndex), ...argv.slice(flagIndex + 2)];
+  return { theme: value, rest };
 }
 
 function parseProjectFlag(argv: string[], cwd: string): { project: string | undefined; rest: string[] } {
@@ -223,13 +235,33 @@ async function runSyncCommand(args: string[], roots: string[], deps: CliDeps): P
   if (failed) deps.exit(1);
 }
 
+/**
+ * Resolve the `--theme`/`KANKAKU_TUI_THEME` preset (flag wins), defaulting
+ * to {@link DEFAULT_THEME} when neither is given. An explicit but unknown
+ * name is a usage error, never a silent fallback.
+ */
+function resolveCliTheme(themeFlag: string | undefined, env: NodeJS.ProcessEnv | undefined): { ok: true; theme: Theme } | { ok: false; reason: string } {
+  const requested = themeFlag ?? env?.KANKAKU_TUI_THEME;
+  if (requested === undefined) return { ok: true, theme: DEFAULT_THEME };
+  return resolveTheme(requested);
+}
+
 /** Parse `argv` and run the requested mode against injected `deps`. No logic beyond argv handling belongs here. */
 export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
-  const { roots, rest } = parseRoots(argv, deps);
+  const { theme: themeFlag, rest: argvAfterTheme } = parseThemeFlag(argv);
+  const themeResult = resolveCliTheme(themeFlag, deps.env);
+  if (!themeResult.ok) {
+    deps.stderr(`kankaku: ${themeResult.reason}\n`);
+    deps.exit(1);
+    return;
+  }
+  const theme = themeResult.theme;
+
+  const { roots, rest } = parseRoots(argvAfterTheme, deps);
   const [command] = rest;
 
   if (command === undefined) {
-    deps.renderApp(roots);
+    deps.renderApp(roots, theme);
     return;
   }
 
@@ -334,16 +366,18 @@ if (isMain) {
     exit: (code) => {
       process.exit(code);
     },
-    renderApp: (roots) => {
+    renderApp: (roots, theme) => {
       render(
-        <App
-          roots={roots}
-          version={readOwnVersion()}
-          loadToday={() => loadDashboard(roots, realDeps)}
-          loadTasks={(options) => loadTasks(roots, options)}
-          catalog={catalogScreenDeps(realDeps)}
-          sync={syncScreenDeps(realDeps, roots)}
-        />,
+        <ThemeProvider theme={theme}>
+          <App
+            roots={roots}
+            version={readOwnVersion()}
+            loadToday={() => loadDashboard(roots, realDeps)}
+            loadTasks={(options) => loadTasks(roots, options)}
+            catalog={catalogScreenDeps(realDeps)}
+            sync={syncScreenDeps(realDeps, roots)}
+          />
+        </ThemeProvider>,
         { alternateScreen: true, exitOnCtrlC: true },
       );
     },

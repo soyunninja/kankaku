@@ -81,18 +81,38 @@ never guesses which coding agent produced someone else's worklog.
 
 `--roots` (on `today`/`tasks`) overrides the configured roots for that run.
 
+`--theme <name>` picks one of the three built-in colour presets for the
+interactive TUI; `KANKAKU_TUI_THEME=<name>` does the same through the
+environment (the flag wins when both are given). The valid names are
+`gentleman-sexy` (the default), `gentleman-cute` and `gentle` — resolved
+hex values copied from [gentle-pi](https://github.com/Gentleman-Programming/gentle-pi)'s
+own themes (MIT), so this TUI matches the owner's pi panel instead of an
+unrelated default. An unknown name prints a usage error listing the valid
+names and exits 1 without opening the TUI.
+
 ## Screens
 
 One visual system drives all four screens: a left sidebar for navigation,
 titled bordered panels, aligned tables with a highlighted selection, text
 bars and sparklines, a header line and a footer of key hints — all driven
-by a single theme of colour roles (`src/ui/theme.ts`). The app runs
-fullscreen, in the terminal's alternate screen buffer: the frame fills the
-whole terminal height, resizing live with the terminal. The sidebar sits
-beside the screen at 100+ terminal columns, stacks full-width above it at
-70-99 columns, and collapses to a one-line tab strip below 70 columns; a
+by a single theme of colour roles (`src/ui/theme.ts`, see `--theme` above
+for the three built-in presets). The app runs fullscreen, in the
+terminal's alternate screen buffer: the frame fills the whole terminal
+height, resizing live with the terminal. The sidebar sits beside the
+screen at 100+ terminal columns, stacks full-width above it at 70-99
+columns, and collapses to a one-line tab strip below 70 columns; a
 selected row or card is always marked with a visible `›`, never colour
-alone.
+alone. The sidebar itself shows which zone has focus: its border switches
+to the active border colour and the active item gets a full-row highlight
+when it has focus, dropping back to a plain `›` marker with no highlight
+once focus moves to the screen's own content.
+
+Every panel in the main area is sized to a fixed height derived from the
+terminal's own height, so it never grows with its content and shifts the
+rest of the screen — a long value (e.g. the Tasks screen's full prompt)
+is wrapped and, if it still doesn't fit the panel's fixed height, clipped
+with a trailing `… N more lines` note instead of silently overflowing or
+pushing the header out of view.
 
 Any list that can grow past the available height (the Tasks table, the
 Catalog Clients/Projects lists, the Today Projects table, the Sync card
