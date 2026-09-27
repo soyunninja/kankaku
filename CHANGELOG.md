@@ -3,6 +3,23 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **`kankaku setup` and `kankaku doctor`**: `kankaku setup` detects every
+  coding agent kankaku knows how to configure on this machine (pi,
+  gentle-shell, Claude Code — Codex and OpenCode are detected and reported
+  but have no adapter yet), offers to install or configure kankaku for
+  each one that isn't wired up yet, configures hub credentials, and writes
+  this app's own `~/.kankaku/tui.json`. `--yes` accepts every question's
+  own default without prompting; `--dry-run` prints the plan (each step's
+  `done`/`todo`/`unavailable` state and the exact file it would change)
+  and writes nothing. Every write is preceded by a `<file>.bak` the first
+  time that file is touched, and re-running is always safe: only what is
+  still missing, or what is explicitly confirmed, is ever written.
+  `kankaku doctor` prints the same plain-text report on its own, read-only.
+
 ## 0.1.2 — 2026-09-27
 
 ### Fixed

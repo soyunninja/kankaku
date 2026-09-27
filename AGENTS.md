@@ -29,8 +29,22 @@ formatting or sync-planning logic.
   `s` sync all projects, `S` full sync all, `r` reload — and
   `formatQuickActionLines`, the panel's own one-line status text for its
   idle/busy/done/unavailable `QuickActionState`) never call a kankaku
-  adapter directly — only its `domain`/`hub` barrel types.
-- `src/ports/` holds interfaces only (`ProjectSource`).
+  adapter directly — only its `domain`/`hub` barrel types — and
+  `setup-plan.ts` (`kankaku setup`/`kankaku doctor`'s domain:
+  `detectAgents` turns plain, already-read facts about pi, gentle-shell,
+  Claude Code, Codex and OpenCode into one `AgentStatus` per agent —
+  `present`/`configured`/`adapterAvailable`/`detail`, with `configured`
+  for a pi-family `packages` entry decided by the exported
+  `isKankakuPackage`, reused by `adapters/setup/pi.ts` so "is this already
+  kankaku" is never defined twice; `planSetup` turns those plus hub/`tui.json`
+  facts into an ordered `SetupStep[]` (`done`/`todo`/`unavailable`, an
+  `action` description and the exact `file` a `todo` step would change);
+  `formatDoctorLines` and `formatSetupPlanLines` render that plan as plain
+  text for `doctor` and `setup --dry-run` respectively).
+- `src/ports/` holds interfaces only (`ProjectSource` and `Prompter` —
+  `confirm`/`text`/`secret`, injected into `kankaku setup`'s interactive
+  prompts so a scripted fake can drive it in tests; `--yes` never calls it
+  at all).
 - `src/adapters/` talks to the filesystem and the hub: `tui-config.ts`,
   `project-discovery.ts`, `worklog-reader.ts` (kankaku's `JsonlWorkLog`),
   `app-info.ts` (`readOwnVersion`, this package's own version for the
@@ -42,7 +56,31 @@ formatting or sync-planning logic.
   `sync-cli.ts#syncConfigured` but scoped to one explicit `ProjectRef`
   rather than `cwd`, stamped `agent: "unknown"`, `plugin: "kankaku-tui"`
   as kankaku's `hub-entry.ts` fallback — an orchestrator record's own
-  `agent` still wins when it has one).
+  `agent` still wins when it has one). `adapters/setup/` is `kankaku
+  setup`'s own read/write layer, used only by `cli.tsx`'s `setup`/`doctor`
+  handlers: `agents.ts` (`readAgentFacts`, never throws — a missing or
+  malformed settings file reads as absent, exactly like
+  `adapters/tui-config.ts#readTuiConfig`); `json-writer.ts` (the shared
+  read-existing-or-`{}`, tmp+rename and one-time `<file>.bak` primitives
+  every setup writer below is built on, mirroring kankaku's own
+  `project-config.ts#writeProjectTargetIds`); `pi.ts` (`addKankakuPackage`
+  — adds `"npm:kankaku"` to a pi-family `packages` array, shared by both
+  `~/.pi/agent/settings.json` and `~/.gentle-shell/agent/settings.json`
+  since they're the same shape, preserving every other key and its
+  order); `claude.ts` (`writeStatusLine` — sets Claude Code's
+  `statusLine.command` to run a given `kankaku-claude` checkout's
+  `src/statusline.ts`); `hub.ts` (`writeHubCredentials`, 0600, `~/.kankaku`
+  created 0700 only when it does not exist yet — an already-existing
+  `~/.kankaku` is never chmod'd, mirroring kankaku's own R2 rule since the
+  directory is shared with kankaku's worklog storage; `checkHubHealth`,
+  `GET <url>/api/health` through an injectable `fetch` under a 5s
+  timeout, `false` on any error/non-ok/timeout, never throws); `tui-config.ts`
+  (`writeTuiConfig`, this app's own `~/.kankaku/tui.json` writer — reading
+  it for normal use stays `adapters/tui-config.ts#readTuiConfig`); and
+  `readline-prompter.ts` (`createReadlinePrompter`, the real `Prompter`:
+  `node:readline/promises` over given input/output streams; `secret()`
+  hides typed input by routing readline's own per-keystroke echo through
+  a `Writable` that swallows bytes while muted).
 - `src/ui/` holds Ink components and the visual system: `theme.ts` (colour
   roles, the default dark/cyan preset, and a `ThemeProvider`/`useTheme`
   context — written with `createElement`, not JSX, so it stays a plain
@@ -71,16 +109,26 @@ formatting or sync-planning logic.
   `Layout`, so it stays a self-contained, independently testable unit.
 - `src/cli.tsx` only wires argv parsing to config, discovery, the domain
   model and rendering (`today`/`tasks`/`catalog [refresh]`/
-  `sync [status|all] [--project <dir>]`, plus the interactive default —
-  the `today` subcommand name is unrelated to the Dashboard screen's own
-  name and stays as-is). `loadDashboard` builds the Dashboard screen's
-  model from the same project/record discovery as `loadToday`/`loadTasks`,
-  adding the Hub card from local no-network sync status and the cached
-  catalog (never a network call on its own). `dashboardActionsDeps` builds
-  its Quick actions deps, reusing `adapters/hub.ts`'s `createCatalog`/
+  `sync [status|all] [--project <dir>]`/`setup [--yes] [--dry-run]`/
+  `doctor`, plus the interactive default — the `today` subcommand name is
+  unrelated to the Dashboard screen's own name and stays as-is).
+  `loadDashboard` builds the Dashboard screen's model from the same
+  project/record discovery as `loadToday`/`loadTasks`, adding the Hub card
+  from local no-network sync status and the cached catalog (never a
+  network call on its own). `dashboardActionsDeps` builds its Quick
+  actions deps, reusing `adapters/hub.ts`'s `createCatalog`/
   `refreshCatalog`/`syncProject` and kankaku's own `formatCatalogRefreshLines`/
   `formatSyncSummaryLines` for the result message — never reimplemented.
-  Do not put logic there beyond this wiring.
+  `runDoctorCommand` gathers plain facts (`adapters/setup/agents.ts`, hub
+  resolution/health, `tui.json` existence — the only network call, bounded
+  to 5s) and prints `domain/setup-plan.ts#formatDoctorLines` verbatim.
+  `runSetupCommand` builds the same plan; `--dry-run` prints
+  `formatSetupPlanLines` and returns before any prompt or write; otherwise
+  each `todo` step is asked through the injected `Prompter` (`--yes`
+  answers every question with its own default instead, never touching the
+  prompter) and, when confirmed, written through the matching
+  `adapters/setup/*` writer, ending with the same report as `doctor`. Do
+  not put logic there beyond this wiring.
 - Dependencies point inwards: adapters and ui import domain and ports;
   domain imports nothing outside `src/domain/` and `src/ports/`.
 

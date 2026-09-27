@@ -8,6 +8,36 @@ in. Built with [Ink](https://github.com/vadimdemedes/ink) on Node 24. Four
 screens — Dashboard, Tasks, Catalog and Sync — share one tab bar, and each
 has a plain-text subcommand for scripts and cron.
 
+## Install everything
+
+```
+npm i -g kankaku-tui
+kankaku setup
+```
+
+`kankaku setup` detects every coding agent kankaku knows how to configure
+on this machine (pi, gentle-shell, Claude Code — each by its own settings
+file) and, for each one that already exists but isn't wired up, offers to
+add it: `npm:kankaku` to a pi-family `packages` array, or Claude Code's
+`statusLine` pointing at a `kankaku-claude` checkout. It also offers to
+configure hub credentials (reusing `~/.kankaku/credentials.json` or the
+`KANKAKU_PB_*` environment when either is already set) and writes this
+app's own `~/.kankaku/tui.json`. Codex and OpenCode are detected and
+reported, but kankaku has no adapter for either yet.
+
+Every question has a sensible default; `kankaku setup --yes` accepts every
+default without asking, and `kankaku setup --dry-run` prints the plan —
+each step's state (`done`/`todo`/`unavailable`) and the exact file it
+would change — without writing anything. Nothing is ever written without
+either an explicit prompt answer or `--yes`. Before the first change to
+any file, kankaku setup creates a `<file>.bak` next to it; re-running
+`kankaku setup` is always safe, since it only ever writes what is still
+missing or what you explicitly change.
+
+`kankaku setup` ends with, and `kankaku doctor` prints on its own, the
+same read-only report: one line per agent, one for the hub, one for
+`tui.json`, and a `next: …` hint for anything still `todo`.
+
 ## Install
 
 Until the next kankaku release, this package depends on the sibling
@@ -78,6 +108,9 @@ never guesses which coding agent produced someone else's worklog.
   pending count and last sync per project, no network; with no argument,
   syncs the pending window; `all` does a full resync. Defaults to every
   discovered project, sequentially; `--project <dir>` restricts to one.
+- `kankaku setup [--yes] [--dry-run]` — see "Install everything" above.
+- `kankaku doctor` — the same read-only report `kankaku setup` ends with,
+  without prompting or writing anything.
 
 `--roots` (on `today`/`tasks`) overrides the configured roots for that run.
 
