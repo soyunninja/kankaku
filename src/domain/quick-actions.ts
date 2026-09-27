@@ -8,7 +8,7 @@
  * `formatQuickActionLines` for the status text underneath.
  */
 
-export type QuickActionKey = "c" | "s" | "S" | "r";
+export type QuickActionKey = "c" | "s" | "S" | "r" | "h";
 
 export interface QuickAction {
   key: QuickActionKey;
@@ -22,6 +22,14 @@ export const QUICK_ACTIONS: ReadonlyArray<QuickAction> = [
   { key: "S", label: "full sync all" },
   { key: "r", label: "reload" },
 ];
+
+/** A fifth action, appended only when the hub is a local install — see {@link quickActionsFor}. */
+export const LOCAL_HUB_ACTION: QuickAction = { key: "h", label: "start/stop local hub" };
+
+/** `QUICK_ACTIONS`, plus {@link LOCAL_HUB_ACTION} when `showLocalHub` is true (only for a local hub install). */
+export function quickActionsFor(showLocalHub: boolean): readonly QuickAction[] {
+  return showLocalHub ? [...QUICK_ACTIONS, LOCAL_HUB_ACTION] : QUICK_ACTIONS;
+}
 
 /**
  * The quick actions panel's status: no action has run yet (`idle`), one is
@@ -37,9 +45,9 @@ export type QuickActionState =
   | { status: "done"; key: QuickActionKey; message: string }
   | { status: "unavailable"; reason: string };
 
-/** `QUICK_ACTIONS`' label for `key` (every `QuickActionKey` is present, so this is never `undefined` in practice). */
+/** `QUICK_ACTIONS`/`LOCAL_HUB_ACTION`'s label for `key` (every `QuickActionKey` is present, so this is never `undefined` in practice). */
 function labelFor(key: QuickActionKey): string {
-  return QUICK_ACTIONS.find((action) => action.key === key)?.label ?? key;
+  return [...QUICK_ACTIONS, LOCAL_HUB_ACTION].find((action) => action.key === key)?.label ?? key;
 }
 
 /** The raw (unbounded) status text for `state`, or `""` when there is nothing to show yet (`idle`). */

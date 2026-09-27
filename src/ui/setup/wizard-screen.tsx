@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput, useStdout } from "ink";
 import {
+  DEFAULT_HUB_PORT,
   applyResult,
   back,
   claudeStepNeeded,
@@ -11,9 +12,7 @@ import {
   setClaudeCheckout,
   setHubField,
   setHubHealth,
-  setHubLocalManual,
   setHubMode,
-  setLocalCheckout,
   setRoots,
   shortenHome,
   toggleAgent,
@@ -46,17 +45,12 @@ const FOOTER_ROWS = 1;
  * `write-hub`, `write-roots`) need a value that never made it into the
  * action itself (see `domain/setup-wizard.ts#planFromWizard` — `file` is
  * always the target path, never the checkout/credentials/roots to write).
- * `installLocalHub` is exposed here for interface completeness (mirroring
- * every other real adapter this wizard drives) but is only ever invoked
- * from within `apply`'s own `install-local-hub` handling; the UI itself
- * only ever calls `apply`.
+ * `install-local-hub` itself (`hub-manager/install.ts#installHub`) runs
+ * entirely inside `apply`; the UI never calls it directly.
  */
 export interface WizardActions {
   apply(action: WizardAction, state: WizardState): Promise<ApplyResult>;
   checkHealth(url: string): Promise<boolean>;
-  findHubCheckout(): string | undefined;
-  manualCommands(checkout?: string): string[];
-  installLocalHub(checkout: string): Promise<{ url: string; serviceEmail: string; servicePassword: string }>;
 }
 
 export interface SetupWizardProps {
@@ -156,9 +150,6 @@ const HUB_MODE_OPTIONS: RadioOption<HubMode>[] = [
   { value: "skip", label: "skip" },
 ];
 
-/** Mirrors `adapters/setup/local-hub.ts`'s own `HUB_URL`: where a manually-started local hub is expected to answer. */
-const LOCAL_HUB_URL = "http://127.0.0.1:8090";
-
 function healthLine(healthOk: boolean | undefined, checking: boolean): string {
   if (checking) return "checking…";
   if (healthOk === undefined) return "";
@@ -190,11 +181,7 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
     if (state.step === "hub") setHubFocus(0);
   }, [state.step]);
 
-  const foundCheckout = state.hub.mode === "local" ? actions.findHubCheckout() : undefined;
-  const hasCheckoutField = state.hub.mode === "local" && (state.hub.localCheckout.trim() !== "" || foundCheckout !== undefined);
-  const checkoutValue = state.hub.localCheckout.trim() !== "" ? state.hub.localCheckout : (foundCheckout ?? "");
-
-  const hubFieldCount = state.hub.mode === "existing" ? 4 : state.hub.mode === "local" && hasCheckoutField ? 2 : 1;
+  const hubFieldCount = state.hub.mode === "existing" ? 4 : state.hub.mode === "local" ? 3 : 1;
   const textInputFocused =
     state.step === "claude" || state.step === "roots" || (state.step === "hub" && hubFocus >= 1 && hubFocus < hubFieldCount);
 
@@ -240,18 +227,13 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
       return;
     }
 
-    if (state.step === "hub" && !textInputFocused) {
+    if (state.step === "hub" && state.hub.mode === "existing" && !textInputFocused) {
       if (input === "c") {
-        const url = state.hub.mode === "existing" ? state.hub.url : LOCAL_HUB_URL;
         setHealthChecking(true);
-        void actions.checkHealth(url).then((ok) => {
+        void actions.checkHealth(state.hub.url).then((ok) => {
           setState((s) => setHubHealth(s, ok));
           setHealthChecking(false);
         });
-        return;
-      }
-      if (input === "m" && state.hub.mode === "local" && !hasCheckoutField) {
-        setState((s) => setHubLocalManual(s, true));
         return;
       }
     }
@@ -310,21 +292,19 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
                   <Text>{`[ check ] c   ${healthLine(state.hub.healthOk, healthChecking)}`}</Text>
                 </Box>
               )}
-              {state.hub.mode === "local" && hasCheckoutField && (
+              {state.hub.mode === "local" && (
                 <Box flexDirection="column">
-                  <Text>local checkout path:</Text>
-                  <TextInput value={checkoutValue} onChange={(value) => setState((s) => setLocalCheckout(s, value))} focused={hubFocus === 1} />
-                </Box>
-              )}
-              {state.hub.mode === "local" && !hasCheckoutField && (
-                <Box flexDirection="column">
-                  <Text dimColor>no kankaku-hub checkout found; run these commands, then check again:</Text>
-                  {actions.manualCommands(state.hub.localCheckout || undefined).map((line) => (
-                    <Text key={line}>{`  ${line}`}</Text>
-                  ))}
-                  <Text>{`[ check again ] c   ${healthLine(state.hub.healthOk, healthChecking)}`}</Text>
-                  <Text>{`[ m ] acknowledge manual install${state.hub.localManual ? " (acknowledged)" : ""}`}</Text>
-                  {state.errors.localCheckout && <Text color={theme.error}>{state.errors.localCheckout}</Text>}
+                  <Text dimColor>{`will install and run at http://127.0.0.1:${DEFAULT_HUB_PORT}`}</Text>
+                  <Box flexDirection="row">
+                    <Text>{"owner email: "}</Text>
+                    <TextInput value={state.hub.ownerEmail} onChange={(value) => setState((s) => setHubField(s, "ownerEmail", value))} focused={hubFocus === 1} />
+                  </Box>
+                  <Box flexDirection="row">
+                    <Text>{"owner password: "}</Text>
+                    <TextInput value={state.hub.ownerPassword} onChange={(value) => setState((s) => setHubField(s, "ownerPassword", value))} masked focused={hubFocus === 2} />
+                  </Box>
+                  {state.errors.ownerEmail && <Text color={theme.error}>{state.errors.ownerEmail}</Text>}
+                  {state.errors.ownerPassword && <Text color={theme.error}>{state.errors.ownerPassword}</Text>}
                 </Box>
               )}
             </Box>

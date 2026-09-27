@@ -12,6 +12,8 @@ export interface DashboardProjectInput {
 export interface DashboardOptions {
   /** Local day (`YYYY-MM-DD`) treated as "today" — the last point of `last7Days`. Never `Date.now()` here; the caller injects it. */
   today: string;
+  /** The local hub's current process state, when `~/.kankaku/hub/hub.json` exists and the resolved hub credentials point at it (`cli.tsx#loadDashboard`, no network call). `undefined` for a remote/unconfigured hub. */
+  localHub?: "running" | "stopped";
 }
 
 export interface DayPoint {
@@ -48,6 +50,8 @@ export type DashboardHubCard =
       lastSyncOk: boolean;
       lastSyncAt?: string;
       catalog?: DashboardHubCatalogSummary;
+      /** The local hub's process state, carried through from `DashboardOptions.localHub`; `undefined` for a remote/unconfigured hub. */
+      localHub?: "running" | "stopped";
     };
 
 export interface DashboardModel {
@@ -104,7 +108,7 @@ function withShare(rows: TodayRow[]): DashboardProjectRow[] {
  * summary. `entries === undefined` means the hub is not configured at
  * all, distinct from a configured-but-empty project list.
  */
-function buildHubCard(entries: DashboardHubInput[] | undefined, catalog: DashboardHubCatalogSummary | undefined): DashboardHubCard {
+function buildHubCard(entries: DashboardHubInput[] | undefined, catalog: DashboardHubCatalogSummary | undefined, localHub: "running" | "stopped" | undefined): DashboardHubCard {
   if (entries === undefined) return { status: "unavailable" };
 
   let pending = 0;
@@ -129,6 +133,7 @@ function buildHubCard(entries: DashboardHubInput[] | undefined, catalog: Dashboa
     lastSyncOk,
     ...(lastSyncAt !== undefined ? { lastSyncAt } : {}),
     ...(catalog !== undefined ? { catalog } : {}),
+    ...(localHub !== undefined ? { localHub } : {}),
   };
 }
 
@@ -149,6 +154,6 @@ export function buildDashboardModel(
     today: total,
     last7Days: buildLast7Days(projects, options.today),
     projects: withShare(rows),
-    hub: buildHubCard(hubEntries, catalogSummary),
+    hub: buildHubCard(hubEntries, catalogSummary, options.localHub),
   };
 }

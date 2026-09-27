@@ -321,3 +321,58 @@ test("without hub credentials, the panel shows a note and 'c'/'s'/'S' do nothing
   await nextTick();
   assert.equal(refreshCalls, 0);
 });
+
+test("without actions.localHub, the panel lists only the four base actions and shows no local hub line", () => {
+  const { lastFrame } = render(<DashboardScreen load={() => model()} actions={actions()} roots={["/work"]} version="0.1.0" columns={120} rows={30} />);
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("start/stop local hub"), false);
+  assert.equal(frame.includes("local hub ·"), false);
+});
+
+test("with actions.localHub, the panel lists a fifth 'h' action and the Hub card shows the local hub state", () => {
+  const { lastFrame } = render(
+    <DashboardScreen
+      load={() => model({ hub: { status: "ready", pending: 1, staleOutsideWindow: 0, lastSyncOk: true, localHub: "running" } })}
+      actions={actions({ localHub: { toggle: async () => "stopped the local hub" } })}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
+      rows={30}
+    />,
+  );
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("h") && frame.includes("start/stop local hub"), true);
+  assert.equal(frame.includes("local hub · running"), true);
+});
+
+test("'h' toggles the local hub and shows the result, reloading the model", async () => {
+  let toggleCalls = 0;
+  let loadCalls = 0;
+  const { lastFrame, stdin } = render(
+    <DashboardScreen
+      load={() => {
+        loadCalls += 1;
+        return model({ hub: { status: "ready", pending: 0, staleOutsideWindow: 0, lastSyncOk: true, localHub: "running" } });
+      }}
+      actions={actions({
+        localHub: {
+          toggle: async () => {
+            toggleCalls += 1;
+            return "stopped the local hub";
+          },
+        },
+      })}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
+      rows={30}
+      focused
+    />,
+  );
+  const loadCallsBeforeToggle = loadCalls;
+  stdin.write("h");
+  await nextTick();
+  assert.equal(toggleCalls, 1);
+  assert.equal((lastFrame() ?? "").includes("stopped the local hub"), true);
+  assert.ok(loadCalls > loadCallsBeforeToggle);
+});

@@ -19,18 +19,18 @@ export interface WizardHubState {
   password: string;
   /** Result of the last inline health check; `undefined` until one has run. */
   healthOk?: boolean;
-  localCheckout: string;
-  /** Acknowledges installing the local hub manually when no checkout was found. */
-  localManual: boolean;
+  /** The owner account created by `install-local-hub` (`hub-manager/install.ts#installHub`) — asked only in `local` mode. */
+  ownerEmail: string;
+  ownerPassword: string;
 }
 
-export type WizardErrorKey = "claudeCheckout" | "url" | "email" | "password" | "roots" | "localCheckout";
+export type WizardErrorKey = "claudeCheckout" | "url" | "email" | "password" | "roots" | "ownerEmail" | "ownerPassword";
 
 export type WizardActionKind = "install-pi" | "remove-pi" | "write-claude" | "remove-claude" | "write-hub" | "install-local-hub" | "write-roots";
 
 export interface WizardAction {
   kind: WizardActionKind;
-  /** The exact file this action changes (or the checkout path for `install-local-hub`). */
+  /** The exact file this action changes (or the local hub's URL for `install-local-hub`). */
   file: string;
   /** Human-readable description shown on the review screen. */
   label: string;
@@ -62,9 +62,10 @@ export interface WizardHubFacts {
   email: string | undefined;
   password: string | undefined;
   credentialsPath: string;
-  /** Default checkout path to prefill for a local install (an auto-detected checkout, or a sensible default). */
-  localCheckoutGuess: string;
 }
+
+/** The local hub's fixed port for the wizard's `install locally` review line and `install-local-hub` action — mirrors `hub-manager/install.ts#DEFAULT_HUB_PORT`. */
+export const DEFAULT_HUB_PORT = 8090;
 
 export interface WizardRootsFacts {
   /** The roots currently written to `tui.json`, or `undefined` when it does not exist yet. */
@@ -116,7 +117,7 @@ function clearError(errors: WizardState["errors"], key: WizardErrorKey): WizardS
   return rest;
 }
 
-const HUB_ERROR_KEYS: WizardErrorKey[] = ["url", "email", "password", "localCheckout"];
+const HUB_ERROR_KEYS: WizardErrorKey[] = ["url", "email", "password", "ownerEmail", "ownerPassword"];
 
 function clearHubErrors(errors: WizardState["errors"]): WizardState["errors"] {
   return HUB_ERROR_KEYS.reduce((acc, key) => clearError(acc, key), errors);
@@ -137,8 +138,8 @@ export function createWizardState(facts: WizardFacts): WizardState {
       url: facts.hub.url ?? "",
       email: facts.hub.email ?? "",
       password: facts.hub.password ?? "",
-      localCheckout: facts.hub.localCheckoutGuess,
-      localManual: false,
+      ownerEmail: "",
+      ownerPassword: "",
     },
     roots: facts.roots.current ?? facts.roots.defaultRoots,
     errors: {},
@@ -166,7 +167,7 @@ export function setHubMode(state: WizardState, mode: HubMode): WizardState {
   return { ...state, hub: { ...state.hub, mode }, errors: clearHubErrors(state.errors) };
 }
 
-export type HubField = "url" | "email" | "password";
+export type HubField = "url" | "email" | "password" | "ownerEmail" | "ownerPassword";
 
 export function setHubField(state: WizardState, field: HubField, value: string): WizardState {
   return { ...state, hub: { ...state.hub, [field]: value }, errors: clearError(state.errors, field) };
@@ -185,14 +186,6 @@ export function setRoots(state: WizardState, text: string): WizardState {
   return { ...state, roots, errors: clearError(state.errors, "roots") };
 }
 
-export function setLocalCheckout(state: WizardState, value: string): WizardState {
-  return { ...state, hub: { ...state.hub, localCheckout: value }, errors: clearError(state.errors, "localCheckout") };
-}
-
-export function setHubLocalManual(state: WizardState, manual: boolean): WizardState {
-  return { ...state, hub: { ...state.hub, localManual: manual }, errors: clearError(state.errors, "localCheckout") };
-}
-
 function validateHub(hub: WizardHubState): Partial<Record<WizardErrorKey, string>> {
   if (hub.mode === "existing") {
     const errors: Partial<Record<WizardErrorKey, string>> = {};
@@ -202,10 +195,10 @@ function validateHub(hub: WizardHubState): Partial<Record<WizardErrorKey, string
     return errors;
   }
   if (hub.mode === "local") {
-    if (hub.localCheckout.trim() === "" && !hub.localManual) {
-      return { localCheckout: "enter a checkout path, or acknowledge installing manually" };
-    }
-    return {};
+    const errors: Partial<Record<WizardErrorKey, string>> = {};
+    if (!hub.ownerEmail.includes("@")) errors.ownerEmail = "enter a valid email";
+    if (hub.ownerPassword.trim() === "") errors.ownerPassword = "enter a password";
+    return errors;
   }
   return {};
 }
@@ -256,8 +249,9 @@ export function planFromWizard(state: WizardState, facts: WizardFacts): WizardAc
     if (changed) {
       actions.push({ kind: "write-hub", file: facts.hub.credentialsPath, label: `write hub credentials to ${facts.hub.credentialsPath}` });
     }
-  } else if (state.hub.mode === "local" && state.hub.localCheckout.trim() !== "") {
-    actions.push({ kind: "install-local-hub", file: state.hub.localCheckout, label: `install a local hub from ${state.hub.localCheckout}` });
+  } else if (state.hub.mode === "local") {
+    const url = `http://127.0.0.1:${DEFAULT_HUB_PORT}`;
+    actions.push({ kind: "install-local-hub", file: url, label: `install a local hub at ${url}` });
   }
 
   const sameRoots = facts.roots.current !== undefined && arraysEqual(facts.roots.current, state.roots);

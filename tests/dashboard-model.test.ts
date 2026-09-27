@@ -136,3 +136,23 @@ test("hub card reports lastSyncOk false when any project carries a sync error", 
   );
   assert.equal(model.hub.status === "ready" && model.hub.lastSyncOk, false);
 });
+
+test("hub card carries localHub when options.localHub is given", () => {
+  const model = buildDashboardModel(
+    [],
+    [{ name: "alpha", status: { state: { syncedThrough: "2026-09-27T08:00:00.000Z", hashes: {}, target: "http://127.0.0.1:8090" }, pending: 0, staleOutsideWindow: 0 } }],
+    undefined,
+    { today: TODAY, localHub: "running" },
+  );
+  assert.equal(model.hub.status === "ready" && model.hub.localHub, "running");
+});
+
+test("hub card omits localHub when options.localHub is not given (a remote hub)", () => {
+  const model = buildDashboardModel(
+    [],
+    [{ name: "alpha", status: { state: { syncedThrough: "2026-09-27T08:00:00.000Z", hashes: {}, target: "https://hub.example.com" }, pending: 0, staleOutsideWindow: 0 } }],
+    undefined,
+    { today: TODAY },
+  );
+  assert.equal(model.hub.status === "ready" && "localHub" in model.hub, false);
+});

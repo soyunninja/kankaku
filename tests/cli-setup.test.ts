@@ -352,3 +352,41 @@ test("no command, tui.json already exists: opens the normal dashboard, not the w
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("setup --yes --from-checkout <dir>: never opens the interactive wizard, even on a TTY", async () => {
+  const home = makeHome();
+  try {
+    let rendered = false;
+    await runCli(
+      ["setup", "--yes", "--from-checkout", join(home, "not-a-checkout")],
+      baseDeps(home, {
+        isTTY: () => true,
+        renderApp: () => {
+          rendered = true;
+        },
+      }),
+    );
+    assert.equal(rendered, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --yes --from-checkout <dir>: on a checkout missing its dev scripts, reports the failure and exits 1 without prompting for hub credentials", async () => {
+  const home = makeHome();
+  const checkout = mkdtempSync(join(tmpdir(), "kankaku-tui-not-a-checkout-"));
+  try {
+    const errors: string[] = [];
+    let exitCode: number | undefined;
+    await runCli(
+      ["setup", "--yes", "--from-checkout", checkout],
+      baseDeps(home, { stderr: (text) => errors.push(text), exit: (code) => (exitCode = code) }),
+    );
+    assert.equal(exitCode, 1);
+    assert.match(errors.join(""), /^kankaku setup --from-checkout: /);
+    assert.equal(existsSync(join(home, ".kankaku", "credentials.json")), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(checkout, { recursive: true, force: true });
+  }
+});

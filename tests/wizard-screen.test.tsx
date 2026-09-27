@@ -13,7 +13,7 @@ function baseAgentFacts(): AgentDetectionFacts {
 function baseFacts(overrides: Partial<WizardFacts> = {}): WizardFacts {
   return {
     agentFacts: baseAgentFacts(),
-    hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" },
+    hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json" },
     roots: { current: undefined, defaultRoots: ["/work"], path: "/home/.kankaku/tui.json" },
     homeDir: "/home",
     ...overrides,
@@ -22,9 +22,9 @@ function baseFacts(overrides: Partial<WizardFacts> = {}): WizardFacts {
 
 function fakeActions(overrides: Partial<WizardActions> = {}): {
   actions: WizardActions;
-  calls: { apply: [WizardAction, WizardState][]; checkHealth: string[]; findHubCheckout: number };
+  calls: { apply: [WizardAction, WizardState][]; checkHealth: string[] };
 } {
-  const calls = { apply: [] as [WizardAction, WizardState][], checkHealth: [] as string[], findHubCheckout: 0 };
+  const calls = { apply: [] as [WizardAction, WizardState][], checkHealth: [] as string[] };
   const actions: WizardActions = {
     apply: async (action, state) => {
       calls.apply.push([action, state]);
@@ -35,12 +35,6 @@ function fakeActions(overrides: Partial<WizardActions> = {}): {
       calls.checkHealth.push(url);
       return true;
     },
-    findHubCheckout: () => {
-      calls.findHubCheckout += 1;
-      return undefined;
-    },
-    manualCommands: (checkout) => [`cd ${checkout ?? "~/desarrollo/soyun.ninja/kankaku-hub"}`, "scripts/pb-download.sh", "scripts/dev.sh &", "scripts/create-dev-accounts.sh"],
-    installLocalHub: async () => ({ url: "http://127.0.0.1:8090", serviceEmail: "kankaku-sync@kankaku.local", servicePassword: "kankaku-dev-sync" }),
     ...overrides,
   };
   return { actions, calls };
@@ -110,7 +104,7 @@ test("Claude step: Enter with an empty checkout shows the error and stays on the
 });
 
 test("Hub step (existing mode): 'c' runs the health check and shows the result", async () => {
-  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://hub.example.com", email: "a@b.com", password: "s", credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" } });
+  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://hub.example.com", email: "a@b.com", password: "s", credentialsPath: "/home/.kankaku/credentials.json" } });
   const { actions, calls } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
@@ -125,8 +119,8 @@ test("Hub step (existing mode): 'c' runs the health check and shows the result",
   assert.equal((lastFrame() ?? "").includes("health ok"), true);
 });
 
-test("Hub step (local mode, no checkout found): shows the manual commands, 'm' acknowledges manual install", async () => {
-  const { actions } = fakeActions({ findHubCheckout: () => undefined });
+test("Hub step (local mode): shows the local install URL and blocks next until owner email/password are set", async () => {
+  const { actions } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
   stdin.write("\r"); // agents -> hub
@@ -134,28 +128,35 @@ test("Hub step (local mode, no checkout found): shows the manual commands, 'm' a
   stdin.write("\u001B[A"); // skip -> local (up arrow)
   await nextTick();
   const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("scripts/pb-download.sh"), true);
+  assert.equal(frame.includes("http://127.0.0.1:8090"), true);
 
-  stdin.write("\r"); // next while unacknowledged: blocked
+  stdin.write("\r"); // next with empty owner email/password: blocked
   await nextTick();
   assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
-
-  stdin.write("m");
-  await nextTick();
-  stdin.write("\r");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+  assert.equal((lastFrame() ?? "").includes("enter a valid email"), true);
 });
 
-test("Hub step (local mode, checkout found): prefills the checkout path from findHubCheckout", async () => {
-  const { actions } = fakeActions({ findHubCheckout: () => "/home/dev/kankaku-hub" });
+test("Hub step (local mode): Tab focuses the owner email/password fields, typing fills them, Enter advances once valid", async () => {
+  const { actions } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
   stdin.write("\r"); // agents -> hub
   await nextTick();
   stdin.write("\u001B[A"); // skip -> local
   await nextTick();
-  assert.equal((lastFrame() ?? "").includes("/home/dev/kankaku-hub"), true);
+  stdin.write("\t"); // radio -> owner email field
+  await nextTick();
+  stdin.write("owner@example.com");
+  await nextTick();
+  stdin.write("\t"); // owner email -> owner password field
+  await nextTick();
+  stdin.write("s3cret");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("owner@example.com"), true);
+
+  stdin.write("\r"); // hub -> roots
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
 });
 
 test("Review step: lists the plan's label and file, Roots step renders along the way", async () => {

@@ -4,7 +4,7 @@ import { formatMinutes } from "../domain/today-model.ts";
 import type { TodayRow } from "../domain/today-model.ts";
 import type { DashboardHubCard, DashboardModel, DashboardProjectRow, DayPoint } from "../domain/dashboard-model.ts";
 import { SCREENS, hintsFor } from "../domain/nav-model.ts";
-import { QUICK_ACTIONS, formatQuickActionLines } from "../domain/quick-actions.ts";
+import { formatQuickActionLines, quickActionsFor } from "../domain/quick-actions.ts";
 import type { QuickActionKey, QuickActionState } from "../domain/quick-actions.ts";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
@@ -28,6 +28,8 @@ export interface DashboardActions {
   refreshCatalog: () => Promise<string>;
   syncAll: (options: { full: boolean }) => Promise<string>;
   hubAvailable: boolean;
+  /** Only present when the configured hub is this machine's local install (`~/.kankaku/hub/hub.json`): `toggle` starts it if stopped, stops it if running, resolving to an already-formatted result message. Its presence alone drives the `h` quick action and the Hub card's extra local-hub line. */
+  localHub?: { toggle: () => Promise<string> };
 }
 
 export interface DashboardScreenProps {
@@ -156,6 +158,7 @@ function HubPanel({ hub, width, height }: { hub: DashboardHubCard; width: number
           <Text>{`pending ${hub.pending} · stale ${hub.staleOutsideWindow}`}</Text>
           <Text>{`last sync ${hub.lastSyncOk ? "ok" : "error"}${hub.lastSyncAt !== undefined ? ` ${formatTime(hub.lastSyncAt)}` : ""}`}</Text>
           {hub.catalog !== undefined && <Text>{`catalog ${hub.catalog.clientCount} clients · ${hub.catalog.projectCount} projects`}</Text>}
+          {hub.localHub !== undefined && <Text>{`local hub · ${hub.localHub}`}</Text>}
         </Box>
       )}
     </Panel>
@@ -164,22 +167,26 @@ function HubPanel({ hub, width, height }: { hub: DashboardHubCard; width: number
 
 /** Rows the Quick actions panel's own chrome takes outside its content: 1 top border + 1 bottom border. */
 const QUICK_ACTIONS_CHROME_ROWS = 2;
-/** Rows the Quick actions panel takes: its chrome, one line per `QUICK_ACTIONS` entry, plus one status line. */
-const QUICK_ACTIONS_PANEL_ROWS = QUICK_ACTIONS_CHROME_ROWS + QUICK_ACTIONS.length + 1;
+
+/** Rows the Quick actions panel takes: its chrome, one line per shown action (`QUICK_ACTIONS`, plus the local-hub action when `showLocalHub`), plus one status line. */
+function quickActionsPanelRows(showLocalHub: boolean): number {
+  return QUICK_ACTIONS_CHROME_ROWS + quickActionsFor(showLocalHub).length + 1;
+}
 
 /**
- * The `[ Quick actions ]` panel: `QUICK_ACTIONS` listed one per line (key
- * in the accent colour, label muted — the same convention as the footer
- * `KeyHints`), followed by one status line from `domain/quick-actions.ts#formatQuickActionLines`
+ * The `[ Quick actions ]` panel: `QUICK_ACTIONS` (plus the local-hub `h`
+ * action when `showLocalHub`) listed one per line (key in the accent
+ * colour, label muted — the same convention as the footer `KeyHints`),
+ * followed by one status line from `domain/quick-actions.ts#formatQuickActionLines`
  * (always exactly one line, so this panel's height never changes with the
  * message).
  */
-function QuickActionsPanel({ state, width, height, active }: { state: QuickActionState; width: number; height: number; active: boolean }) {
+function QuickActionsPanel({ state, width, height, active, showLocalHub }: { state: QuickActionState; width: number; height: number; active: boolean; showLocalHub: boolean }) {
   const theme = useTheme();
   const [statusLine] = formatQuickActionLines(Math.max(width - 2, 1), state);
   return (
     <Panel title="Quick actions" width={width} height={height} active={active}>
-      {QUICK_ACTIONS.map((action) => (
+      {quickActionsFor(showLocalHub).map((action) => (
         <Text key={action.key}>
           <Text color={theme.accent}>{action.key}</Text>
           <Text color={theme.muted}>{`  ${action.label}`}</Text>
@@ -198,14 +205,16 @@ const GRID_BREAKPOINT = 70;
 const TODAY_PANEL_ROWS = 5;
 /** Rows the Last 7 days panel takes: 1 top border + 2 content lines + 1 bottom border. */
 const LAST7_PANEL_ROWS = 4;
-/** Rows the Hub panel takes at most: 1 top border + up to 3 content lines + 1 bottom border. */
-const HUB_PANEL_ROWS = 5;
+/** Rows the Hub panel takes at most: 1 top border + up to 3 content lines + 1 bottom border; one more when `showLocalHub` (its extra `local hub · running|stopped` line). */
+function hubPanelRows(showLocalHub: boolean): number {
+  return showLocalHub ? 6 : 5;
+}
 /** Rows the Projects panel's own chrome (border + table header) takes outside its data rows. */
 const TABLE_CHROME_ROWS = 3;
 
 /** How many data rows the Projects table can show for a given `mainHeight`, depending on whether the grid is two columns (`grid`) or stacked to one (`stacked`). */
-function projectsMaxRows(mainHeight: number, layout: "grid" | "stacked"): number {
-  const fixedRows = layout === "grid" ? TODAY_PANEL_ROWS : TODAY_PANEL_ROWS + LAST7_PANEL_ROWS + HUB_PANEL_ROWS + QUICK_ACTIONS_PANEL_ROWS;
+function projectsMaxRows(mainHeight: number, layout: "grid" | "stacked", showLocalHub: boolean): number {
+  const fixedRows = layout === "grid" ? TODAY_PANEL_ROWS : TODAY_PANEL_ROWS + LAST7_PANEL_ROWS + hubPanelRows(showLocalHub) + quickActionsPanelRows(showLocalHub);
   return Math.max(mainHeight - fixedRows - TABLE_CHROME_ROWS, 1);
 }
 
@@ -215,8 +224,8 @@ function projectsMaxRows(mainHeight: number, layout: "grid" | "stacked"): number
  * allows, so the panel itself never grows past what its own table renders
  * (see the layout-stability rule this screen's panels all follow).
  */
-function projectsPanelHeight(mainHeight: number, layout: "grid" | "stacked"): number {
-  return TABLE_CHROME_ROWS + projectsMaxRows(mainHeight, layout);
+function projectsPanelHeight(mainHeight: number, layout: "grid" | "stacked", showLocalHub: boolean): number {
+  return TABLE_CHROME_ROWS + projectsMaxRows(mainHeight, layout, showLocalHub);
 }
 
 function DashboardGrid({
@@ -226,6 +235,7 @@ function DashboardGrid({
   mainHeight,
   focused,
   actionState,
+  showLocalHub,
 }: {
   model: DashboardModel;
   selectedIndex: number;
@@ -233,6 +243,7 @@ function DashboardGrid({
   mainHeight: number;
   focused: boolean;
   actionState: QuickActionState;
+  showLocalHub: boolean;
 }) {
   if (mainWidth < GRID_BREAKPOINT) {
     return (
@@ -243,12 +254,12 @@ function DashboardGrid({
           rows={model.projects}
           selectedIndex={selectedIndex}
           width={mainWidth}
-          height={projectsPanelHeight(mainHeight, "stacked")}
-          maxRows={projectsMaxRows(mainHeight, "stacked")}
+          height={projectsPanelHeight(mainHeight, "stacked", showLocalHub)}
+          maxRows={projectsMaxRows(mainHeight, "stacked", showLocalHub)}
           active={focused}
         />
-        <QuickActionsPanel state={actionState} width={mainWidth} height={QUICK_ACTIONS_PANEL_ROWS} active={false} />
-        <HubPanel hub={model.hub} width={mainWidth} height={HUB_PANEL_ROWS} />
+        <QuickActionsPanel state={actionState} width={mainWidth} height={quickActionsPanelRows(showLocalHub)} active={false} showLocalHub={showLocalHub} />
+        <HubPanel hub={model.hub} width={mainWidth} height={hubPanelRows(showLocalHub)} />
       </Box>
     );
   }
@@ -263,16 +274,16 @@ function DashboardGrid({
           rows={model.projects}
           selectedIndex={selectedIndex}
           width={leftWidth}
-          height={projectsPanelHeight(mainHeight, "grid")}
-          maxRows={projectsMaxRows(mainHeight, "grid")}
+          height={projectsPanelHeight(mainHeight, "grid", showLocalHub)}
+          maxRows={projectsMaxRows(mainHeight, "grid", showLocalHub)}
           active={focused}
         />
       </Box>
       <Box width={1} />
       <Box flexDirection="column" width={rightWidth}>
         <Last7DaysPanel points={model.last7Days} width={rightWidth} height={LAST7_PANEL_ROWS} />
-        <HubPanel hub={model.hub} width={rightWidth} height={HUB_PANEL_ROWS} />
-        <QuickActionsPanel state={actionState} width={rightWidth} height={QUICK_ACTIONS_PANEL_ROWS} active={false} />
+        <HubPanel hub={model.hub} width={rightWidth} height={hubPanelRows(showLocalHub)} />
+        <QuickActionsPanel state={actionState} width={rightWidth} height={quickActionsPanelRows(showLocalHub)} active={false} showLocalHub={showLocalHub} />
       </Box>
     </Box>
   );
@@ -303,12 +314,32 @@ export function DashboardScreen({ load, actions, roots, version, columns, rows, 
   const [actionState, setActionState] = useState<QuickActionState>(() => initialActionState(actions.hubAvailable));
   const maxRowsRef = useRef(0);
   const busyRef = useRef(false);
+  const showLocalHub = actions.localHub !== undefined;
 
   const runQuickAction = (key: QuickActionKey) => {
     if (busyRef.current) return;
 
     if (key === "r") {
       setModel(load());
+      return;
+    }
+
+    if (key === "h") {
+      if (!actions.localHub) return;
+      busyRef.current = true;
+      setActionState({ status: "busy", key });
+      actions.localHub
+        .toggle()
+        .then((message) => {
+          setActionState({ status: "done", key, message });
+          setModel(load());
+        })
+        .catch((error: unknown) => {
+          setActionState({ status: "done", key, message: `error: ${error instanceof Error ? error.message : String(error)}` });
+        })
+        .finally(() => {
+          busyRef.current = false;
+        });
       return;
     }
 
@@ -333,7 +364,7 @@ export function DashboardScreen({ load, actions, roots, version, columns, rows, 
   useInput(
     (input, key) => {
       const lastIndex = Math.max(model.projects.length - 1, 0);
-      if (input === "c" || input === "s" || input === "S" || input === "r") {
+      if (input === "c" || input === "s" || input === "S" || input === "r" || input === "h") {
         runQuickAction(input as QuickActionKey);
       } else if (key.downArrow) {
         setSelected((index) => Math.min(index + 1, lastIndex));
@@ -368,8 +399,10 @@ export function DashboardScreen({ load, actions, roots, version, columns, rows, 
       focus={focused ? "main" : "sidebar"}
     >
       {({ mainWidth, mainHeight }) => {
-        maxRowsRef.current = projectsMaxRows(mainHeight, mainWidth < GRID_BREAKPOINT ? "stacked" : "grid");
-        return <DashboardGrid model={model} selectedIndex={selected} mainWidth={mainWidth} mainHeight={mainHeight} focused={focused} actionState={actionState} />;
+        maxRowsRef.current = projectsMaxRows(mainHeight, mainWidth < GRID_BREAKPOINT ? "stacked" : "grid", showLocalHub);
+        return (
+          <DashboardGrid model={model} selectedIndex={selected} mainWidth={mainWidth} mainHeight={mainHeight} focused={focused} actionState={actionState} showLocalHub={showLocalHub} />
+        );
       }}
     </Layout>
   );

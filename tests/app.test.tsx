@@ -50,7 +50,7 @@ function appProps() {
 function wizardFacts(): WizardFacts {
   return {
     agentFacts: { pi: undefined, gentleShell: undefined, claudeCode: undefined, codex: undefined, opencode: undefined },
-    hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" },
+    hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json" },
     roots: { current: undefined, defaultRoots: ["/work"], path: "/home/.kankaku/tui.json" },
     homeDir: "/home",
   };
@@ -60,9 +60,6 @@ function wizardActions(): WizardActions {
   return {
     apply: async (action) => ({ action, outcome: "wrote" }),
     checkHealth: async () => true,
-    findHubCheckout: () => undefined,
-    manualCommands: () => [],
-    installLocalHub: async () => ({ url: "http://127.0.0.1:8090", serviceEmail: "a@b", servicePassword: "pw" }),
   };
 }
 

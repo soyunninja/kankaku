@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  DEFAULT_HUB_PORT,
   createWizardState,
   guessClaudeCheckout,
   shortenHome,
@@ -10,8 +11,6 @@ import {
   setHubField,
   setHubHealth,
   setRoots,
-  setLocalCheckout,
-  setHubLocalManual,
   next,
   back,
   planFromWizard,
@@ -28,7 +27,7 @@ function baseAgentFacts(): AgentDetectionFacts {
 function baseFacts(overrides: Partial<WizardFacts> = {}): WizardFacts {
   return {
     agentFacts: baseAgentFacts(),
-    hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "~/desarrollo/soyun.ninja/kankaku-hub" },
+    hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json" },
     roots: { current: undefined, defaultRoots: ["/work"], path: "/home/.kankaku/tui.json" },
     homeDir: "/home",
     ...overrides,
@@ -76,7 +75,7 @@ test("createWizardState: codex/opencode are never selected initially (no adapter
 });
 
 test("createWizardState: hub mode is 'existing' when credentials are present, prefilling url/email/password", () => {
-  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://hub.example.com", email: "a@b.com", password: "secret", credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" } });
+  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://hub.example.com", email: "a@b.com", password: "secret", credentialsPath: "/home/.kankaku/credentials.json" } });
   const state = createWizardState(facts);
   assert.equal(state.hub.mode, "existing");
   assert.equal(state.hub.url, "https://hub.example.com");
@@ -92,10 +91,10 @@ test("createWizardState: hub mode is 'skip' when no credentials exist", () => {
   assert.equal(state.hub.password, "");
 });
 
-test("createWizardState: hub.localCheckout starts as the guessed checkout", () => {
-  const state = createWizardState(baseFacts({ hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/x", localCheckoutGuess: "/home/dev/kankaku-hub" } }));
-  assert.equal(state.hub.localCheckout, "/home/dev/kankaku-hub");
-  assert.equal(state.hub.localManual, false);
+test("createWizardState: hub.ownerEmail/ownerPassword start empty", () => {
+  const state = createWizardState(baseFacts());
+  assert.equal(state.hub.ownerEmail, "");
+  assert.equal(state.hub.ownerPassword, "");
 });
 
 test("createWizardState: claudeCheckout is guessed from the current statusLine command", () => {
@@ -197,18 +196,18 @@ test("setRoots: parses a comma-separated list, trimming and dropping empties", (
   assert.deepEqual(updated.roots, ["/a", "/b", "/c/d"]);
 });
 
-test("setLocalCheckout: sets the checkout path and clears its error", () => {
-  const state = { ...createWizardState(baseFacts()), errors: { localCheckout: "enter a path" } };
-  const updated = setLocalCheckout(state, "/hub-checkout");
-  assert.equal(updated.hub.localCheckout, "/hub-checkout");
-  assert.equal(updated.errors.localCheckout, undefined);
+test("setHubField: updates ownerEmail and clears its error", () => {
+  const state = { ...createWizardState(baseFacts()), errors: { ownerEmail: "enter a valid email" } };
+  const updated = setHubField(state, "ownerEmail", "owner@example.com");
+  assert.equal(updated.hub.ownerEmail, "owner@example.com");
+  assert.equal(updated.errors.ownerEmail, undefined);
 });
 
-test("setHubLocalManual: acknowledges manual install and clears the checkout error", () => {
-  const state = { ...createWizardState(baseFacts()), errors: { localCheckout: "enter a path" } };
-  const updated = setHubLocalManual(state, true);
-  assert.equal(updated.hub.localManual, true);
-  assert.equal(updated.errors.localCheckout, undefined);
+test("setHubField: updates ownerPassword and clears its error", () => {
+  const state = { ...createWizardState(baseFacts()), errors: { ownerPassword: "enter a password" } };
+  const updated = setHubField(state, "ownerPassword", "s3cret");
+  assert.equal(updated.hub.ownerPassword, "s3cret");
+  assert.equal(updated.errors.ownerPassword, undefined);
 });
 
 // ---- next() ----
@@ -251,7 +250,7 @@ test("next: claude step advances to hub once the checkout is set", () => {
 
 test("next: hub existing mode rejects a non-http(s) url", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "existing", url: "ftp://x", email: "a@b.com", password: "secret", localCheckout: "", localManual: false } }, facts);
+  const state = stateAt("hub", { hub: { mode: "existing", url: "ftp://x", email: "a@b.com", password: "secret", ownerEmail: "", ownerPassword: "" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
   assert.equal(typeof result.errors.url, "string");
@@ -259,7 +258,7 @@ test("next: hub existing mode rejects a non-http(s) url", () => {
 
 test("next: hub existing mode rejects an email without '@'", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "not-an-email", password: "secret", localCheckout: "", localManual: false } }, facts);
+  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "not-an-email", password: "secret", ownerEmail: "", ownerPassword: "" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
   assert.equal(typeof result.errors.email, "string");
@@ -267,7 +266,7 @@ test("next: hub existing mode rejects an email without '@'", () => {
 
 test("next: hub existing mode rejects an empty password", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "a@b.com", password: "", localCheckout: "", localManual: false } }, facts);
+  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "a@b.com", password: "", ownerEmail: "", ownerPassword: "" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
   assert.equal(typeof result.errors.password, "string");
@@ -275,33 +274,35 @@ test("next: hub existing mode rejects an empty password", () => {
 
 test("next: hub existing mode with valid fields advances to roots", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "a@b.com", password: "secret", localCheckout: "", localManual: false } }, facts);
+  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "a@b.com", password: "secret", ownerEmail: "", ownerPassword: "" } }, facts);
   assert.equal(next(state, facts).step, "roots");
 });
 
-test("next: hub local mode rejects an empty checkout with no manual acknowledgement", () => {
+test("next: hub local mode rejects an invalid owner email", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", localCheckout: "", localManual: false } }, facts);
+  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "not-an-email", ownerPassword: "s3cret" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
-  assert.equal(typeof result.errors.localCheckout, "string");
+  assert.equal(typeof result.errors.ownerEmail, "string");
 });
 
-test("next: hub local mode advances when manual install is acknowledged", () => {
+test("next: hub local mode rejects an empty owner password", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", localCheckout: "", localManual: true } }, facts);
-  assert.equal(next(state, facts).step, "roots");
+  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "owner@example.com", ownerPassword: "" } }, facts);
+  const result = next(state, facts);
+  assert.equal(result.step, "hub");
+  assert.equal(typeof result.errors.ownerPassword, "string");
 });
 
-test("next: hub local mode advances when a checkout path is set", () => {
+test("next: hub local mode advances when owner email/password are set", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", localCheckout: "/hub", localManual: false } }, facts);
+  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "owner@example.com", ownerPassword: "s3cret" } }, facts);
   assert.equal(next(state, facts).step, "roots");
 });
 
 test("next: hub skip mode always advances", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "skip", url: "", email: "", password: "", localCheckout: "", localManual: false } }, facts);
+  const state = stateAt("hub", { hub: { mode: "skip", url: "", email: "", password: "", ownerEmail: "", ownerPassword: "" } }, facts);
   assert.equal(next(state, facts).step, "roots");
 });
 
@@ -438,7 +439,7 @@ test("planFromWizard: remove-claude when Claude is unselected but configured", (
 });
 
 test("planFromWizard: write-hub in existing mode when fields changed vs current credentials", () => {
-  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://old", email: "a@b.com", password: "old", credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" } });
+  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://old", email: "a@b.com", password: "old", credentialsPath: "/home/.kankaku/credentials.json" } });
   let state = createWizardState(facts);
   state = setHubField(state, "url", "https://new");
   const plan = planFromWizard(state, facts);
@@ -446,28 +447,22 @@ test("planFromWizard: write-hub in existing mode when fields changed vs current 
 });
 
 test("planFromWizard: no write-hub in existing mode when nothing changed", () => {
-  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://old", email: "a@b.com", password: "old", credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" } });
+  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://old", email: "a@b.com", password: "old", credentialsPath: "/home/.kankaku/credentials.json" } });
   const state = createWizardState(facts);
   const plan = planFromWizard(state, facts);
   assert.equal(plan.some((a) => a.kind === "write-hub"), false);
 });
 
-test("planFromWizard: install-local-hub in local mode with a checkout", () => {
+test("planFromWizard: install-local-hub in local mode at the default port", () => {
   const facts = baseFacts();
-  const state = setLocalCheckout(setHubMode(createWizardState(facts), "local"), "/hub-checkout");
+  const state = setHubMode(createWizardState(facts), "local");
   const plan = planFromWizard(state, facts);
+  const url = `http://127.0.0.1:${DEFAULT_HUB_PORT}`;
   assert.deepEqual(plan.find((a) => a.kind === "install-local-hub"), {
     kind: "install-local-hub",
-    file: "/hub-checkout",
-    label: "install a local hub from /hub-checkout",
+    file: url,
+    label: `install a local hub at ${url}`,
   });
-});
-
-test("planFromWizard: no install-local-hub in local mode with no checkout (manual)", () => {
-  const facts = baseFacts({ hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localCheckoutGuess: "" } });
-  const state = setHubLocalManual(setHubMode(createWizardState(facts), "local"), true);
-  const plan = planFromWizard(state, facts);
-  assert.equal(plan.some((a) => a.kind === "install-local-hub"), false);
 });
 
 test("planFromWizard: no hub action in skip mode", () => {

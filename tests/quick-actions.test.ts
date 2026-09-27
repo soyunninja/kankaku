@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { QUICK_ACTIONS, formatQuickActionLines } from "../src/domain/quick-actions.ts";
+import { LOCAL_HUB_ACTION, QUICK_ACTIONS, formatQuickActionLines, quickActionsFor } from "../src/domain/quick-actions.ts";
 import type { QuickActionState } from "../src/domain/quick-actions.ts";
 
 test("QUICK_ACTIONS lists the four actions with their key and label, in order", () => {
@@ -43,4 +43,16 @@ test("formatQuickActionLines never overflows even at a width of zero or negative
   const state: QuickActionState = { status: "done", key: "r", message: "reloaded" };
   assert.equal(formatQuickActionLines(0, state)[0].length, 1);
   assert.equal(formatQuickActionLines(-5, state)[0].length, 1);
+});
+
+test("quickActionsFor(false) is exactly QUICK_ACTIONS, unchanged", () => {
+  assert.deepEqual(quickActionsFor(false), QUICK_ACTIONS);
+});
+
+test("quickActionsFor(true) appends the local hub action", () => {
+  assert.deepEqual(quickActionsFor(true), [...QUICK_ACTIONS, LOCAL_HUB_ACTION]);
+});
+
+test("formatQuickActionLines shows a busy marker with the local hub action's label", () => {
+  assert.deepEqual(formatQuickActionLines(40, { status: "busy", key: "h" }), ["… start/stop local hub"]);
 });
