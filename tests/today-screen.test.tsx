@@ -152,3 +152,28 @@ test("PageDown/Home/End move the Projects selection", async () => {
   await nextTick();
   assert.equal(markedProject(), "project-0");
 });
+
+function longNameProjects(count: number): DashboardProjectRow[] {
+  return Array.from({ length: count }, (_, index) => ({
+    name: `a-very-long-descriptive-project-name-that-keeps-going-${index}`,
+    tasks: 1,
+    wallMs: 60000,
+    workMs: 60000,
+    waitingMs: 0,
+    cost: 1,
+    share: 0.5,
+  }));
+}
+
+test("a long project name list never pushes the header out of view or any right-column panel past its budget, at 100×20", () => {
+  const { lastFrame } = render(
+    <TodayScreen load={() => model({ projects: longNameProjects(40) })} roots={["/work"]} version="0.1.0" columns={100} rows={20} />,
+  );
+  const frame = lastFrame() ?? "";
+  const lines = frame.split("\n");
+  assert.ok(lines.length <= 20, `expected at most 20 lines, got ${lines.length}`);
+  assert.equal(lines[0]?.startsWith(">_ kankaku"), true, "line 1 should be the header");
+  assert.equal(lines[lines.length - 1]?.includes("q quit"), true, "the last line should be the footer hints");
+  assert.equal(frame.includes("Last 7 days"), true);
+  assert.equal(frame.includes("Hub"), true);
+});

@@ -116,6 +116,17 @@ test("fits within `rows` with many clients and projects at 100×24", () => {
   assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
 });
 
+test("fits within `rows` with 60 projects for the selected client, header first and footer last", () => {
+  const { lastFrame } = render(
+    <CatalogScreen load={() => manyClientsModel(60)} refresh={async () => manyClientsModel(60)} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  const frame = lastFrame() ?? "";
+  const lines = frame.split("\n");
+  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+  assert.equal(lines[0]?.startsWith(">_ kankaku"), true, "line 1 should be the header");
+  assert.equal(lines[lines.length - 1]?.includes("q quit"), true, "the last line should be the footer hints");
+});
+
 test("PageDown/Home/End move the client selection", async () => {
   const { lastFrame, stdin } = render(
     <CatalogScreen load={() => manyClientsModel(40)} refresh={async () => manyClientsModel(40)} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,

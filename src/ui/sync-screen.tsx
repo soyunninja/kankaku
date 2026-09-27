@@ -43,7 +43,7 @@ const KEY_HINTS = [
 function Card({ row, active, message, busy, width }: { row: SyncRow; active: boolean; message: string | undefined; busy: boolean; width: number }) {
   const staleOutsidePart = row.staleOutsideWindow > 0 ? `  stale ${row.staleOutsideWindow}` : "";
   return (
-    <Panel title={`${active ? "› " : "  "}${row.name}`} active={active} width={width}>
+    <Panel title={`${active ? "› " : "  "}${row.name}`} active={active} width={width} height={CARD_HEIGHT_ESTIMATE}>
       <Text>{`pending ${row.pending}${staleOutsidePart}`}</Text>
       <Text dimColor>{row.syncedThrough !== undefined ? `synced through ${row.syncedThrough}` : "never synced"}</Text>
       {row.lastError !== undefined && <Text color="red">{`error: ${row.lastError.message}`}</Text>}

@@ -156,3 +156,33 @@ test("PageDown/PageUp move the selection by the window size, Home/End jump to th
   await nextTick();
   assert.equal(markedProject(), "p39");
 });
+
+test("a 3000-character prompt never pushes the header out of view or the detail panel past its budget, at 100×24", () => {
+  const longPrompt = "word ".repeat(600).trim();
+  const rows = manyRows(40);
+  rows[0] = { ...rows[0]!, fullPrompt: longPrompt };
+  const { lastFrame } = render(
+    <TasksScreen load={() => model(rows)} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  const frame = lastFrame() ?? "";
+  const lines = frame.split("\n");
+  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+  assert.equal(lines[0]?.startsWith(">_ kankaku"), true, "line 1 should be the header");
+  assert.equal(lines[lines.length - 1]?.includes("q quit"), true, "the last line should be the footer hints");
+  assert.match(frame, /… \d+ more lines/, "a truncated prompt should end with a '… N more lines' indicator");
+});
+
+test("a 3000-character prompt is clipped the same way in stacked mode", () => {
+  const longPrompt = "word ".repeat(600).trim();
+  const rows = manyRows(40);
+  rows[0] = { ...rows[0]!, fullPrompt: longPrompt };
+  const { lastFrame } = render(
+    <TasksScreen load={() => model(rows)} roots={["/work"]} version="0.1.0" columns={90} rows={24} />,
+  );
+  const frame = lastFrame() ?? "";
+  const lines = frame.split("\n");
+  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+  assert.equal(lines[0]?.startsWith(">_ kankaku"), true, "line 1 should be the header");
+  assert.equal(lines[lines.length - 1]?.includes("q quit"), true, "the last line should be the footer hints");
+  assert.match(frame, /… \d+ more lines/, "a truncated prompt should end with a '… N more lines' indicator");
+});

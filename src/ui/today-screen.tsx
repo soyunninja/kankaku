@@ -53,10 +53,10 @@ function hubHeaderText(hub: DashboardHubCard): string | undefined {
   return `hub ${hub.lastSyncOk ? "●" : "✕"} ${domainPart}${syncedPart}`;
 }
 
-function TodayPanel({ today, width }: { today: TodayRow; width: number }) {
+function TodayPanel({ today, width, height }: { today: TodayRow; width: number; height: number }) {
   const cacheHitPart = today.cacheHit !== undefined ? `   cache hit ${Math.round(today.cacheHit * 100)}%` : "";
   return (
-    <Panel title="Today" width={width}>
+    <Panel title="Today" width={width} height={height}>
       <Text>{`work   ${formatMinutes(today.workMs)}`}</Text>
       <Text>{`wait   ${formatMinutes(today.waitingMs)}   cost  ${formatCost(today.cost)}`}</Text>
       <Text>{`tasks  ${today.tasks}${cacheHitPart}`}</Text>
@@ -64,9 +64,9 @@ function TodayPanel({ today, width }: { today: TodayRow; width: number }) {
   );
 }
 
-function Last7DaysPanel({ points, width }: { points: DayPoint[]; width: number }) {
+function Last7DaysPanel({ points, width, height }: { points: DayPoint[]; width: number; height: number }) {
   return (
-    <Panel title="Last 7 days" width={width}>
+    <Panel title="Last 7 days" width={width} height={height}>
       <Text>
         {"work  "}
         <Sparkline values={points.map((point) => point.workMs)} />
@@ -116,17 +116,17 @@ function projectCell(row: DashboardProjectRow, key: string): string {
   }
 }
 
-function ProjectsPanel({ rows, selectedIndex, width, maxRows, active }: { rows: DashboardProjectRow[]; selectedIndex: number; width: number; maxRows: number; active: boolean }) {
+function ProjectsPanel({ rows, selectedIndex, width, height, maxRows, active }: { rows: DashboardProjectRow[]; selectedIndex: number; width: number; height: number; maxRows: number; active: boolean }) {
   return (
-    <Panel title="Projects" width={width} active={active}>
+    <Panel title="Projects" width={width} height={height} active={active}>
       <Table columns={projectColumns(width)} rows={rows} rowKey={(row) => row.name} cell={projectCell} selectedIndex={selectedIndex} emptyText="no work recorded today" maxRows={maxRows} />
     </Panel>
   );
 }
 
-function HubPanel({ hub, width }: { hub: DashboardHubCard; width: number }) {
+function HubPanel({ hub, width, height }: { hub: DashboardHubCard; width: number; height: number }) {
   return (
-    <Panel title="Hub" width={width}>
+    <Panel title="Hub" width={width} height={height}>
       {hub.status === "unavailable" ? (
         <Text dimColor>hub not configured</Text>
       ) : (
@@ -157,6 +157,16 @@ function projectsMaxRows(mainHeight: number, layout: "grid" | "stacked"): number
   return Math.max(mainHeight - fixedRows - TABLE_CHROME_ROWS, 1);
 }
 
+/**
+ * The Projects panel's own explicit height for a given `mainHeight`/`layout`
+ * — `TABLE_CHROME_ROWS` plus however many data rows `projectsMaxRows`
+ * allows, so the panel itself never grows past what its own table renders
+ * (see the layout-stability rule this screen's panels all follow).
+ */
+function projectsPanelHeight(mainHeight: number, layout: "grid" | "stacked"): number {
+  return TABLE_CHROME_ROWS + projectsMaxRows(mainHeight, layout);
+}
+
 function DashboardGrid({
   model,
   selectedIndex,
@@ -173,10 +183,17 @@ function DashboardGrid({
   if (mainWidth < GRID_BREAKPOINT) {
     return (
       <Box flexDirection="column">
-        <TodayPanel today={model.today} width={mainWidth} />
-        <Last7DaysPanel points={model.last7Days} width={mainWidth} />
-        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={mainWidth} maxRows={projectsMaxRows(mainHeight, "stacked")} active={focused} />
-        <HubPanel hub={model.hub} width={mainWidth} />
+        <TodayPanel today={model.today} width={mainWidth} height={TODAY_PANEL_ROWS} />
+        <Last7DaysPanel points={model.last7Days} width={mainWidth} height={LAST7_PANEL_ROWS} />
+        <ProjectsPanel
+          rows={model.projects}
+          selectedIndex={selectedIndex}
+          width={mainWidth}
+          height={projectsPanelHeight(mainHeight, "stacked")}
+          maxRows={projectsMaxRows(mainHeight, "stacked")}
+          active={focused}
+        />
+        <HubPanel hub={model.hub} width={mainWidth} height={HUB_PANEL_ROWS} />
       </Box>
     );
   }
@@ -186,13 +203,20 @@ function DashboardGrid({
   return (
     <Box flexDirection="row">
       <Box flexDirection="column" width={leftWidth}>
-        <TodayPanel today={model.today} width={leftWidth} />
-        <ProjectsPanel rows={model.projects} selectedIndex={selectedIndex} width={leftWidth} maxRows={projectsMaxRows(mainHeight, "grid")} active={focused} />
+        <TodayPanel today={model.today} width={leftWidth} height={TODAY_PANEL_ROWS} />
+        <ProjectsPanel
+          rows={model.projects}
+          selectedIndex={selectedIndex}
+          width={leftWidth}
+          height={projectsPanelHeight(mainHeight, "grid")}
+          maxRows={projectsMaxRows(mainHeight, "grid")}
+          active={focused}
+        />
       </Box>
       <Box width={1} />
       <Box flexDirection="column" width={rightWidth}>
-        <Last7DaysPanel points={model.last7Days} width={rightWidth} />
-        <HubPanel hub={model.hub} width={rightWidth} />
+        <Last7DaysPanel points={model.last7Days} width={rightWidth} height={LAST7_PANEL_ROWS} />
+        <HubPanel hub={model.hub} width={rightWidth} height={HUB_PANEL_ROWS} />
       </Box>
     </Box>
   );

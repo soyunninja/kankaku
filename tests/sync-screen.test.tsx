@@ -122,6 +122,32 @@ test("fits within `rows` with many project cards at 100×24", () => {
   assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
 });
 
+test("a long sync error message never grows a card past its fixed height and breaks the grid", () => {
+  const longError = "connection to the hub failed repeatedly with a very long diagnostic message ".repeat(6);
+  const longErrorModel: SyncModel = {
+    status: "ready",
+    rows: [
+      { name: "kankaku", dir: "/work/kankaku", pending: 1, staleOutsideWindow: 0, lastError: { message: longError, at: "2026-09-27T08:00:00.000Z" } },
+      ...Array.from({ length: 12 }, (_, index) => ({ name: `p${index}`, dir: `/work/p${index}`, pending: 0, staleOutsideWindow: 0 })),
+    ],
+  };
+  const { lastFrame } = render(
+    <SyncScreen load={() => longErrorModel} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+  );
+  const frame = lastFrame() ?? "";
+  const lines = frame.split("\n");
+  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+  assert.equal(lines[0]?.startsWith(">_ kankaku"), true, "line 1 should be the header");
+  assert.equal(lines[lines.length - 1]?.includes("q quit"), true, "the last line should be the footer hints");
+  // The card grid budgets a fixed number of visible cards per screen from
+  // `CARD_HEIGHT_ESTIMATE`; a card whose own height is left unbounded by
+  // its long error message grows past that estimate and silently pushes
+  // later cards out of the rendered window instead of clipping its own
+  // message — this asserts the other cards stay visible.
+  assert.equal(frame.includes("p0"), true, "the next card should still be visible");
+  assert.equal(frame.includes("p1"), true, "a later card should still be visible");
+});
+
 test("PageDown/Home/End move the card selection with many projects", async () => {
   const { lastFrame, stdin } = render(
     <SyncScreen load={() => manyRowsModel(40)} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,

@@ -3,10 +3,12 @@ import { Box, Text, useInput } from "ink";
 import { formatMinutes } from "../domain/today-model.ts";
 import type { TaskRow, TasksModel } from "../domain/tasks-model.ts";
 import { SCREENS, hintsFor } from "../domain/nav-model.ts";
+import { wrapText } from "../domain/text-wrap.ts";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
 import { Table } from "./components/table.tsx";
 import type { TableColumn } from "./components/table.tsx";
+import { useTheme } from "./theme.ts";
 
 export interface TasksScreenProps {
   load: (options: { all: boolean }) => TasksModel;
@@ -67,22 +69,63 @@ function taskCell(row: TaskRow, key: string): string {
   }
 }
 
-function DetailPanel({ row, width }: { row: TaskRow | undefined; width: number }) {
-  return (
-    <Panel title="Task" width={width}>
-      {row === undefined ? (
+/** Rows the detail panel's own chrome (top border line + the inner box's bottom border) takes outside its content rows. */
+const DETAIL_CHROME_ROWS = 2;
+
+/**
+ * The `[ Task ]` detail panel body: fixed-count metadata lines (client,
+ * project, hub task, wall/work/wait, cost, subagents — whichever apply)
+ * plus the prompt, word-wrapped to the panel's own inner width
+ * (`wrapText`, never reimplemented here). The panel's `height` is fixed by
+ * the caller (derived from `mainHeight`, never grown by content — see the
+ * layout-stability rule in AGENTS.md-equivalent project docs); when the
+ * wrapped prompt would need more rows than are left after the metadata
+ * lines, only as many prompt lines as fit are shown, followed by a single
+ * `muted` `… N more lines` line instead of letting Ink's own overflow
+ * clipping silently swallow the rest with no visible cue.
+ */
+function DetailPanel({ row, width, height }: { row: TaskRow | undefined; width: number; height: number }) {
+  const theme = useTheme();
+
+  if (row === undefined) {
+    return (
+      <Panel title="Task" width={width} height={height}>
         <Text dimColor>no task selected</Text>
-      ) : (
-        <Box flexDirection="column">
-          <Text>{row.fullPrompt}</Text>
-          {row.clientName !== undefined && <Text dimColor>{`client   ${row.clientName}`}</Text>}
-          {row.projectName !== undefined && <Text dimColor>{`project  ${row.projectName}`}</Text>}
-          {row.hubTaskTitle !== undefined && <Text dimColor>{`task     ${row.hubTaskTitle}`}</Text>}
-          <Text>{`wall ${formatMinutes(row.wallMs)}   work ${formatMinutes(row.workMs)}   wait ${formatMinutes(row.waitingMs)}`}</Text>
-          <Text>{`cost ${formatCost(row.cost)}${row.cacheHit !== undefined ? `   cache hit ${Math.round(row.cacheHit * 100)}%` : ""}`}</Text>
-          <Text>{`subagents ${row.subagentCount}`}</Text>
-        </Box>
-      )}
+      </Panel>
+    );
+  }
+
+  const innerWidth = Math.max(width - 2, 1);
+  const contentRows = Math.max(height - DETAIL_CHROME_ROWS, 0);
+
+  const metaLines: { text: string; dim: boolean }[] = [];
+  if (row.clientName !== undefined) metaLines.push({ text: `client   ${row.clientName}`, dim: true });
+  if (row.projectName !== undefined) metaLines.push({ text: `project  ${row.projectName}`, dim: true });
+  if (row.hubTaskTitle !== undefined) metaLines.push({ text: `task     ${row.hubTaskTitle}`, dim: true });
+  metaLines.push({ text: `wall ${formatMinutes(row.wallMs)}   work ${formatMinutes(row.workMs)}   wait ${formatMinutes(row.waitingMs)}`, dim: false });
+  metaLines.push({ text: `cost ${formatCost(row.cost)}${row.cacheHit !== undefined ? `   cache hit ${Math.round(row.cacheHit * 100)}%` : ""}`, dim: false });
+  metaLines.push({ text: `subagents ${row.subagentCount}`, dim: false });
+
+  const promptBudget = Math.max(contentRows - metaLines.length, 0);
+  const wrappedPrompt = wrapText(row.fullPrompt, innerWidth);
+  const truncated = wrappedPrompt.length > promptBudget;
+  const visiblePromptLines = truncated ? wrappedPrompt.slice(0, Math.max(promptBudget - 1, 0)) : wrappedPrompt.slice(0, promptBudget);
+  const hiddenCount = wrappedPrompt.length - visiblePromptLines.length;
+  const showIndicator = truncated && promptBudget > 0;
+
+  return (
+    <Panel title="Task" width={width} height={height}>
+      <Box flexDirection="column">
+        {visiblePromptLines.map((line, index) => (
+          <Text key={`prompt-${index}`}>{line}</Text>
+        ))}
+        {showIndicator && <Text color={theme.muted}>{`… ${hiddenCount} more lines`}</Text>}
+        {metaLines.map((line, index) => (
+          <Text key={`meta-${index}`} dimColor={line.dim}>
+            {line.text}
+          </Text>
+        ))}
+      </Box>
     </Panel>
   );
 }
@@ -172,6 +215,7 @@ export function TasksScreen({ load, roots, version, columns, rows, focused = tru
 
         // Stacked mode splits the height between the table and the detail panel below it, mirroring the width split used in wide mode.
         const tableHeight = wide ? mainHeight : Math.max(Math.floor(mainHeight * 0.62), TABLE_CHROME_ROWS + 1);
+        const detailHeight = wide ? mainHeight : Math.max(mainHeight - tableHeight, DETAIL_CHROME_ROWS + 1);
         const maxRows = Math.max(tableHeight - TABLE_CHROME_ROWS, 1);
         maxRowsRef.current = maxRows;
 
@@ -180,7 +224,7 @@ export function TasksScreen({ load, roots, version, columns, rows, focused = tru
             <Table columns={taskColumns(tableWidth)} rows={visibleRows} rowKey={(row) => row.id} cell={taskCell} selectedIndex={selected} emptyText="no tasks" maxRows={maxRows} />
           </Panel>
         );
-        const detail = <DetailPanel row={selectedRow} width={detailWidth} />;
+        const detail = <DetailPanel row={selectedRow} width={detailWidth} height={detailHeight} />;
 
         return wide ? (
           <Box flexDirection="row">
