@@ -81,18 +81,68 @@ never guesses which coding agent produced someone else's worklog.
 
 `--roots` (on `today`/`tasks`) overrides the configured roots for that run.
 
+## Screens
+
+One visual system drives all four screens: a left sidebar for navigation,
+titled bordered panels, aligned tables with a highlighted selection, text
+bars and sparklines, a header line and a footer of key hints — all driven
+by a single theme of colour roles (`src/ui/theme.ts`). The sidebar sits
+beside the screen at 100+ terminal columns, stacks full-width above it at
+70-99 columns, and collapses to a one-line tab strip below 70 columns; a
+selected row or card is always marked with a visible `›`, never colour
+alone.
+
+Today is a dashboard: a Today card (work/wait/cost/tasks/cache hit), a
+Last 7 days card (work and cost sparklines with weekday labels), a
+Projects table (work, cost and a share bar per project) and a Hub card
+(pending/stale, last sync time, catalog summary):
+
+```
+ >_ kankaku 0.1.0                              hub ● kankaku.soyun.ninja · synced 08:20
+┌──────────────┐ ╭─[ Today ]────────────────────╮ ╭─[ Last 7 days ]──────────────────╮
+│ › Today      │ │   work   1h 42m               │ │ work  ▂▅▇▃▁▆█   cost  ▁▃▆▂▁▅█    │
+│   Tasks      │ │   wait      6m   cost  $9.83  │ │ mon tue wed thu fri sat sun       │
+│   Catalog    │ │   tasks 12       cache hit 68%│ ╰──────────────────────────────────╯
+│   Sync       │ ╰──────────────────────────────╯ ╭─[ Hub ]──────────────────────────╮
+│              │ ╭─[ Projects ]────────────────────────────╮ │ pending 1 · stale 0     │
+│              │ │ project       work    cost   share      │ │ last sync ok 08:20      │
+│              │ │ kankaku       1h 02m  $6.49  ████████░░ │ │ catalog 9 clients ·     │
+│              │ │ kankaku-tui     31m   $2.10  █████░░░░░ │ │         17 projects     │
+│              │ │ kankaku-hub      9m   $1.24  ██░░░░░░░░ │ ╰─────────────────────────╯
+│              │ ╰─────────────────────────────────────────╯
+├──────────────┤
+│ roots 1      │
+│ projects 3   │
+└──────────────┘
+ ↑↓ move   enter open   r refresh   1-4 screens   q quit
+```
+
+- **Tasks** — a table (time, project, work, cost, prompt) with a
+  highlighted row on the left, and a `[ Task ]` detail panel on the right
+  showing the selected row's full prompt, client, project, hub task,
+  wall/work/wait time, cost, cache hit and subagent count.
+- **Catalog** — `[ Clients ]` on the left; the selected client's
+  `[ Projects ]`, with open/doing hub task counts, on the right. The
+  Clients panel header shows the cache's age and a `(stale)` flag.
+- **Sync** — one card per project in a wrapping grid; the selected card is
+  highlighted, and each action's result line shows inside its card while
+  it runs and once it settles.
+
 ## Keys (TUI)
 
 Tab bar: `1` Today, `2` Tasks, `3` Catalog, `4` Sync. `q` quits from any
 screen.
 
-- **Today** — `r` refresh.
-- **Tasks** — `a` toggle today/all, `↑`/`↓` move the selection, `r` refresh.
-- **Catalog** — `r` refresh from the hub.
+- **Today** — `↑`/`↓` move the Projects selection, `enter` opens the
+  selected project in Tasks (filtered to it), `r` refresh.
+- **Tasks** — `a` toggle today/all, `↑`/`↓` move the selection, `r`
+  refresh, `esc` clears a project filter set from Today.
+- **Catalog** — `↑`/`↓` move the client selection, `r` refresh from the
+  hub.
 - **Sync** — `↑`/`↓` move the selection, `s` sync the selected project,
   `f` full-sync the selected project, `S` sync every project. Each
-  action's summary shows inline next to its row while it runs and once
-  it settles.
+  action's summary shows inline in its card while it runs and once it
+  settles.
 
 The TUI never writes to disk on its own — Today, Tasks and read-only
 Catalog views write nothing at all; Catalog's `refresh` and Sync's

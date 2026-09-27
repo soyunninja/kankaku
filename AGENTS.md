@@ -11,17 +11,26 @@ formatting or sync-planning logic.
 ## Architecture (hexagonal)
 
 - `src/domain/` is pure: no I/O, no Ink, no React, no `Date.now()`.
-  `nav-model.ts` (the four screens and the tab bar), `today-model.ts`,
-  `tasks-model.ts` (rows from kankaku's own `buildTasks`, truncated
-  prompt, newest first), `catalog-model.ts` (clients → active projects
-  with open/doing hub-task counts, age/staleness from an injected `now`)
-  and `sync-model.ts` (rows from kankaku's `SyncStatusSnapshot`, one per
-  project) never call a kankaku adapter directly — only its `domain`/`hub`
-  barrel types.
+  `nav-model.ts` (the four screens, the tab bar, and `NavState` — the
+  active screen plus an optional Tasks `projectFilter`, set by
+  `openProjectInTasks` and cleared by `clearProjectFilter`), `today-model.ts`,
+  `tasks-model.ts` (rows from kankaku's own `buildTasks`, truncated and
+  full prompt, waiting time, cache hit and subagent count, newest first),
+  `catalog-model.ts` (clients → active projects with open/doing hub-task
+  counts, age/staleness from an injected `now`), `sync-model.ts` (rows
+  from kankaku's `SyncStatusSnapshot`, one per project) and
+  `dashboard-model.ts` (the Today dashboard: today's total/per-project
+  rows reused from `today-model.ts#buildTodayRows` with an added `share`,
+  a 7-point last-7-days work/cost series via kankaku's own `summarize`
+  per day, and the Hub card built from per-project sync snapshots plus an
+  optional catalog summary — every "now" is injected, never `Date.now()`)
+  never call a kankaku adapter directly — only its `domain`/`hub` barrel
+  types.
 - `src/ports/` holds interfaces only (`ProjectSource`).
 - `src/adapters/` talks to the filesystem and the hub: `tui-config.ts`,
   `project-discovery.ts`, `worklog-reader.ts` (kankaku's `JsonlWorkLog`),
-  and `hub.ts` — credentials (`resolveHub`, wrapping kankaku's
+  `app-info.ts` (`readOwnVersion`, this package's own version for the
+  header bar), and `hub.ts` — credentials (`resolveHub`, wrapping kankaku's
   `resolveHubCredentials`), the disk-backed catalog (`createCatalog`/
   `refreshCatalog`, kankaku's `CachedCatalog`), no-network status
   (`computeProjectSyncStatus`, kankaku's `computeSyncStatus`) and a
@@ -30,13 +39,35 @@ formatting or sync-planning logic.
   rather than `cwd`, stamped `agent: "unknown"`, `plugin: "kankaku-tui"`
   as kankaku's `hub-entry.ts` fallback — an orchestrator record's own
   `agent` still wins when it has one).
-- `src/ui/` holds Ink components: `app.tsx` (the tab bar + active screen,
-  global `1`-`4`/`q`), `today-screen.tsx`, `tasks-screen.tsx`,
-  `catalog-screen.tsx`, `sync-screen.tsx`.
+- `src/ui/` holds Ink components and the visual system: `theme.ts` (colour
+  roles, the default dark/cyan preset, and a `ThemeProvider`/`useTheme`
+  context — written with `createElement`, not JSX, so it stays a plain
+  `.ts` module), `layout.tsx` (the shared header/sidebar/footer frame,
+  responsive to `columns`/`rows` via `useStdout()` or forced props: a
+  side-by-side sidebar at 100+ columns, a full-width sidebar stacked above
+  main content at 70-99, and a one-line tab strip below 70 — `children` is
+  a render function so a screen can size its own panels to the actual
+  main-content width), `components/` (`panel.tsx` — a rounded, titled
+  frame with the title inside the top border and an optional right-aligned
+  header note; `table.tsx` — an aligned table with a `› `-marked selected
+  row; `bar.tsx`/`sparkline.tsx` — text bars and block-character
+  sparklines, each also exporting a plain-string `render*` helper for
+  reuse inside a `Table` cell; `sidebar.tsx`, `header-bar.tsx`,
+  `key-hints.tsx`), `app.tsx` (owns `NavState`, global `1`-`4`/`q`, and
+  wires Today's `enter`-on-a-project to Tasks' `projectFilter`),
+  `today-screen.tsx` (the dashboard: Today card, Last 7 days sparklines,
+  Projects table with share bars, Hub card), `tasks-screen.tsx` (table
+  left, `[ Task ]` detail panel right), `catalog-screen.tsx` (`[ Clients ]`
+  left, the selected client's `[ Projects ]` right), `sync-screen.tsx`
+  (one card per project in a wrapping grid). Every screen renders its own
+  `Layout`, so it stays a self-contained, independently testable unit.
 - `src/cli.tsx` only wires argv parsing to config, discovery, the domain
   model and rendering (`today`/`tasks`/`catalog [refresh]`/
   `sync [status|all] [--project <dir>]`, plus the interactive default).
-  Do not put logic there.
+  `loadDashboard` builds the Today screen's model from the same
+  project/record discovery as `loadToday`/`loadTasks`, adding the Hub card
+  from local no-network sync status and the cached catalog (never a
+  network call on its own). Do not put logic there beyond this wiring.
 - Dependencies point inwards: adapters and ui import domain and ports;
   domain imports nothing outside `src/domain/` and `src/ports/`.
 
