@@ -143,6 +143,51 @@ Every sync uploaded from here is stamped `plugin: kankaku-tui`; a task's
 kankaku's `hub-entry.ts`), else falls back to `agent: unknown` — this app
 never guesses which coding agent produced someone else's worklog.
 
+### Local hub
+
+Instead of pointing at someone else's PocketBase, `kankaku hub install`
+sets up and runs your own hub on this machine, under `~/.kankaku/hub/`:
+
+- `bin/pocketbase` — the PocketBase binary for this OS/CPU, downloaded
+  from the `kankaku-hub` npm package's manifest and SHA256-verified.
+- `pb_data/` — the hub's own database; never touched by an upgrade.
+- `app/<version>/` — a fresh copy of that package version's migrations,
+  hooks and static files (never a symlink, so `npm update` can't change a
+  running hub out from under it); `current` names the active version.
+- `hub.json` — the installed port and versions.
+- `accounts.json` (owner-only, `0600`) — the PocketBase superuser email
+  and generated password, and the owner account's email. The owner logs
+  into the hub's own web admin UI with that owner account.
+- `~/.kankaku/credentials.json` — the generated `service` account
+  (`kankaku-sync@kankaku.local`) this app and kankaku's own sync already
+  read, exactly like a remote hub's credentials.
+
+Commands (macOS and Linux only — PocketBase ships no other build):
+
+- `kankaku hub install [--port N] [--owner-email E] [--owner-password P]`
+  — installs (or, run again, verifies) the hub and leaves it running. On
+  a real terminal, a missing owner email/password is prompted for
+  (masked); without a TTY, both flags are required. Idempotent: re-running
+  with everything already in place changes nothing.
+- `kankaku hub start` / `kankaku hub stop` — start or stop the server
+  process; `stop` is a no-op when it isn't running.
+- `kankaku hub status` — `local hub: running 0.2.0 (PocketBase 0.40.4) at
+  http://127.0.0.1:8090 · pb_data 1.2 MB`, `stopped`, or `not installed`.
+- `kankaku hub upgrade` — copies a fresh `app/<version>/` from the
+  currently installed `kankaku-hub` package, downloads a new PocketBase
+  binary only if that version changed, and restarts — `pb_data` is never
+  touched.
+- `kankaku hub logs [-n N]` — the last `N` (default 50) lines of
+  `hub.log`.
+
+The Dashboard's Hub card shows `local hub · running`/`stopped` when the
+configured hub is this machine's own local install, with a matching `h`
+quick action to start or stop it. The setup wizard's Hub step's
+`install locally` option runs this same installer (asking for the owner
+email/password inline); the older checkout-based dev install
+(`kankaku-hub`'s own `scripts/dev.sh`) is still available for hub
+developers via `kankaku setup --from-checkout <dir>`.
+
 ## Usage
 
 - `kankaku` — opens the interactive TUI on the Dashboard screen.
@@ -157,9 +202,13 @@ never guesses which coding agent produced someone else's worklog.
   pending count and last sync per project, no network; with no argument,
   syncs the pending window; `all` does a full resync. Defaults to every
   discovered project, sequentially; `--project <dir>` restricts to one.
-- `kankaku setup [--yes] [--dry-run]` — see "Install everything" above.
+- `kankaku setup [--yes] [--dry-run] [--from-checkout <dir>]` — see
+  "Install everything" above; `--from-checkout` is the hub-developer-only
+  checkout-based local hub install, see "Local hub" above.
 - `kankaku doctor` — the same read-only report `kankaku setup` ends with,
   without prompting or writing anything.
+- `kankaku hub install|start|stop|status|upgrade|logs` — the local hub's
+  lifecycle; see "Local hub" above.
 
 `--roots` (on `today`/`tasks`) overrides the configured roots for that run.
 

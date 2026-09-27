@@ -24,13 +24,30 @@ formatting or sync-planning logic.
   an added `share`, a 7-point last-7-days work/cost series via kankaku's
   own `summarize` per day, and the Hub card built from per-project sync
   snapshots plus an optional catalog summary — every "now" is injected,
-  never `Date.now()`) and `quick-actions.ts` (the Dashboard's `[ Quick
-  actions ]` panel: the fixed `QUICK_ACTIONS` list — `c` refresh catalog,
-  `s` sync all projects, `S` full sync all, `r` reload — and
-  `formatQuickActionLines`, the panel's own one-line status text for its
-  idle/busy/done/unavailable `QuickActionState`) never call a kankaku
-  adapter directly — only its `domain`/`hub` barrel types — and
-  `setup-plan.ts` (`kankaku setup`/`kankaku doctor`'s domain:
+  never `Date.now()`, and — when the configured hub is this machine's own
+  local install — a `localHub` field carrying its `running`/`stopped`
+  state, injected by `cli.tsx#loadDashboard` from `hub-manager/process.ts`'s
+  pid liveness, never a network call) and `quick-actions.ts` (the
+  Dashboard's `[ Quick actions ]` panel: the fixed `QUICK_ACTIONS` list —
+  `c` refresh catalog, `s` sync all projects, `S` full sync all, `r`
+  reload — plus `LOCAL_HUB_ACTION` (`h` start/stop local hub), appended by
+  `quickActionsFor(showLocalHub)` only when the Dashboard's
+  `DashboardActions.localHub` is present, and `formatQuickActionLines`,
+  the panel's own one-line status text for its idle/busy/done/unavailable
+  `QuickActionState`) never call a kankaku adapter directly — only its
+  `domain`/`hub` barrel types — and `local-hub-model.ts` (pure local-hub
+  domain, shared by the CLI's `kankaku hub *` commands and the setup
+  wizard's `install locally` option: `parseHubManifest`/`parseHubConfig`
+  validate `kankaku-hub`'s `hub-manifest.json`/the installed `hub.json`;
+  `assetKeyFor` maps `process.platform`/`arch` to the manifest's
+  PocketBase asset key; `hubLayout` is the `~/.kankaku/hub/` on-disk
+  layout — `bin/pocketbase`, `pb_data/`, `app/<version>/`, `current`,
+  `hub.json`, `accounts.json`, `pid`, `hub.log`; `serveArgs` is the
+  `pocketbase serve` argv for one app version/port; `classifyStatus`
+  turns plain installed/pid-alive/health facts into one `HubStatus`
+  (`not-installed`/`stopped`/`running`/`unhealthy`); `generatePassword` is
+  the injected-RNG, 24-char password policy shared by every account this
+  package creates) and `setup-plan.ts` (`kankaku setup`/`kankaku doctor`'s domain:
   `detectAgents` turns plain, already-read facts about pi, gentle-shell,
   Claude Code, Codex and OpenCode into one `AgentStatus` per agent —
   `present`/`configured`/`adapterAvailable`/`detail`, with `configured`
@@ -51,8 +68,11 @@ formatting or sync-planning logic.
   `WizardFacts`, reusing `detectAgents` and guessing the Claude checkout
   from an existing `statusLine` via `guessClaudeCheckout`;
   `toggleAgent`/`setClaudeCheckout`/`setHubMode`/`setHubField`/
-  `setHubHealth`/`setRoots`/`setLocalCheckout`/`setHubLocalManual` update
-  one field each, clearing its own error; `next`/`back` validate and step
+  `setHubHealth`/`setRoots` update one field each, clearing its own error
+  — the Hub step's `local` mode asks for `ownerEmail`/`ownerPassword`
+  (also via `setHubField`, `HubField` extended with those two keys) since
+  installing locally now runs the real `hub-manager/install.ts#installHub`
+  at the fixed `DEFAULT_HUB_PORT` (8090), not a checkout path; `next`/`back` validate and step
   through — skipping the Claude step when it isn't needed (`claudeStepNeeded`,
   exported so `ui/setup/wizard-screen.tsx` can number only the steps a run
   will actually show), and never advancing out of `apply` until every
@@ -117,18 +137,43 @@ formatting or sync-planning logic.
   a `Writable` that swallows bytes while muted); `pi.ts`/`claude.ts` also
   export the wizard's own removal writers, `removeKankakuPackage`/
   `removeStatusLine` (a no-op, with no backup and no write, when kankaku
-  isn't present); and `local-hub.ts` (the wizard's "install locally" hub
-  option, level 1: `findHubCheckout` picks the first candidate path that
-  looks like a `kankaku-hub` checkout — has `scripts/dev.sh` and
-  `pocketbase/pb_migrations`; `installLocalHub` downloads PocketBase
-  (skipped if already present), starts `scripts/dev.sh` detached (pid/log
-  under `~/.kankaku/hub/`) through the injected `ScriptRunner`
-  (`ports/script-runner.ts`; the real one, `child-process-runner.ts`,
-  wraps `node:child_process` — tests always inject a fake, never spawning
-  the real hub), polls its health endpoint for up to ~20s, then runs
-  `scripts/create-dev-accounts.sh` and returns that script's own
-  hardcoded dev service-account credentials; `manualCommands` is the exact
-  command list shown when no checkout is found).
+  isn't present); and `local-hub.ts` (the hub-developer-only, checkout-based
+  install kept behind `kankaku setup --from-checkout <dir>` — never part
+  of the interactive wizard any more, see H4 below: `findHubCheckout`
+  picks the first candidate path that looks like a `kankaku-hub` checkout
+  — has `scripts/dev.sh` and `pocketbase/pb_migrations`; `installLocalHub`
+  downloads PocketBase (skipped if already present), starts
+  `scripts/dev.sh` detached (pid/log under `~/.kankaku/hub/`) through the
+  injected `ScriptRunner` (`ports/script-runner.ts`; the real one,
+  `child-process-runner.ts`, wraps `node:child_process` — tests always
+  inject a fake, never spawning the real hub), polls its health endpoint
+  for up to ~20s, then runs `scripts/create-dev-accounts.sh` and returns
+  that script's own hardcoded dev service-account credentials;
+  `manualCommands` is the exact command list shown when no checkout is
+  found). `adapters/hub-manager/` is the real local-hub lifecycle (used by
+  `kankaku hub *` and the wizard's `install locally` option): `package.ts`
+  (`locateHubPackage`, resolves the installed `kankaku-hub` npm package
+  via `require.resolve`/an injected resolver and reads/validates its
+  `hub-manifest.json`); `download.ts` (`downloadPocketBase`, fetches a
+  release zip, verifies its SHA256 against the manifest, extracts the
+  single `pocketbase` entry via a tiny zip reader — `node:zlib`
+  `inflateRaw` for a deflated entry, no dependency — and writes it mode
+  0755 via temp file + rename; `zip.ts`'s `extractSingleEntry` is the
+  reader); `process.ts` (`startDetached` spawns detached and writes a pid
+  file; `readPid`/`isAlive` — an `EPERM` counts as alive, a different
+  owner still on this machine; `stopProcess` — SIGTERM with a bounded
+  poll, SIGKILL as a last resort, always removes the pid file;
+  `waitForHealth` polls a URL until it responds ok or times out); and
+  `accounts.ts` (`upsertSuperuser` shells `pocketbase superuser upsert`
+  through a `ScriptRunner`, offline, no running server needed; `createUser`
+  authenticates as that superuser over REST and idempotently creates an
+  owner/service application user). `install.ts` orchestrates all of the
+  above plus `domain/local-hub-model.ts` into `installHub`/`startHub`/
+  `stopHub`/`hubStatus`/`upgradeHub`/`hubLogs` — see "Local hub" in
+  README for the exact on-disk layout and idempotency contract; every
+  step's outcome (`done`/`unchanged`/`error`) is reported so `cli.tsx`'s
+  `kankaku hub *` commands and the wizard's apply step can show it
+  verbatim.
 - `src/ui/` holds Ink components and the visual system: `theme.ts` (colour
   roles, the default dark/cyan preset, and a `ThemeProvider`/`useTheme`
   context — written with `createElement`, not JSX, so it stays a plain
@@ -164,7 +209,13 @@ formatting or sync-planning logic.
   7 days sparklines, Projects table with share bars, Hub card and the
   `[ Quick actions ]` panel, wired to its `DashboardActions` prop:
   `refreshCatalog`/`syncAll` from `cli.tsx`, one action at a time, the
-  model reloading once it settles), `tasks-screen.tsx` (table left,
+  model reloading once it settles; `localHub`, present only when the
+  configured hub is this machine's own local install, adds the `h` quick
+  action and its own extra Hub-card line — `showLocalHub` (from
+  `actions.localHub !== undefined`) threads through `quickActionsFor`/
+  `hubPanelRows`/`quickActionsPanelRows` so the panel heights only grow
+  when a local hub is actually configured, keeping every existing
+  no-local-hub layout byte-for-byte unchanged), `tasks-screen.tsx` (table left,
   `[ Task ]` detail panel right), `catalog-screen.tsx` (`[ Clients ]`
   left, the selected client's `[ Projects ]` right), `sync-screen.tsx`
   (one card per project in a wrapping grid). Every screen renders its own
@@ -181,28 +232,49 @@ formatting or sync-planning logic.
   `domain/setup-wizard.ts`'s reducers (`useState<WizardState>`). It never
   talks to the filesystem or network
   directly — everything real goes through its own `WizardActions` prop
-  (`apply`, `checkHealth`, `findHubCheckout`, `manualCommands`,
-  `installLocalHub`, built by `cli.tsx`). `apply` takes the current
-  `WizardState` alongside the planned `WizardAction`, since `file` on a
-  `WizardAction` is always the target path, never the value to write —
+  (just `apply` and `checkHealth`, built by `cli.tsx`). `apply` takes the
+  current `WizardState` alongside the planned `WizardAction`, since `file`
+  on a `WizardAction` is always the target path (or, for
+  `install-local-hub`, the local hub's URL) never the value to write —
   `write-claude`/`write-hub`/`write-roots` read the checkout/hub
-  fields/roots from `state` instead. The Hub step tracks its own
-  `hubFocus` cursor (Tab cycles it) so only one field is ever
-  `focused` at a time, and gates `q`/`c`/`m` behind "is a text field
-  currently focused" the same way the Claude/Roots steps gate `q` — a
-  text input always consumes its own printable keys first.
+  fields/roots from `state` instead, and `install-local-hub` reads
+  `state.hub.ownerEmail`/`ownerPassword` and runs the real
+  `hub-manager/install.ts#installHub` (`cli.tsx`'s `applyWizardAction`),
+  reporting every install step in the result detail. The Hub step tracks
+  its own `hubFocus` cursor (Tab cycles it) so only one field is ever
+  `focused` at a time, and gates `q`/`c` behind "is a text field currently
+  focused" the same way the Claude/Roots steps gate `q` — a text input
+  always consumes its own printable keys first; `c` (health check) only
+  applies to `existing` mode now, since `local` mode has nothing running
+  yet to check.
 - `src/cli.tsx` only wires argv parsing to config, discovery, the domain
   model and rendering (`today`/`tasks`/`catalog [refresh]`/
-  `sync [status|all] [--project <dir>]`/`setup [--yes] [--dry-run]`/
-  `doctor`, plus the interactive default — the `today` subcommand name is
-  unrelated to the Dashboard screen's own name and stays as-is).
+  `sync [status|all] [--project <dir>]`/`setup [--yes] [--dry-run]
+  [--from-checkout <dir>]`/`doctor`/`hub install|start|stop|status|upgrade|logs`,
+  plus the interactive default — the `today` subcommand name is unrelated
+  to the Dashboard screen's own name and stays as-is).
   `loadDashboard` builds the Dashboard screen's model from the same
   project/record discovery as `loadToday`/`loadTasks`, adding the Hub card
   from local no-network sync status and the cached catalog (never a
-  network call on its own). `dashboardActionsDeps` builds its Quick
-  actions deps, reusing `adapters/hub.ts`'s `createCatalog`/
+  network call on its own) — plus, via `detectLocalHub` (also no network:
+  `hubLayout`'s `hub.json` port matched against the resolved credentials'
+  URL, then pid liveness only), the local hub's `running`/`stopped` state
+  when the configured hub is this machine's own install. `dashboardActionsDeps`
+  builds its Quick actions deps, reusing `adapters/hub.ts`'s `createCatalog`/
   `refreshCatalog`/`syncProject` and kankaku's own `formatCatalogRefreshLines`/
-  `formatSyncSummaryLines` for the result message — never reimplemented.
+  `formatSyncSummaryLines` for the result message — never reimplemented —
+  plus `localHub` (via `localHubAction`), present only under the same
+  local-hub detection, whose `toggle` starts or stops it through
+  `hub-manager/install.ts#startHub`/`stopHub`.
+  `buildHubManagerDeps` builds the injectable dependency bag
+  `hub-manager/install.ts` needs (the real `ScriptRunner`, `startDetached`,
+  `node:crypto#randomBytes`, `locateHubPackage`, `process.platform`/`arch`),
+  shared by `runHubCommand` (`kankaku hub *`, printing every
+  `HubActionReport` step as `<step>: <outcome> (<detail>)`, `hub install`
+  prompting for a missing owner email/password on a TTY through the
+  injected `Prompter`, requiring both flags otherwise) and the wizard's
+  `install-local-hub` action — `CliDeps.hubManager` lets tests override
+  any of it so nothing ever spawns a real PocketBase or hits the network.
   `runDoctorCommand` gathers plain facts (`adapters/setup/agents.ts`, hub
   resolution/health, `tui.json` existence — the only network call, bounded
   to 5s) and prints `domain/setup-plan.ts#formatDoctorLines` verbatim.
@@ -211,17 +283,21 @@ formatting or sync-planning logic.
   each `todo` step is asked through the injected `Prompter` (`--yes`
   answers every question with its own default instead, never touching the
   prompter) and, when confirmed, written through the matching
-  `adapters/setup/*` writer, ending with the same report as `doctor`.
+  `adapters/setup/*` writer, ending with the same report as `doctor` — the
+  hub section instead runs `performLocalHubInstallFromCheckout` (never
+  prompting) when `--from-checkout <dir>` is given, the hub-developer-only
+  path onto `adapters/setup/local-hub.ts#installLocalHub`.
   `setup` opens the interactive wizard instead of this readline flow when
   stdout is a real TTY (`CliDeps.isTTY`) and neither `--yes` nor
-  `--dry-run` was given — both flags always keep the non-interactive path
-  even on a TTY. `kankaku` with no subcommand does the same the first time
-  (no `~/.kankaku/tui.json` yet); `gatherWizardFacts` (read-only, no
-  network — the hub's health is checked interactively from the wizard's
-  own Hub step) and `buildWizardActions` (wiring every `WizardActions`
-  method to the real `adapters/setup/*` writers, `applyWizardAction`
-  mapping each `WizardActionKind` to its writer) build `<App>`'s `wizard`
-  prop; both are used only from the real `renderApp`, exactly like
+  `--dry-run` nor `--from-checkout` was given — those always keep the
+  non-interactive path even on a TTY. `kankaku` with no subcommand does
+  the same the first time (no `~/.kankaku/tui.json` yet); `gatherWizardFacts`
+  (read-only, no network — the hub's health is checked interactively from
+  the wizard's own Hub step) and `buildWizardActions` (wiring `apply`/
+  `checkHealth`, `applyWizardAction` mapping each `WizardActionKind` to
+  its writer, `install-local-hub` running `hub-manager/install.ts#installHub`
+  via `buildHubManagerDeps`) build `<App>`'s `wizard` prop; both are used
+  only from the real `renderApp`, exactly like
   `dashboardActionsDeps`/`catalogScreenDeps`/`syncScreenDeps`. Do not put
   logic there beyond this wiring.
 - Dependencies point inwards: adapters and ui import domain and ports;

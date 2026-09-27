@@ -3,6 +3,25 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **Local hub**: `kankaku hub install [--port N] [--owner-email E]
+  [--owner-password P]` installs and runs a real PocketBase hub under
+  `~/.kankaku/hub/` — downloads and SHA256-verifies the PocketBase binary
+  for this OS/CPU from the installed `kankaku-hub` package, copies its
+  migrations/hooks/public into `app/<version>/`, provisions a superuser
+  and the owner/service accounts, and leaves it running; idempotent on
+  re-run. `kankaku hub start|stop|status|upgrade|logs [-n N]` round out
+  the lifecycle (`upgrade` keeps `pb_data` untouched). The setup wizard's
+  Hub step's `install locally` option now runs this same installer
+  (asking for the owner email/password inline) instead of a checkout-based
+  dev flow; that older flow is kept only behind `kankaku setup
+  --from-checkout <dir>` for hub developers. The Dashboard's Hub card
+  shows `local hub · running`/`stopped` for a local install, with a
+  matching `h` quick action to start or stop it.
+
 ## 0.3.1 — 2026-09-28
 
 ### Changed
