@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { addKankakuPackage } from "../src/adapters/setup/pi.ts";
+import { addKankakuPackage, removeKankakuPackage } from "../src/adapters/setup/pi.ts";
 
 function makeDir(): string {
   return mkdtempSync(join(tmpdir(), "kankaku-tui-setup-pi-"));
@@ -113,6 +113,74 @@ test("addKankakuPackage: creates the settings file's directory when missing, tre
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.deepEqual(written.packages, ["npm:kankaku"]);
     assert.equal(existsSync(`${settingsPath}.bak`), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeKankakuPackage: removes every kankaku entry from packages, preserving other keys and order", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const original = { defaultModel: "gpt-6", packages: ["npm:pi-mcp-adapter", "npm:kankaku", "npm:pi-lens"], theme: "Gentleman-Sexy" };
+    writeFileSync(settingsPath, JSON.stringify(original, null, 2));
+
+    const result = removeKankakuPackage(settingsPath);
+    assert.equal(result.changed, true);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(Object.keys(written), ["defaultModel", "packages", "theme"]);
+    assert.deepEqual(written.packages, ["npm:pi-mcp-adapter", "npm:pi-lens"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeKankakuPackage: removes every matching entry (versioned spec and local path) in one pass", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ packages: ["npm:kankaku@0.8.0", "../../workspace/kankaku", "npm:pi-lens"] }, null, 2));
+
+    const result = removeKankakuPackage(settingsPath);
+    assert.equal(result.changed, true);
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(written.packages, ["npm:pi-lens"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeKankakuPackage: is a no-op when kankaku is not present, with no backup and no write", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ packages: ["npm:pi-lens"] }, null, 2));
+    const before = readFileSync(settingsPath, "utf8");
+
+    const result = removeKankakuPackage(settingsPath);
+    assert.equal(result.changed, false);
+    assert.equal(readFileSync(settingsPath, "utf8"), before);
+    assert.equal(existsSync(`${settingsPath}.bak`), false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeKankakuPackage: backs up the original file to <file>.bak before removing, and never overwrites an existing .bak", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const originalText = JSON.stringify({ packages: ["npm:kankaku"] }, null, 2);
+    writeFileSync(settingsPath, originalText);
+
+    removeKankakuPackage(settingsPath);
+    assert.equal(readFileSync(`${settingsPath}.bak`, "utf8"), originalText);
+
+    writeFileSync(settingsPath, JSON.stringify({ packages: ["npm:kankaku"] }, null, 2));
+    writeFileSync(`${settingsPath}.bak`, "sentinel");
+    removeKankakuPackage(settingsPath);
+    assert.equal(readFileSync(`${settingsPath}.bak`, "utf8"), "sentinel");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -26,3 +26,20 @@ export function addKankakuPackage(settingsPath: string): PackagesWriteResult {
   writeJsonAtomic(settingsPath, { ...existing, packages: [...packages, "npm:kankaku"] });
   return { changed: true };
 }
+
+/**
+ * Removes every `packages` entry `isKankakuPackage` identifies as kankaku,
+ * leaving every other entry and key untouched. A no-op, with no backup and
+ * no write, when none is present.
+ */
+export function removeKankakuPackage(settingsPath: string): PackagesWriteResult {
+  const existing = readJsonObjectOrEmpty(settingsPath);
+  const packages = isStringArray(existing["packages"]) ? existing["packages"] : [];
+  const filtered = packages.filter((entry) => !isKankakuPackage(entry));
+
+  if (filtered.length === packages.length) return { changed: false };
+
+  backupOnce(settingsPath);
+  writeJsonAtomic(settingsPath, { ...existing, packages: filtered });
+  return { changed: true };
+}

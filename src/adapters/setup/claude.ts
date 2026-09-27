@@ -32,3 +32,25 @@ export function writeStatusLine(settingsPath: string, checkoutPath: string): Pac
   writeJsonAtomic(settingsPath, { ...existing, statusLine: { type: "command", command } });
   return { changed: true };
 }
+
+/**
+ * Removes `statusLine` only when its `command` contains `"kankaku"` (i.e.
+ * it looks like kankaku's own statusline, not some other tool's), leaving
+ * every other key untouched. A no-op, with no backup and no write, when
+ * there is no `statusLine` or it belongs to something else.
+ */
+export function removeStatusLine(settingsPath: string): PackagesWriteResult {
+  const existing = readJsonObjectOrEmpty(settingsPath);
+  const currentStatusLine = existing["statusLine"];
+  const currentCommand =
+    currentStatusLine && typeof currentStatusLine === "object" && !Array.isArray(currentStatusLine)
+      ? (currentStatusLine as Record<string, unknown>)["command"]
+      : undefined;
+
+  if (typeof currentCommand !== "string" || !currentCommand.includes("kankaku")) return { changed: false };
+
+  backupOnce(settingsPath);
+  const { statusLine: _statusLine, ...rest } = existing;
+  writeJsonAtomic(settingsPath, rest);
+  return { changed: true };
+}
