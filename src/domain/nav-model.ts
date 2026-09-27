@@ -31,3 +31,34 @@ export interface TabBarItem {
 export function buildTabBar(active: ScreenId): TabBarItem[] {
   return SCREENS.map((screen) => ({ id: screen.id, text: `${screen.key} ${screen.label}`, active: screen.id === active }));
 }
+
+/**
+ * The app's navigation state: the active screen plus an optional Tasks
+ * project filter, set by `enter` on a Today project row and cleared with
+ * `esc`. Kept here (not in `app.tsx`) so it stays a plain, testable value.
+ */
+export interface NavState {
+  screen: ScreenId;
+  /** Restricts the Tasks screen to one project's rows; unset shows every project. */
+  projectFilter?: string;
+}
+
+export const INITIAL_NAV_STATE: NavState = { screen: "today" };
+
+/** Switch the active screen, keeping any existing project filter (e.g. `1`-`4` while Tasks is already filtered). */
+export function switchScreen(state: NavState, screen: ScreenId): NavState {
+  return { ...state, screen };
+}
+
+/** `enter` on a Today project row: jump to Tasks filtered to `project`. */
+export function openProjectInTasks(state: NavState, project: string): NavState {
+  void state;
+  return { screen: "tasks", projectFilter: project };
+}
+
+/** `esc` on Tasks: drop the project filter, keeping the current screen. */
+export function clearProjectFilter(state: NavState): NavState {
+  const { projectFilter, ...rest } = state;
+  void projectFilter;
+  return rest;
+}

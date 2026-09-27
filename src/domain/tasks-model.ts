@@ -1,4 +1,4 @@
-import { buildTasks, localDay } from "kankaku/domain";
+import { buildTasks, cacheHitRatio, localDay } from "kankaku/domain";
 import type { TaskView, WorkRecord } from "kankaku/domain";
 
 /** Maximum visible width of a task prompt before it is truncated with an ellipsis marker. */
@@ -15,9 +15,15 @@ export interface TaskRow {
   hubTaskTitle?: string;
   wallMs: number;
   workMs: number;
+  waitingMs: number;
   cost: number;
+  cacheHit?: number;
+  /** Number of subagent records joined to this task (`task-view.ts`'s own join, never re-derived here). */
+  subagentCount: number;
   /** Truncated to `PROMPT_DISPLAY_LIMIT` visible characters, `…` marks a cut. */
   prompt: string;
+  /** The untruncated prompt, for the Tasks detail panel. */
+  fullPrompt: string;
 }
 
 export interface TasksModel {
@@ -59,8 +65,12 @@ function toRow(project: string, task: TaskView): TaskRow {
     ...(task.hubTaskTitle !== undefined ? { hubTaskTitle: task.hubTaskTitle } : {}),
     wallMs: task.wallMs,
     workMs: task.workMs,
+    waitingMs: task.waitingMs,
     cost: task.usage.cost,
+    ...(cacheHitRatio(task.usage) !== undefined ? { cacheHit: cacheHitRatio(task.usage) } : {}),
+    subagentCount: task.subagents.length,
     prompt: truncatePrompt(task.prompt, PROMPT_DISPLAY_LIMIT),
+    fullPrompt: task.prompt,
   };
 }
 

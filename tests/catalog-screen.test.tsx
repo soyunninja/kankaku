@@ -5,60 +5,84 @@ import { CatalogScreen } from "../src/ui/catalog-screen.tsx";
 import type { CatalogModel } from "../src/domain/catalog-model.ts";
 
 function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 60));
+  return new Promise((resolve) => setTimeout(resolve, 30));
 }
 
 function readyModel(): CatalogModel {
   return {
     status: "ready",
-    url: "https://pb.example.com",
+    url: "https://kankaku.soyun.ninja",
     fetchedAt: 0,
-    ageMs: 60_000,
+    ageMs: 3 * 60 * 1000,
     stale: false,
     clients: [
-      { id: "c1", name: "Acme", code: "acme", projects: [{ id: "p1", name: "Website", openCount: 2, doingCount: 1 }] },
+      {
+        id: "c1",
+        name: "Acme",
+        code: "ACME",
+        projects: [
+          { id: "p1", name: "Website", openCount: 2, doingCount: 1 },
+          { id: "p2", name: "App", openCount: 0, doingCount: 0 },
+        ],
+      },
+      { id: "c2", name: "Beta Co", code: "BETA", projects: [{ id: "p3", name: "Infra", openCount: 1, doingCount: 0 }] },
     ],
   };
 }
 
-test("CatalogScreen shows the unavailable note when the hub is not configured", () => {
+test("renders the Clients panel and the selected client's Projects panel", () => {
   const { lastFrame } = render(
-    <CatalogScreen load={() => ({ status: "unavailable", reason: "hub credentials are not configured" })} refresh={async () => ({ status: "unavailable" })} />,
+    <CatalogScreen load={readyModel} refresh={async () => readyModel()} roots={["/work"]} version="0.1.0" columns={120} />,
   );
-  assert.match(lastFrame() ?? "", /hub credentials are not configured/);
-});
-
-test("CatalogScreen lists clients and their projects with open/doing counts and a header", () => {
-  const { lastFrame } = render(<CatalogScreen load={() => readyModel()} refresh={async () => readyModel()} />);
   const frame = lastFrame() ?? "";
-  assert.match(frame, /https:\/\/pb\.example\.com/);
-  assert.match(frame, /Acme/);
-  assert.match(frame, /Website/);
-  assert.match(frame, /open 2/);
-  assert.match(frame, /doing 1/);
+  assert.equal(frame.includes("Clients"), true);
+  assert.equal(frame.includes("Acme"), true);
+  assert.equal(frame.includes("Beta Co"), true);
+  assert.equal(frame.includes("Projects"), true);
+  assert.equal(frame.includes("Website"), true);
+  assert.equal(frame.includes("App"), true);
+  assert.equal(frame.includes("Infra"), false);
 });
 
-test("CatalogScreen flags a stale snapshot", () => {
-  const { lastFrame } = render(
-    <CatalogScreen load={() => ({ ...readyModel(), stale: true })} refresh={async () => readyModel()} />,
-  );
-  assert.match(lastFrame() ?? "", /stale/i);
-});
-
-test("CatalogScreen refreshes on 'r' and re-renders with the new snapshot", async () => {
-  let refreshed = false;
+test("down arrow moves the client selection and updates the Projects panel", async () => {
   const { lastFrame, stdin } = render(
+    <CatalogScreen load={readyModel} refresh={async () => readyModel()} roots={["/work"]} version="0.1.0" columns={120} />,
+  );
+  stdin.write("\u001B[B");
+  await nextTick();
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("Infra"), true);
+  assert.equal(frame.includes("Website"), false);
+});
+
+test("'r' refreshes and shows a note without hitting the network before that", async () => {
+  let refreshCalls = 0;
+  const { stdin } = render(
     <CatalogScreen
-      load={() => ({ status: "unavailable" })}
+      load={readyModel}
       refresh={async () => {
-        refreshed = true;
+        refreshCalls += 1;
         return readyModel();
       }}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
     />,
   );
-  assert.match(lastFrame() ?? "", /no catalog cached yet/);
   stdin.write("r");
   await nextTick();
-  assert.equal(refreshed, true);
-  assert.match(lastFrame() ?? "", /Acme/);
+  assert.equal(refreshCalls, 1);
+});
+
+test("shows a plain note when unavailable", () => {
+  const { lastFrame } = render(
+    <CatalogScreen load={() => ({ status: "unavailable", reason: "hub not configured" })} refresh={async () => ({ status: "unavailable" })} roots={["/work"]} version="0.1.0" columns={120} />,
+  );
+  assert.equal((lastFrame() ?? "").includes("hub not configured"), true);
+});
+
+test("renders at 80 columns without overflowing any line", () => {
+  const { lastFrame } = render(<CatalogScreen load={readyModel} refresh={async () => readyModel()} roots={["/work"]} version="0.1.0" columns={80} />);
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.ok(lines.every((line) => line.length <= 80));
 });

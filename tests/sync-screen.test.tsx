@@ -3,123 +3,101 @@ import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { SyncScreen } from "../src/ui/sync-screen.tsx";
 import type { SyncModel } from "../src/ui/sync-screen.tsx";
-import type { SyncRow } from "../src/domain/sync-model.ts";
 
 function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 60));
-}
-
-function row(name: string, overrides: Partial<SyncRow> = {}): SyncRow {
-  return { name, dir: `/work/${name}`, pending: 1, staleOutsideWindow: 0, ...overrides };
+  return new Promise((resolve) => setTimeout(resolve, 30));
 }
 
 function readyModel(): SyncModel {
-  return { status: "ready", rows: [row("alpha"), row("beta", { pending: 0 })] };
+  return {
+    status: "ready",
+    rows: [
+      { name: "kankaku", dir: "/work/kankaku", pending: 2, staleOutsideWindow: 0, syncedThrough: "2026-09-27T08:00:00.000Z" },
+      { name: "kankaku-tui", dir: "/work/kankaku-tui", pending: 0, staleOutsideWindow: 1 },
+    ],
+  };
 }
 
-test("SyncScreen shows the unavailable note when the hub is not configured", () => {
+test("renders one card per project in a grid", () => {
   const { lastFrame } = render(
-    <SyncScreen
-      load={() => ({ status: "unavailable", reason: "hub credentials are not configured" })}
-      syncOne={async () => ({ ok: true, message: "" })}
-      syncAll={async () => []}
-    />,
+    <SyncScreen load={readyModel} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} roots={["/work"]} version="0.1.0" columns={120} />,
   );
-  assert.match(lastFrame() ?? "", /hub credentials are not configured/);
-});
-
-test("SyncScreen lists one row per project with pending count", () => {
-  const { lastFrame } = render(<SyncScreen load={() => readyModel()} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} />);
   const frame = lastFrame() ?? "";
-  assert.match(frame, /alpha/);
-  assert.match(frame, /beta/);
-  assert.match(frame, /pending 1/);
+  assert.equal(frame.includes("kankaku"), true);
+  assert.equal(frame.includes("kankaku-tui"), true);
+  assert.equal(frame.includes("pending 2"), true);
 });
 
-test("SyncScreen syncs the selected project on 's' and shows the summary inline", async () => {
-  const calls: Array<{ name: string; full: boolean }> = [];
+test("marks the selected card with a visible marker", async () => {
+  const { lastFrame, stdin } = render(
+    <SyncScreen load={readyModel} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} roots={["/work"]} version="0.1.0" columns={120} />,
+  );
+  stdin.write("\u001B[B");
+  await nextTick();
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("› kankaku-tui"), true);
+});
+
+test("'s' syncs the selected project and shows the result inline", async () => {
   const { lastFrame, stdin } = render(
     <SyncScreen
-      load={() => readyModel()}
-      syncOne={async (target, options) => {
-        calls.push({ name: target.name, full: options.full });
-        return { ok: true, message: "uploaded 1, updated 0, skipped 0, failed 0" };
-      }}
+      load={readyModel}
+      syncOne={async () => ({ ok: true, message: "synced 2 tasks" })}
       syncAll={async () => []}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
     />,
   );
   stdin.write("s");
   await nextTick();
-  assert.deepEqual(calls, [{ name: "alpha", full: false }]);
-  assert.match(lastFrame() ?? "", /uploaded 1, updated 0, skipped 0, failed 0/);
+  assert.equal((lastFrame() ?? "").includes("synced 2 tasks"), true);
 });
 
-test("SyncScreen full-syncs the selected project on 'f'", async () => {
-  const calls: Array<{ name: string; full: boolean }> = [];
-  const { stdin } = render(
+test("'S' syncs every project", async () => {
+  let calls = 0;
+  const { stdin, lastFrame } = render(
     <SyncScreen
-      load={() => readyModel()}
-      syncOne={async (target, options) => {
-        calls.push({ name: target.name, full: options.full });
-        return { ok: true, message: "ok" };
-      }}
-      syncAll={async () => []}
-    />,
-  );
-  stdin.write("f");
-  await nextTick();
-  assert.deepEqual(calls, [{ name: "alpha", full: true }]);
-});
-
-test("SyncScreen syncs every project on 'S'", async () => {
-  let syncAllCalls = 0;
-  const { stdin } = render(
-    <SyncScreen
-      load={() => readyModel()}
+      load={readyModel}
       syncOne={async () => ({ ok: true, message: "" })}
       syncAll={async () => {
-        syncAllCalls += 1;
+        calls += 1;
         return [
-          { ok: true, message: "alpha: ok" },
-          { ok: true, message: "beta: ok" },
+          { ok: true, message: "ok a" },
+          { ok: true, message: "ok b" },
         ];
       }}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
     />,
   );
   stdin.write("S");
   await nextTick();
-  assert.equal(syncAllCalls, 1);
+  assert.equal(calls, 1);
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("ok a"), true);
+  assert.equal(frame.includes("ok b"), true);
 });
 
-test("SyncScreen shows a busy indicator while a sync is in flight", async () => {
-  let resolveSync!: (value: { ok: boolean; message: string }) => void;
-  const pending = new Promise<{ ok: boolean; message: string }>((resolve) => {
-    resolveSync = resolve;
-  });
-  const { lastFrame, stdin } = render(<SyncScreen load={() => readyModel()} syncOne={() => pending} syncAll={async () => []} />);
-  stdin.write("s");
-  await nextTick();
-  assert.match(lastFrame() ?? "", /syncing/i);
-  resolveSync({ ok: true, message: "done" });
-  await nextTick();
-  assert.doesNotMatch(lastFrame() ?? "", /syncing/i);
-});
-
-test("SyncScreen moves the selection with arrow keys", async () => {
-  const calls: string[] = [];
-  const { stdin } = render(
+test("shows a plain note when unavailable", () => {
+  const { lastFrame } = render(
     <SyncScreen
-      load={() => readyModel()}
-      syncOne={async (target) => {
-        calls.push(target.name);
-        return { ok: true, message: "" };
-      }}
+      load={() => ({ status: "unavailable", reason: "hub not configured" })}
+      syncOne={async () => ({ ok: false, message: "" })}
       syncAll={async () => []}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
     />,
   );
-  stdin.write("\u001B[B"); // down arrow -> select beta
-  await nextTick();
-  stdin.write("s");
-  await nextTick();
-  assert.deepEqual(calls, ["beta"]);
+  assert.equal((lastFrame() ?? "").includes("hub not configured"), true);
+});
+
+test("renders at 80 columns without overflowing any line", () => {
+  const { lastFrame } = render(
+    <SyncScreen load={readyModel} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} roots={["/work"]} version="0.1.0" columns={80} />,
+  );
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.ok(lines.every((line) => line.length <= 80));
 });

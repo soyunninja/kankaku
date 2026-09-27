@@ -1,61 +1,63 @@
 import { useState } from "react";
-import { Box, Text, useApp, useInput } from "ink";
-import { buildTabBar, screenForKey } from "../domain/nav-model.ts";
-import type { ScreenId } from "../domain/nav-model.ts";
+import { useApp, useInput } from "ink";
+import { INITIAL_NAV_STATE, clearProjectFilter, openProjectInTasks, screenForKey, switchScreen } from "../domain/nav-model.ts";
+import type { NavState } from "../domain/nav-model.ts";
 import { TodayScreen } from "./today-screen.tsx";
 import { TasksScreen } from "./tasks-screen.tsx";
 import { CatalogScreen } from "./catalog-screen.tsx";
 import type { CatalogScreenProps } from "./catalog-screen.tsx";
 import { SyncScreen } from "./sync-screen.tsx";
 import type { SyncScreenProps } from "./sync-screen.tsx";
-import type { TodayModel } from "../domain/today-model.ts";
+import type { DashboardModel } from "../domain/dashboard-model.ts";
 import type { TasksModel } from "../domain/tasks-model.ts";
 
 export interface AppProps {
   roots: string[];
-  loadToday: () => TodayModel;
+  /** This app's own version, shown in every screen's header bar. */
+  version: string;
+  loadToday: () => DashboardModel;
   loadTasks: (options: { all: boolean }) => TasksModel;
-  catalog: CatalogScreenProps;
-  sync: SyncScreenProps;
-}
-
-function TabBar({ active }: { active: ScreenId }) {
-  return (
-    <Text>
-      {buildTabBar(active)
-        .map((item) => (item.active ? `[${item.text}]` : item.text))
-        .join(" · ")}
-    </Text>
-  );
+  catalog: Pick<CatalogScreenProps, "load" | "refresh">;
+  sync: Pick<SyncScreenProps, "load" | "syncOne" | "syncAll">;
 }
 
 /**
- * The app shell: a tab bar (`domain/nav-model.ts`) above whichever screen
- * is active. `1`-`4` switch screens; `q` quits from anywhere (via Ink's
- * own `useApp().exit()`) — the Today screen additionally binds its own
- * `q` (kept for its existing standalone tests), which is harmless since
- * both paths call the same `exit()`.
+ * The app shell: owns navigation state (`domain/nav-model.ts`) and renders
+ * whichever screen is active, each already wrapped in the shared
+ * header/sidebar/footer frame (`ui/layout.tsx`). `1`-`4` switch screens;
+ * `q` quits from anywhere (Ink's own `useApp().exit()`). Today's `enter`
+ * on a project row opens Tasks filtered to it; Tasks' `esc` clears that
+ * filter.
  */
-export function App({ roots, loadToday, loadTasks, catalog, sync }: AppProps) {
+export function App({ roots, version, loadToday, loadTasks, catalog, sync }: AppProps) {
   const { exit } = useApp();
-  const [screen, setScreen] = useState<ScreenId>("today");
+  const [nav, setNav] = useState<NavState>(INITIAL_NAV_STATE);
 
   useInput((input) => {
     const next = screenForKey(input);
     if (next !== undefined) {
-      setScreen(next);
+      setNav((state) => switchScreen(state, next));
     } else if (input === "q") {
       exit();
     }
   });
 
   return (
-    <Box flexDirection="column">
-      <TabBar active={screen} />
-      {screen === "today" && <TodayScreen load={loadToday} onQuit={() => exit()} roots={roots} />}
-      {screen === "tasks" && <TasksScreen load={loadTasks} />}
-      {screen === "catalog" && <CatalogScreen {...catalog} />}
-      {screen === "sync" && <SyncScreen {...sync} />}
-    </Box>
+    <>
+      {nav.screen === "today" && (
+        <TodayScreen load={loadToday} roots={roots} version={version} onOpenProject={(project) => setNav((state) => openProjectInTasks(state, project))} />
+      )}
+      {nav.screen === "tasks" && (
+        <TasksScreen
+          load={loadTasks}
+          roots={roots}
+          version={version}
+          {...(nav.projectFilter !== undefined ? { projectFilter: nav.projectFilter } : {})}
+          onClearFilter={() => setNav((state) => clearProjectFilter(state))}
+        />
+      )}
+      {nav.screen === "catalog" && <CatalogScreen {...catalog} roots={roots} version={version} />}
+      {nav.screen === "sync" && <SyncScreen {...sync} roots={roots} version={version} />}
+    </>
   );
 }

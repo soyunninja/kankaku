@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { SCREENS, buildTabBar, screenForKey } from "../src/domain/nav-model.ts";
+import { INITIAL_NAV_STATE, SCREENS, buildTabBar, clearProjectFilter, openProjectInTasks, screenForKey, switchScreen } from "../src/domain/nav-model.ts";
 
 test("SCREENS lists the four screens in order with their switch key", () => {
   assert.deepEqual(
@@ -41,4 +41,22 @@ test("buildTabBar marks exactly the active screen and keeps the fixed order", ()
     items.map((item) => item.text),
     ["1 Today", "2 Tasks", "3 Catalog", "4 Sync"],
   );
+});
+
+test("INITIAL_NAV_STATE starts on Today with no project filter", () => {
+  assert.deepEqual(INITIAL_NAV_STATE, { screen: "today" });
+});
+
+test("switchScreen changes the active screen and keeps the project filter", () => {
+  const withFilter = { screen: "today" as const, projectFilter: "kankaku" };
+  assert.deepEqual(switchScreen(withFilter, "catalog"), { screen: "catalog", projectFilter: "kankaku" });
+});
+
+test("openProjectInTasks switches to Tasks and sets the project filter", () => {
+  assert.deepEqual(openProjectInTasks(INITIAL_NAV_STATE, "kankaku-tui"), { screen: "tasks", projectFilter: "kankaku-tui" });
+});
+
+test("clearProjectFilter drops the filter and keeps the current screen", () => {
+  const state = { screen: "tasks" as const, projectFilter: "kankaku-tui" };
+  assert.deepEqual(clearProjectFilter(state), { screen: "tasks" });
 });

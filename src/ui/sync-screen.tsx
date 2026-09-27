@@ -1,6 +1,9 @@
 import { useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { SyncRow } from "../domain/sync-model.ts";
+import { SCREENS } from "../domain/nav-model.ts";
+import { Layout } from "./layout.tsx";
+import { Panel } from "./components/panel.tsx";
 
 export interface SyncActionResult {
   ok: boolean;
@@ -13,33 +16,54 @@ export interface SyncScreenProps {
   load: () => SyncModel;
   syncOne: (project: SyncRow, options: { full: boolean }) => Promise<SyncActionResult>;
   syncAll: () => Promise<SyncActionResult[]>;
+  roots: string[];
+  version: string;
+  columns?: number;
+  rows?: number;
 }
 
-function formatRow(row: SyncRow, message: string | undefined, busy: boolean): string {
-  const staleOutsidePart = row.staleOutsideWindow > 0 ? `  stale-outside-window ${row.staleOutsideWindow}` : "";
-  const syncedThroughPart = row.syncedThrough ? `  synced through ${row.syncedThrough}` : "  never synced";
-  const errorPart = row.lastError ? `  last error: ${row.lastError.message}` : "";
-  const messagePart = message ? `  → ${message}` : "";
-  const busyPart = busy ? "  (syncing…)" : "";
-  return `${row.name}  pending ${row.pending}${staleOutsidePart}${syncedThroughPart}${errorPart}${messagePart}${busyPart}`;
+/** Fixed card width in the grid, including its border. */
+const CARD_WIDTH = 32;
+
+const KEY_HINTS = [
+  { key: "↑↓", label: "select" },
+  { key: "s", label: "sync" },
+  { key: "f", label: "full sync" },
+  { key: "S", label: "sync all" },
+  { key: "1-4", label: "screens" },
+  { key: "q", label: "quit" },
+];
+
+function Card({ row, active, message, busy, width }: { row: SyncRow; active: boolean; message: string | undefined; busy: boolean; width: number }) {
+  const staleOutsidePart = row.staleOutsideWindow > 0 ? `  stale ${row.staleOutsideWindow}` : "";
+  return (
+    <Panel title={`${active ? "› " : "  "}${row.name}`} active={active} width={width}>
+      <Text>{`pending ${row.pending}${staleOutsidePart}`}</Text>
+      <Text dimColor>{row.syncedThrough !== undefined ? `synced through ${row.syncedThrough}` : "never synced"}</Text>
+      {row.lastError !== undefined && <Text color="red">{`error: ${row.lastError.message}`}</Text>}
+      {message !== undefined && <Text>{`→ ${message}`}</Text>}
+      {busy && <Text dimColor>syncing…</Text>}
+    </Panel>
+  );
 }
 
 /**
- * The Sync screen: one row per project from `computeSyncStatus`
- * (`domain/sync-model.ts`, never reimplemented here). `↑↓` move the
- * selection; `s` syncs the selected project, `f` full-syncs it, `S` syncs
- * every project — all through `adapters/hub.ts#syncProject`, mirroring
- * kankaku-claude's `syncConfigured`. Without hub credentials shows a
+ * The Sync screen: one `[ project ]` card per project, in a wrapping grid,
+ * from `computeSyncStatus` (`domain/sync-model.ts`, never reimplemented
+ * here). `↑↓` move the selection; `s` syncs the selected project, `f`
+ * full-syncs it, `S` syncs every project — all through
+ * `adapters/hub.ts#syncProject`. Each action's result shows inline in its
+ * card while it runs and once it settles. Without hub credentials shows a
  * one-line note instead. Writes only through kankaku's own sync adapters.
  */
-export function SyncScreen({ load, syncOne, syncAll }: SyncScreenProps) {
+export function SyncScreen({ load, syncOne, syncAll, roots, version, columns, rows }: SyncScreenProps) {
   const [model, setModel] = useState<SyncModel>(load);
   const [selected, setSelected] = useState(0);
   const [messages, setMessages] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const selectedRef = useRef(0);
 
-  const rows = model.status === "ready" ? model.rows : [];
+  const projectRows = model.status === "ready" ? model.rows : [];
 
   const runOne = (row: SyncRow, full: boolean) => {
     setBusy((prev) => new Set(prev).add(row.name));
@@ -57,24 +81,24 @@ export function SyncScreen({ load, syncOne, syncAll }: SyncScreenProps) {
     if (model.status !== "ready") return;
 
     if (key.downArrow) {
-      selectedRef.current = Math.min(selectedRef.current + 1, Math.max(rows.length - 1, 0));
+      selectedRef.current = Math.min(selectedRef.current + 1, Math.max(projectRows.length - 1, 0));
       setSelected(selectedRef.current);
     } else if (key.upArrow) {
       selectedRef.current = Math.max(selectedRef.current - 1, 0);
       setSelected(selectedRef.current);
     } else if (input === "s") {
-      const row = rows[selectedRef.current];
+      const row = projectRows[selectedRef.current];
       if (row) runOne(row, false);
     } else if (input === "f") {
-      const row = rows[selectedRef.current];
+      const row = projectRows[selectedRef.current];
       if (row) runOne(row, true);
     } else if (input === "S") {
-      setBusy(new Set(rows.map((row) => row.name)));
+      setBusy(new Set(projectRows.map((row) => row.name)));
       void syncAll().then((results) => {
         setMessages((prev) => {
           const next = { ...prev };
           results.forEach((result, index) => {
-            const row = rows[index];
+            const row = projectRows[index];
             if (row) next[row.name] = result.message;
           });
           return next;
@@ -84,23 +108,37 @@ export function SyncScreen({ load, syncOne, syncAll }: SyncScreenProps) {
     }
   });
 
+  if (model.status === "unavailable") {
+    return (
+      <Layout columns={columns} rows={rows} headerLeft={`>_ kankaku ${version}`} sidebarItems={SCREENS} activeId="sync" sidebarStats={[`roots ${roots.length}`]} keyHints={KEY_HINTS}>
+        {() => <Text dimColor>{model.reason}</Text>}
+      </Layout>
+    );
+  }
+
   return (
-    <Box flexDirection="column">
-      <Text bold>{">_ kankaku · Sync"}</Text>
-      {model.status === "unavailable" ? (
-        <Text>{model.reason}</Text>
-      ) : rows.length === 0 ? (
-        <Text>no projects</Text>
-      ) : (
-        <Box flexDirection="column">
-          {rows.map((row, index) => (
-            <Text key={row.name}>
-              {`${index === selected ? "› " : "  "}${formatRow(row, messages[row.name], busy.has(row.name))}`}
-            </Text>
-          ))}
-        </Box>
-      )}
-      <Text dimColor>s sync · f full sync · S sync all · ↑↓ select</Text>
-    </Box>
+    <Layout
+      columns={columns}
+      rows={rows}
+      headerLeft={`>_ kankaku ${version}`}
+      sidebarItems={SCREENS}
+      activeId="sync"
+      sidebarStats={[`projects ${projectRows.length}`]}
+      keyHints={KEY_HINTS}
+    >
+      {({ mainWidth }) =>
+        projectRows.length === 0 ? (
+          <Text dimColor>no projects</Text>
+        ) : (
+          <Box flexDirection="row" flexWrap="wrap" width={mainWidth}>
+            {projectRows.map((row, index) => (
+              <Box key={row.name} marginRight={1} marginBottom={1}>
+                <Card row={row} active={index === selected} message={messages[row.name]} busy={busy.has(row.name)} width={Math.min(CARD_WIDTH, mainWidth)} />
+              </Box>
+            ))}
+          </Box>
+        )
+      }
+    </Layout>
   );
 }

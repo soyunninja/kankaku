@@ -1,37 +1,104 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { formatMinutes } from "../domain/today-model.ts";
 import type { TaskRow, TasksModel } from "../domain/tasks-model.ts";
+import { SCREENS } from "../domain/nav-model.ts";
+import { Layout } from "./layout.tsx";
+import { Panel } from "./components/panel.tsx";
+import { Table } from "./components/table.tsx";
+import type { TableColumn } from "./components/table.tsx";
 
 export interface TasksScreenProps {
   load: (options: { all: boolean }) => TasksModel;
+  roots: string[];
+  version: string;
+  columns?: number;
+  rows?: number;
+  /** Restrict the table to one project's rows (set by `enter` on a Today project row). */
+  projectFilter?: string;
+  /** `esc`: drop `projectFilter`. Omitted when the caller does not wire navigation. */
+  onClearFilter?: () => void;
 }
 
 function formatCost(cost: number): string {
   return `$${cost.toFixed(2)}`;
 }
 
-function formatRow(row: TaskRow): string {
-  const clientPart = row.clientName !== undefined ? `  client:${row.clientName}` : "";
-  const hubTaskPart = row.hubTaskTitle !== undefined ? `  task:${row.hubTaskTitle}` : "";
-  return `${row.time}  ${row.project}${clientPart}${hubTaskPart}  wall ${formatMinutes(row.wallMs)}  work ${formatMinutes(row.workMs)}  ${formatCost(row.cost)}  ${row.prompt}`;
+const TASK_COLUMNS: TableColumn<TaskRow>[] = [
+  { key: "time", header: "time", width: 5 },
+  { key: "project", header: "project", width: 12 },
+  { key: "work", header: "work", width: 7, align: "right" },
+  { key: "cost", header: "cost", width: 6, align: "right" },
+  { key: "prompt", header: "prompt", width: 24 },
+];
+
+function taskCell(row: TaskRow, key: string): string {
+  switch (key) {
+    case "time":
+      return row.time;
+    case "project":
+      return row.project;
+    case "work":
+      return formatMinutes(row.workMs);
+    case "cost":
+      return formatCost(row.cost);
+    case "prompt":
+      return row.prompt;
+    default:
+      return "";
+  }
 }
 
+function DetailPanel({ row, width }: { row: TaskRow | undefined; width: number }) {
+  return (
+    <Panel title="Task" width={width}>
+      {row === undefined ? (
+        <Text dimColor>no task selected</Text>
+      ) : (
+        <Box flexDirection="column">
+          <Text>{row.fullPrompt}</Text>
+          {row.clientName !== undefined && <Text dimColor>{`client   ${row.clientName}`}</Text>}
+          {row.projectName !== undefined && <Text dimColor>{`project  ${row.projectName}`}</Text>}
+          {row.hubTaskTitle !== undefined && <Text dimColor>{`task     ${row.hubTaskTitle}`}</Text>}
+          <Text>{`wall ${formatMinutes(row.wallMs)}   work ${formatMinutes(row.workMs)}   wait ${formatMinutes(row.waitingMs)}`}</Text>
+          <Text>{`cost ${formatCost(row.cost)}${row.cacheHit !== undefined ? `   cache hit ${Math.round(row.cacheHit * 100)}%` : ""}`}</Text>
+          <Text>{`subagents ${row.subagentCount}`}</Text>
+        </Box>
+      )}
+    </Panel>
+  );
+}
+
+const KEY_HINTS = [
+  { key: "↑↓", label: "select" },
+  { key: "a", label: "today/all" },
+  { key: "r", label: "refresh" },
+  { key: "esc", label: "clear filter" },
+  { key: "1-4", label: "screens" },
+  { key: "q", label: "quit" },
+];
+
+/** Below this main-content width, the detail panel stacks under the table instead of beside it. */
+const DETAIL_BREAKPOINT = 70;
+
 /**
- * The Tasks screen: title, one row per task (via kankaku's own `buildTasks`
- * through `domain/tasks-model.ts`, never reimplemented here), and a
- * footer. `a` toggles between today's tasks and every task; `↑↓` move the
- * selection highlight; `r` reloads with the current today/all flag. Never
- * writes anything to disk.
+ * The Tasks screen: a table of tasks (via `domain/tasks-model.ts`, never
+ * reimplemented here) with a `[ Task ]` detail panel for the selected row.
+ * `a` toggles today/all, `r` reloads, `↑↓` move the selection. When
+ * `projectFilter` is set (via Today's `enter`), the table is restricted to
+ * that project and `esc` clears it through `onClearFilter`. Never writes
+ * anything to disk.
  */
-export function TasksScreen({ load }: TasksScreenProps) {
-  // Tracked alongside `all` state so rapid key presses (two `useInput`
-  // dispatches within the same batched render) always read the latest
-  // toggle value rather than a stale render closure.
+export function TasksScreen({ load, roots, version, columns, rows, projectFilter, onClearFilter }: TasksScreenProps) {
   const allRef = useRef(false);
   const [all, setAll] = useState(false);
   const [model, setModel] = useState<TasksModel>(() => load({ all: false }));
   const [selected, setSelected] = useState(0);
+
+  const visibleRows = useMemo(
+    () => (projectFilter !== undefined ? model.rows.filter((row) => row.project === projectFilter) : model.rows),
+    [model.rows, projectFilter],
+  );
 
   useInput((input, key) => {
     if (input === "a") {
@@ -43,27 +110,51 @@ export function TasksScreen({ load }: TasksScreenProps) {
     } else if (input === "r") {
       setModel(load({ all: allRef.current }));
     } else if (key.downArrow) {
-      setSelected((index) => Math.min(index + 1, Math.max(model.rows.length - 1, 0)));
+      setSelected((index) => Math.min(index + 1, Math.max(visibleRows.length - 1, 0)));
     } else if (key.upArrow) {
       setSelected((index) => Math.max(index - 1, 0));
+    } else if (key.escape) {
+      onClearFilter?.();
     }
   });
 
   return (
-    <Box flexDirection="column">
-      <Text bold>{">_ kankaku · Tasks"}</Text>
-      {model.rows.length === 0 ? (
-        <Text>no tasks</Text>
-      ) : (
-        <Box flexDirection="column">
-          {model.rows.map((row, index) => (
-            <Text key={row.id} bold={index === selected}>
-              {`${index === selected ? "› " : "  "}${formatRow(row)}`}
-            </Text>
-          ))}
-        </Box>
-      )}
-      <Text dimColor>{`a today/all · ↑↓ select · r refresh${all ? " (all)" : " (today)"}`}</Text>
-    </Box>
+    <Layout
+      columns={columns}
+      rows={rows}
+      headerLeft={`>_ kankaku ${version}`}
+      headerRight={projectFilter !== undefined ? `filtered: ${projectFilter}` : undefined}
+      sidebarItems={SCREENS}
+      activeId="tasks"
+      sidebarStats={[`tasks ${visibleRows.length}`, all ? "scope all" : "scope today"]}
+      keyHints={KEY_HINTS}
+    >
+      {({ mainWidth }) => {
+        const wide = mainWidth >= DETAIL_BREAKPOINT;
+        const tableWidth = wide ? Math.floor(mainWidth * 0.62) : mainWidth;
+        const detailWidth = wide ? Math.max(mainWidth - tableWidth - 1, 1) : mainWidth;
+        const selectedRow = visibleRows[Math.min(selected, Math.max(visibleRows.length - 1, 0))];
+
+        const table = (
+          <Panel title="Tasks" width={tableWidth}>
+            <Table columns={TASK_COLUMNS} rows={visibleRows} rowKey={(row) => row.id} cell={taskCell} selectedIndex={selected} emptyText="no tasks" />
+          </Panel>
+        );
+        const detail = <DetailPanel row={selectedRow} width={detailWidth} />;
+
+        return wide ? (
+          <Box flexDirection="row">
+            {table}
+            <Box width={1} />
+            {detail}
+          </Box>
+        ) : (
+          <Box flexDirection="column">
+            {table}
+            {detail}
+          </Box>
+        );
+      }}
+    </Layout>
   );
 }

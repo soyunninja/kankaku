@@ -97,3 +97,38 @@ test("buildTasksModel formats time as HH:MM local", () => {
   const model = buildTasksModel(projects, { all: true });
   assert.match(model.rows[0]!.time, /^\d{2}:\d{2}$/);
 });
+
+test("buildTasksModel row carries the untruncated prompt, waiting time, cache hit and subagent count for the detail panel", () => {
+  const longPrompt = "a very long prompt that should be truncated to about forty columns for the row";
+  const projects: ProjectInput[] = [
+    {
+      name: "alpha",
+      records: [
+        record({
+          id: "r1",
+          pid: 100,
+          prompt: longPrompt,
+          waitingMs: 4000,
+          usage: { input: 100, output: 0, cacheRead: 300, cacheWrite: 0, cost: 1.5 },
+        }),
+        record({
+          id: "sub-1",
+          role: "subagent",
+          pid: 200,
+          parentPid: 100,
+          startedAt: "2026-09-27T09:00:05.000Z",
+          settledAt: "2026-09-27T09:00:30.000Z",
+          usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0 },
+        }),
+      ],
+    },
+  ];
+
+  const model = buildTasksModel(projects, { all: true });
+  const row = model.rows[0]!;
+
+  assert.equal(row.fullPrompt, longPrompt);
+  assert.equal(row.waitingMs, 4000);
+  assert.equal(row.cacheHit, 0.75);
+  assert.equal(row.subagentCount, 1);
+});

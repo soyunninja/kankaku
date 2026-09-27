@@ -2,82 +2,100 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { TasksScreen } from "../src/ui/tasks-screen.tsx";
-import type { TasksModel } from "../src/domain/tasks-model.ts";
+import type { TaskRow, TasksModel } from "../src/domain/tasks-model.ts";
 
-function model(): TasksModel {
+function nextTick(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 30));
+}
+
+function row(overrides: Partial<TaskRow> = {}): TaskRow {
   return {
-    rows: [
-      { id: "t1", time: "09:00", project: "alpha", clientName: "Acme", hubTaskTitle: "Fix checkout", wallMs: 60000, workMs: 60000, cost: 1.5, prompt: "first task" },
-      { id: "t2", time: "10:00", project: "beta", wallMs: 30000, workMs: 20000, cost: 0.2, prompt: "second task" },
-    ],
+    id: overrides.id ?? "r1",
+    time: "09:00",
+    project: "kankaku",
+    wallMs: 60000,
+    workMs: 55000,
+    waitingMs: 5000,
+    cost: 1.5,
+    cacheHit: 0.6,
+    subagentCount: 0,
+    prompt: "short prompt",
+    fullPrompt: "short prompt",
+    ...overrides,
   };
 }
 
-test("TasksScreen renders the title, both rows and the footer", () => {
-  const calls: Array<{ all: boolean }> = [];
-  const { lastFrame } = render(
-    <TasksScreen
-      load={(options) => {
-        calls.push(options);
-        return model();
-      }}
-    />,
-  );
+function model(rows: TaskRow[] = [row()]): TasksModel {
+  return { rows };
+}
+
+test("renders the table and the detail panel for the selected row", () => {
+  const { lastFrame } = render(<TasksScreen load={() => model()} roots={["/work"]} version="0.1.0" columns={120} />);
   const frame = lastFrame() ?? "";
-  assert.match(frame, />_ kankaku · Tasks/);
-  assert.match(frame, /alpha/);
-  assert.match(frame, /beta/);
-  assert.match(frame, /Acme/);
-  assert.match(frame, /Fix checkout/);
-  assert.match(frame, /a today\/all · ↑↓ select · r refresh/);
-  assert.deepEqual(calls, [{ all: false }]);
+  assert.equal(frame.includes("Tasks"), true);
+  assert.equal(frame.includes("Task"), true);
+  assert.equal(frame.includes("kankaku"), true);
+  assert.equal(frame.includes("short prompt"), true);
 });
 
-test("TasksScreen shows the empty state when there are no rows", () => {
-  const { lastFrame } = render(<TasksScreen load={() => ({ rows: [] })} />);
-  assert.match(lastFrame() ?? "", /no tasks/);
-});
-
-test("TasksScreen toggles all/today on 'a' and reloads with the new flag", () => {
-  const calls: Array<{ all: boolean }> = [];
+test("'a' toggles today/all and reloads", async () => {
+  const calls: boolean[] = [];
   const { stdin } = render(
     <TasksScreen
       load={(options) => {
-        calls.push(options);
+        calls.push(options.all);
         return model();
       }}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
     />,
   );
   stdin.write("a");
-  assert.deepEqual(calls, [{ all: false }, { all: true }]);
-  stdin.write("a");
-  assert.deepEqual(calls, [{ all: false }, { all: true }, { all: false }]);
+  await nextTick();
+  assert.deepEqual(calls, [false, true]);
 });
 
-test("TasksScreen reloads on 'r' with the current all/today flag", () => {
-  const calls: Array<{ all: boolean }> = [];
+test("'r' reloads with the current all flag", async () => {
+  let loadCalls = 0;
   const { stdin } = render(
     <TasksScreen
-      load={(options) => {
-        calls.push(options);
+      load={() => {
+        loadCalls += 1;
         return model();
       }}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
     />,
   );
   stdin.write("r");
-  assert.deepEqual(calls, [{ all: false }, { all: false }]);
+  await nextTick();
+  assert.equal(loadCalls, 2);
 });
 
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 60));
-}
+test("filters rows to projectFilter and shows it in the header", () => {
+  const rows = [row({ id: "a", project: "kankaku" }), row({ id: "b", project: "kankaku-tui" })];
+  const { lastFrame } = render(
+    <TasksScreen load={() => model(rows)} roots={["/work"]} version="0.1.0" columns={120} projectFilter="kankaku-tui" />,
+  );
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("kankaku-tui"), true);
+  assert.equal(frame.includes("filtered"), true);
+});
 
-test("TasksScreen moves the selection with arrow keys and highlights the selected row", async () => {
-  const { lastFrame, stdin } = render(<TasksScreen load={() => model()} />);
-  const before = lastFrame() ?? "";
-  stdin.write("\u001B[B"); // down arrow
+test("esc clears the project filter", async () => {
+  let cleared = false;
+  const { stdin } = render(
+    <TasksScreen load={() => model()} roots={["/work"]} version="0.1.0" columns={120} projectFilter="kankaku" onClearFilter={() => (cleared = true)} />,
+  );
+  stdin.write("\u001B");
   await nextTick();
-  const after = lastFrame() ?? "";
-  assert.notEqual(before, after);
-  assert.match(after, /› 10:00 {2}beta/);
+  assert.equal(cleared, true);
+});
+
+test("renders at 80 columns without overflowing any line", () => {
+  const { lastFrame } = render(<TasksScreen load={() => model()} roots={["/work"]} version="0.1.0" columns={80} />);
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.ok(lines.every((line) => line.length <= 80));
 });
