@@ -1,13 +1,26 @@
 #!/usr/bin/env node
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
+import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { render } from "ink";
+import { buildTasks, localDay } from "kankaku/domain";
+import type { TaskView } from "kankaku/domain";
+import { buildSyncStatusLines, formatCatalogRefreshLines, formatSyncSummaryLines, formatTasks } from "kankaku/hub";
+import type { HubCredentials } from "kankaku/hub";
 import { readTuiConfig } from "./adapters/tui-config.ts";
 import { discoverProjects } from "./adapters/project-discovery.ts";
 import { readProjectRecords } from "./adapters/worklog-reader.ts";
+import { computeProjectSyncStatus, createCatalog, refreshCatalog, resolveHub, syncProject } from "./adapters/hub.ts";
+import { buildCatalogModel } from "./domain/catalog-model.ts";
 import { buildTodayRows, formatTodayLines } from "./domain/today-model.ts";
 import type { TodayModel } from "./domain/today-model.ts";
+import type { ProjectRef } from "./ports/project-source.ts";
 import { App } from "./ui/app.tsx";
+import type { CatalogScreenProps } from "./ui/catalog-screen.tsx";
+import type { TasksModel } from "./domain/tasks-model.ts";
+import { buildTasksModel } from "./domain/tasks-model.ts";
+import { buildSyncRows } from "./domain/sync-model.ts";
+import type { SyncModel, SyncScreenProps } from "./ui/sync-screen.tsx";
 
 export interface CliDeps {
   homeDir: string;
@@ -16,15 +29,30 @@ export interface CliDeps {
   stderr: (text: string) => void;
   exit: (code: number) => void;
   renderApp: (roots: string[]) => void;
+  /** Injectable for tests; defaults to `process.env` at the real entry point. */
+  env?: NodeJS.ProcessEnv;
+  /** Injectable for tests; defaults to `Date.now` at the real entry point. */
+  now?: () => number;
+  /** Injectable for tests; defaults to `os.hostname` at the real entry point. */
+  hostname?: () => string;
+  /** Injectable for tests; defaults to the global `fetch` at the real entry point. */
+  fetch?: typeof fetch;
 }
 
-const USAGE = "usage: kankaku [today] [--roots a,b]\n";
+const USAGE = "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]] [--roots a,b]\n";
 
 /** Load today's model for `roots`: discover projects, read their worklogs, build rows. */
 export function loadToday(roots: string[]): TodayModel {
   const projects = discoverProjects(roots);
   const withRecords = projects.map((project) => ({ name: project.name, records: readProjectRecords(project) }));
   return buildTodayRows(withRecords);
+}
+
+/** Load the Tasks screen's model for `roots`: same project/record discovery as `loadToday`, restricted to today unless `options.all`. */
+export function loadTasks(roots: string[], options: { all: boolean }): TasksModel {
+  const projects = discoverProjects(roots);
+  const withRecords = projects.map((project) => ({ name: project.name, records: readProjectRecords(project) }));
+  return buildTasksModel(withRecords, options);
 }
 
 function parseRoots(argv: string[], deps: Pick<CliDeps, "homeDir" | "cwd">): { roots: string[]; rest: string[] } {
@@ -38,8 +66,127 @@ function parseRoots(argv: string[], deps: Pick<CliDeps, "homeDir" | "cwd">): { r
   return { roots, rest };
 }
 
+function parseProjectFlag(argv: string[], cwd: string): { project: string | undefined; rest: string[] } {
+  const flagIndex = argv.indexOf("--project");
+  if (flagIndex === -1) return { project: undefined, rest: argv };
+  const value = argv[flagIndex + 1];
+  const rest = [...argv.slice(0, flagIndex), ...argv.slice(flagIndex + 2)];
+  return { project: value !== undefined ? resolve(cwd, value) : undefined, rest };
+}
+
+function envDeps(deps: CliDeps): { env: NodeJS.ProcessEnv; homeDir: () => string; now: () => number; hostname: () => string; fetch?: typeof fetch } {
+  return {
+    env: deps.env ?? {},
+    homeDir: () => deps.homeDir,
+    now: deps.now ?? (() => Date.now()),
+    hostname: deps.hostname ?? (() => hostname()),
+    ...(deps.fetch ? { fetch: deps.fetch } : {}),
+  };
+}
+
+/** Filter `tasks` to `day` (local calendar day), or return every task when `day` is `undefined`. */
+function filterTasksForDay(tasks: TaskView[], day: string | undefined): TaskView[] {
+  return day === undefined ? tasks : tasks.filter((task) => localDay(task.startedAt) === day);
+}
+
+/** `kankaku tasks [--all]`: kankaku's own `formatTasks` output per project, prefixed by a `== <project> ==` header. */
+function runTasksCommand(args: string[], roots: string[], deps: CliDeps): void {
+  const all = args.includes("--all");
+  const targetDay = all ? undefined : localDay(new Date().toISOString());
+  const projects = discoverProjects(roots);
+
+  const blocks: string[] = [];
+  for (const project of projects) {
+    const tasks = filterTasksForDay(buildTasks(readProjectRecords(project)), targetDay);
+    if (tasks.length === 0) continue;
+    blocks.push(`== ${project.name} ==\n${formatTasks(tasks)}`);
+  }
+  deps.stdout(blocks.length > 0 ? blocks.join("\n\n") : "no tasks");
+}
+
+/** `kankaku catalog [refresh]`. Without hub credentials: a one-line note, exit 0. With credentials: `refresh` fetches over the network (exit 1 on failure); without `refresh`, only the local cache is read (no network) and reported. */
+async function runCatalogCommand(args: string[], deps: CliDeps): Promise<void> {
+  const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  const doRefresh = args[0] === "refresh";
+
+  if (!hub.ok) {
+    if (doRefresh) {
+      deps.stderr(`kankaku catalog refresh: ${hub.reason}\n`);
+      deps.exit(1);
+    } else {
+      deps.stdout(hub.reason);
+    }
+    return;
+  }
+
+  const { now, fetch: fetchOverride } = envDeps(deps);
+  const catalog = createCatalog(hub.credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
+
+  if (doRefresh) {
+    const snapshot = await refreshCatalog(catalog);
+    deps.stdout(formatCatalogRefreshLines(snapshot).join("\n"));
+    if (!snapshot) deps.exit(1);
+    return;
+  }
+
+  const model = buildCatalogModel(catalog.read(), now());
+  if (model.status === "unavailable") {
+    deps.stdout("no catalog cached yet; run 'kankaku catalog refresh'");
+    return;
+  }
+  const clientCount = model.clients.length;
+  const projectCount = model.clients.reduce((sum, client) => sum + client.projects.length, 0);
+  deps.stdout(`${model.url}: ${clientCount} client(s), ${projectCount} project(s)${model.stale ? " (stale)" : ""}`);
+}
+
+/** Resolve the target projects for `sync`: `--project <dir>` restricts to exactly that directory; otherwise every discovered project under `roots`. */
+function resolveTargetProjects(roots: string[], projectFlag: string | undefined): ProjectRef[] {
+  if (projectFlag !== undefined) {
+    return [{ name: projectFlag.split(/[\\/]/).filter(Boolean).pop() ?? projectFlag, dir: projectFlag }];
+  }
+  return discoverProjects(roots);
+}
+
+/** `kankaku sync [status|all] [--project <dir>]`. Without hub credentials: a one-line note for `status` (exit 0), an error for an actual sync attempt (exit 1). */
+async function runSyncCommand(args: string[], roots: string[], deps: CliDeps): Promise<void> {
+  const { project: projectFlag, rest } = parseProjectFlag(args, deps.cwd);
+  const mode = rest[0] === "status" || rest[0] === "all" ? rest[0] : undefined;
+  const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  const targets = resolveTargetProjects(roots, projectFlag);
+
+  if (!hub.ok) {
+    if (mode === "status") {
+      deps.stdout(hub.reason);
+    } else {
+      deps.stderr(`kankaku sync: ${hub.reason}\n`);
+      deps.exit(1);
+    }
+    return;
+  }
+
+  if (mode === "status") {
+    const blocks = targets.map((project) => {
+      const status = computeProjectSyncStatus(project, hub.credentials, deps.env ?? {});
+      return `== ${project.name} ==\n${buildSyncStatusLines(status).join("\n")}`;
+    });
+    deps.stdout(blocks.join("\n\n"));
+    return;
+  }
+
+  const runnerDeps = envDeps(deps);
+  let failed = false;
+  const blocks: string[] = [];
+  for (const project of targets) {
+    const summary = await syncProject(project, hub.credentials, { full: mode === "all" }, runnerDeps);
+    if (summary.locked || summary.error !== undefined || summary.failed.length > 0) failed = true;
+    blocks.push(`== ${project.name} ==\n${formatSyncSummaryLines(summary).join("\n")}`);
+  }
+  deps.stdout(blocks.join("\n\n"));
+  if (failed) deps.exit(1);
+}
+
 /** Parse `argv` and run the requested mode against injected `deps`. No logic beyond argv handling belongs here. */
-export function runCli(argv: string[], deps: CliDeps): void {
+export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
   const { roots, rest } = parseRoots(argv, deps);
   const [command] = rest;
 
@@ -54,16 +201,92 @@ export function runCli(argv: string[], deps: CliDeps): void {
     return;
   }
 
+  if (command === "tasks") {
+    runTasksCommand(rest.slice(1), roots, deps);
+    return;
+  }
+
+  if (command === "catalog") {
+    await runCatalogCommand(rest.slice(1), deps);
+    return;
+  }
+
+  if (command === "sync") {
+    await runSyncCommand(rest.slice(1), roots, deps);
+    return;
+  }
+
   deps.stderr(USAGE);
   deps.exit(1);
+}
+
+/** Build the Catalog screen's `load`/`refresh` deps for the interactive app; used only by `renderApp`. */
+function catalogScreenDeps(deps: CliDeps): CatalogScreenProps {
+  const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  const { now, fetch: fetchOverride } = envDeps(deps);
+
+  if (!hub.ok) {
+    return { load: () => ({ status: "unavailable", reason: hub.reason }), refresh: async () => ({ status: "unavailable", reason: hub.reason }) };
+  }
+
+  const catalog = createCatalog(hub.credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
+  return {
+    load: () => buildCatalogModel(catalog.read(), now()),
+    refresh: async () => buildCatalogModel(await refreshCatalog(catalog), now()),
+  };
+}
+
+/** Build the Sync screen's `load`/`syncOne`/`syncAll` deps for the interactive app; used only by `renderApp`. */
+function syncScreenDeps(deps: CliDeps, roots: string[]): SyncScreenProps {
+  const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  const runnerDeps = envDeps(deps);
+
+  if (!hub.ok) {
+    const reason = hub.reason;
+    return {
+      load: (): SyncModel => ({ status: "unavailable", reason }),
+      syncOne: async () => ({ ok: false, message: reason }),
+      syncAll: async () => [],
+    };
+  }
+  const credentials: HubCredentials = hub.credentials;
+
+  const load = (): SyncModel => {
+    const projects = discoverProjects(roots);
+    const entries = projects.map((project) => ({ project, status: computeProjectSyncStatus(project, credentials, deps.env ?? {}) }));
+    return { status: "ready", rows: buildSyncRows(entries) };
+  };
+
+  const findProject = (name: string): ProjectRef | undefined => discoverProjects(roots).find((project) => project.name === name);
+
+  return {
+    load,
+    syncOne: async (row, options) => {
+      const project = findProject(row.name) ?? { name: row.name, dir: row.dir };
+      const summary = await syncProject(project, credentials, options, runnerDeps);
+      return { ok: summary.error === undefined && summary.failed.length === 0 && !summary.locked, message: formatSyncSummaryLines(summary).join("; ") };
+    },
+    syncAll: async () => {
+      const projects = discoverProjects(roots);
+      const results = [];
+      for (const project of projects) {
+        const summary = await syncProject(project, credentials, {}, runnerDeps);
+        results.push({ ok: summary.error === undefined && summary.failed.length === 0 && !summary.locked, message: formatSyncSummaryLines(summary).join("; ") });
+      }
+      return results;
+    },
+  };
 }
 
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMain) {
-  runCli(process.argv.slice(2), {
+  const realDeps: CliDeps = {
     homeDir: homedir(),
     cwd: process.cwd(),
+    env: process.env,
+    now: () => Date.now(),
+    hostname: () => hostname(),
     stdout: (text) => {
       console.log(text);
     },
@@ -74,7 +297,17 @@ if (isMain) {
       process.exit(code);
     },
     renderApp: (roots) => {
-      render(<App load={() => loadToday(roots)} roots={roots} />, { alternateScreen: true, exitOnCtrlC: true });
+      render(
+        <App
+          roots={roots}
+          loadToday={() => loadToday(roots)}
+          loadTasks={(options) => loadTasks(roots, options)}
+          catalog={catalogScreenDeps(realDeps)}
+          sync={syncScreenDeps(realDeps, roots)}
+        />,
+        { alternateScreen: true, exitOnCtrlC: true },
+      );
     },
-  });
+  };
+  void runCli(process.argv.slice(2), realDeps);
 }
