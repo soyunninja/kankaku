@@ -11,7 +11,8 @@ import {
   switchScreen,
 } from "../domain/nav-model.ts";
 import type { NavState } from "../domain/nav-model.ts";
-import { TodayScreen } from "./today-screen.tsx";
+import { DashboardScreen } from "./dashboard-screen.tsx";
+import type { DashboardActions } from "./dashboard-screen.tsx";
 import { TasksScreen } from "./tasks-screen.tsx";
 import { CatalogScreen } from "./catalog-screen.tsx";
 import type { CatalogScreenProps } from "./catalog-screen.tsx";
@@ -28,6 +29,7 @@ export interface AppProps {
   loadTasks: (options: { all: boolean }) => TasksModel;
   catalog: Pick<CatalogScreenProps, "load" | "refresh">;
   sync: Pick<SyncScreenProps, "load" | "syncOne" | "syncAll">;
+  dashboardActions: DashboardActions;
 }
 
 /**
@@ -41,14 +43,14 @@ export interface AppProps {
  * to the sidebar and `esc` does too, unless the active screen consumes it
  * first (Tasks with a project filter set: the first `esc` clears it, the
  * next returns). `1`-`4` and `q` stay global regardless of focus; `q`
- * quits from anywhere (Ink's own `useApp().exit()`). Today's `enter` on a
+ * quits from anywhere (Ink's own `useApp().exit()`). Dashboard's `enter` on a
  * project row (only reachable once main is focused) opens Tasks filtered
  * to it, keeping focus on main; Tasks' own `esc` handling (gated the same
  * way as every other screen key, by its `focused` prop) clears that
  * filter — this hook only predicts whether that will happen, to decide
  * whether it should also move focus.
  */
-export function App({ roots, version, loadToday, loadTasks, catalog, sync }: AppProps) {
+export function App({ roots, version, loadToday, loadTasks, catalog, sync, dashboardActions }: AppProps) {
   const { exit } = useApp();
   const [nav, setNav] = useState<NavState>(INITIAL_NAV_STATE);
 
@@ -89,9 +91,10 @@ export function App({ roots, version, loadToday, loadTasks, catalog, sync }: App
 
   return (
     <>
-      {nav.screen === "today" && (
-        <TodayScreen
+      {nav.screen === "dashboard" && (
+        <DashboardScreen
           load={loadToday}
+          actions={dashboardActions}
           roots={roots}
           version={version}
           focused={focused}

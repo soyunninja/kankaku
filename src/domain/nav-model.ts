@@ -1,5 +1,5 @@
 /** The four screens of the app, in tab-bar order. */
-export type ScreenId = "today" | "tasks" | "catalog" | "sync";
+export type ScreenId = "dashboard" | "tasks" | "catalog" | "sync";
 
 export interface ScreenTab {
   id: ScreenId;
@@ -9,7 +9,7 @@ export interface ScreenTab {
 }
 
 export const SCREENS: ScreenTab[] = [
-  { id: "today", label: "Today", key: "1" },
+  { id: "dashboard", label: "Dashboard", key: "1" },
   { id: "tasks", label: "Tasks", key: "2" },
   { id: "catalog", label: "Catalog", key: "3" },
   { id: "sync", label: "Sync", key: "4" },
@@ -41,7 +41,7 @@ export type Focus = "sidebar" | "main";
 
 /**
  * The app's navigation state: the active screen, which zone has focus,
- * plus an optional Tasks project filter, set by `enter` on a Today
+ * plus an optional Tasks project filter, set by `enter` on a Dashboard
  * project row and cleared with `esc`. Kept here (not in `app.tsx`) so it
  * stays a plain, testable value.
  */
@@ -52,14 +52,14 @@ export interface NavState {
   projectFilter?: string;
 }
 
-export const INITIAL_NAV_STATE: NavState = { screen: "today", focus: "sidebar" };
+export const INITIAL_NAV_STATE: NavState = { screen: "dashboard", focus: "sidebar" };
 
 /** Switch the active screen, keeping any existing project filter and focus (e.g. `1`-`4` while Tasks is already filtered). */
 export function switchScreen(state: NavState, screen: ScreenId): NavState {
   return { ...state, screen };
 }
 
-/** `enter` on a Today project row: jump to Tasks filtered to `project`, keeping the current focus. */
+/** `enter` on a Dashboard project row: jump to Tasks filtered to `project`, keeping the current focus. */
 export function openProjectInTasks(state: NavState, project: string): NavState {
   return { ...state, screen: "tasks", projectFilter: project };
 }

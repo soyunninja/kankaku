@@ -3,7 +3,7 @@
 kankaku-tui is a standalone terminal app, built with [Ink](https://github.com/vadimdemedes/ink)
 on Node 24, that reads every project's `.kankaku/worklog.jsonl` under a
 configurable list of roots and shows the day across projects, plus the hub
-catalog and sync status, across four tab-bar screens (Today, Tasks,
+catalog and sync status, across four tab-bar screens (Dashboard, Tasks,
 Catalog, Sync). It consumes the pi-free `kankaku/domain`, `kankaku/hub` and
 `kankaku/ports` library barrels and never reimplements their aggregation,
 formatting or sync-planning logic.
@@ -19,13 +19,17 @@ formatting or sync-planning logic.
   `catalog-model.ts` (clients → active projects with open/doing hub-task
   counts, age/staleness from an injected `now`), `sync-model.ts` (rows
   from kankaku's `SyncStatusSnapshot`, one per project) and
-  `dashboard-model.ts` (the Today dashboard: today's total/per-project
-  rows reused from `today-model.ts#buildTodayRows` with an added `share`,
-  a 7-point last-7-days work/cost series via kankaku's own `summarize`
-  per day, and the Hub card built from per-project sync snapshots plus an
-  optional catalog summary — every "now" is injected, never `Date.now()`)
-  never call a kankaku adapter directly — only its `domain`/`hub` barrel
-  types.
+  `dashboard-model.ts` (the Dashboard screen's model: today's
+  total/per-project rows reused from `today-model.ts#buildTodayRows` with
+  an added `share`, a 7-point last-7-days work/cost series via kankaku's
+  own `summarize` per day, and the Hub card built from per-project sync
+  snapshots plus an optional catalog summary — every "now" is injected,
+  never `Date.now()`) and `quick-actions.ts` (the Dashboard's `[ Quick
+  actions ]` panel: the fixed `QUICK_ACTIONS` list — `c` refresh catalog,
+  `s` sync all projects, `S` full sync all, `r` reload — and
+  `formatQuickActionLines`, the panel's own one-line status text for its
+  idle/busy/done/unavailable `QuickActionState`) never call a kankaku
+  adapter directly — only its `domain`/`hub` barrel types.
 - `src/ports/` holds interfaces only (`ProjectSource`).
 - `src/adapters/` talks to the filesystem and the hub: `tui-config.ts`,
   `project-discovery.ts`, `worklog-reader.ts` (kankaku's `JsonlWorkLog`),
@@ -54,20 +58,29 @@ formatting or sync-planning logic.
   sparklines, each also exporting a plain-string `render*` helper for
   reuse inside a `Table` cell; `sidebar.tsx`, `header-bar.tsx`,
   `key-hints.tsx`), `app.tsx` (owns `NavState`, global `1`-`4`/`q`, and
-  wires Today's `enter`-on-a-project to Tasks' `projectFilter`),
-  `today-screen.tsx` (the dashboard: Today card, Last 7 days sparklines,
-  Projects table with share bars, Hub card), `tasks-screen.tsx` (table
-  left, `[ Task ]` detail panel right), `catalog-screen.tsx` (`[ Clients ]`
+  wires Dashboard's `enter`-on-a-project to Tasks' `projectFilter`),
+  `dashboard-screen.tsx` (the home screen: a Today card — it shows today's
+  numbers, hence its own title, unrelated to the screen's own name — Last
+  7 days sparklines, Projects table with share bars, Hub card and the
+  `[ Quick actions ]` panel, wired to its `DashboardActions` prop:
+  `refreshCatalog`/`syncAll` from `cli.tsx`, one action at a time, the
+  model reloading once it settles), `tasks-screen.tsx` (table left,
+  `[ Task ]` detail panel right), `catalog-screen.tsx` (`[ Clients ]`
   left, the selected client's `[ Projects ]` right), `sync-screen.tsx`
   (one card per project in a wrapping grid). Every screen renders its own
   `Layout`, so it stays a self-contained, independently testable unit.
 - `src/cli.tsx` only wires argv parsing to config, discovery, the domain
   model and rendering (`today`/`tasks`/`catalog [refresh]`/
-  `sync [status|all] [--project <dir>]`, plus the interactive default).
-  `loadDashboard` builds the Today screen's model from the same
-  project/record discovery as `loadToday`/`loadTasks`, adding the Hub card
-  from local no-network sync status and the cached catalog (never a
-  network call on its own). Do not put logic there beyond this wiring.
+  `sync [status|all] [--project <dir>]`, plus the interactive default —
+  the `today` subcommand name is unrelated to the Dashboard screen's own
+  name and stays as-is). `loadDashboard` builds the Dashboard screen's
+  model from the same project/record discovery as `loadToday`/`loadTasks`,
+  adding the Hub card from local no-network sync status and the cached
+  catalog (never a network call on its own). `dashboardActionsDeps` builds
+  its Quick actions deps, reusing `adapters/hub.ts`'s `createCatalog`/
+  `refreshCatalog`/`syncProject` and kankaku's own `formatCatalogRefreshLines`/
+  `formatSyncSummaryLines` for the result message — never reimplemented.
+  Do not put logic there beyond this wiring.
 - Dependencies point inwards: adapters and ui import domain and ports;
   domain imports nothing outside `src/domain/` and `src/ports/`.
 

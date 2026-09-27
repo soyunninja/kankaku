@@ -6,6 +6,7 @@ import type { DashboardModel } from "../src/domain/dashboard-model.ts";
 import type { TasksModel } from "../src/domain/tasks-model.ts";
 import type { CatalogModel } from "../src/domain/catalog-model.ts";
 import type { SyncModel } from "../src/ui/sync-screen.tsx";
+import type { DashboardActions } from "../src/ui/dashboard-screen.tsx";
 
 function dashboardModel(): DashboardModel {
   return {
@@ -28,6 +29,10 @@ function syncModel(): SyncModel {
   return { status: "unavailable", reason: "hub credentials are not configured" };
 }
 
+function dashboardActions(): DashboardActions {
+  return { hubAvailable: false, refreshCatalog: async () => "", syncAll: async () => "" };
+}
+
 function appProps() {
   return {
     roots: ["/work"],
@@ -36,6 +41,7 @@ function appProps() {
     loadTasks: () => tasksModel(),
     catalog: { load: () => catalogModel(), refresh: async () => catalogModel() },
     sync: { load: () => syncModel(), syncOne: async () => ({ ok: true as const, message: "" }), syncAll: async () => [] },
+    dashboardActions: dashboardActions(),
   };
 }
 
@@ -43,10 +49,10 @@ function nextTick(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 60));
 }
 
-test("App renders the sidebar with Today active by default", () => {
+test("App renders the sidebar with Dashboard active by default", () => {
   const { lastFrame } = render(<App {...appProps()} />);
   const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("› Today"), true);
+  assert.equal(frame.includes("› Dashboard"), true);
   assert.equal(frame.includes(">_ kankaku 0.1.0"), true);
 });
 
@@ -69,17 +75,17 @@ test("App switches screens on 1-4", async () => {
   assert.equal((lastFrame() ?? "").includes("› Sync"), true);
   stdin.write("1");
   await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Today"), true);
+  assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
 });
 
-test("enter first focuses the main zone, then opens the selected Today project", async () => {
+test("enter first focuses the main zone, then opens the selected Dashboard project", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
   stdin.write("\r");
   await nextTick();
   // First `enter` (sidebar focused) only moves focus to main: no navigation yet.
   const afterFirstEnter = lastFrame() ?? "";
   assert.equal(afterFirstEnter.includes("filtered:"), false);
-  assert.equal(afterFirstEnter.includes("› Today"), true);
+  assert.equal(afterFirstEnter.includes("› Dashboard"), true);
   assert.equal(afterFirstEnter.includes("← menu"), true);
 
   stdin.write("\r");
@@ -95,7 +101,7 @@ test("sidebar focus: down/up move the active screen (clamped), without opening i
 
   stdin.write("\u001B[A"); // up arrow, already on the first screen: clamps
   await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Today"), true);
+  assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
 
   stdin.write("\u001B[B"); // down arrow
   await nextTick();
@@ -149,7 +155,7 @@ test("digit keys switch screens without changing which zone is focused", async (
 
 test("while the sidebar is focused, arrow keys never reach the active screen's own list", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
-  // On Today, sidebar focused by default: down arrow moves the active
+  // On Dashboard, sidebar focused by default: down arrow moves the active
   // screen (to Tasks) instead of the Projects selection.
   stdin.write("\u001B[B");
   await nextTick();
@@ -158,7 +164,7 @@ test("while the sidebar is focused, arrow keys never reach the active screen's o
 
 test("esc on Tasks with a project filter clears it first, the next esc returns to the sidebar", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
-  stdin.write("\r"); // focus main on Today
+  stdin.write("\r"); // focus main on Dashboard
   await nextTick();
   stdin.write("\r"); // open the selected project in Tasks, filtered
   await nextTick();
@@ -180,7 +186,7 @@ test("esc on Tasks with a project filter clears it first, the next esc returns t
 
 test("esc on a screen without a project filter returns straight to the sidebar", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
-  stdin.write("\r"); // focus main on Today
+  stdin.write("\r"); // focus main on Dashboard
   await nextTick();
   assert.equal((lastFrame() ?? "").includes("← menu"), true);
 

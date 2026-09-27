@@ -1,7 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
-import { TodayScreen } from "../src/ui/today-screen.tsx";
+import { DashboardScreen } from "../src/ui/dashboard-screen.tsx";
+import type { DashboardActions } from "../src/ui/dashboard-screen.tsx";
 import type { DashboardModel, DashboardProjectRow } from "../src/domain/dashboard-model.ts";
 
 function nextTick(): Promise<void> {
@@ -37,17 +38,27 @@ function model(overrides: Partial<DashboardModel> = {}): DashboardModel {
   };
 }
 
+function actions(overrides: Partial<DashboardActions> = {}): DashboardActions {
+  return {
+    hubAvailable: true,
+    refreshCatalog: async () => "catalog: 9 clients · 17 projects · 42 tasks",
+    syncAll: async () => "uploaded 2, updated 0, skipped 0, failed 0",
+    ...overrides,
+  };
+}
+
 test("renders the header, sidebar, panels and footer at a wide terminal", () => {
   const { lastFrame } = render(
-    <TodayScreen load={() => model()} roots={["/work"]} version="0.1.0" columns={120} rows={30} />,
+    <DashboardScreen load={() => model()} actions={actions()} roots={["/work"]} version="0.1.0" columns={120} rows={30} />,
   );
   const frame = lastFrame() ?? "";
   assert.equal(frame.includes(">_ kankaku 0.1.0"), true);
-  assert.equal(frame.includes("› Today"), true);
+  assert.equal(frame.includes("› Dashboard"), true);
   assert.equal(frame.includes("Today"), true);
   assert.equal(frame.includes("Last 7 days"), true);
   assert.equal(frame.includes("Projects"), true);
   assert.equal(frame.includes("Hub"), true);
+  assert.equal(frame.includes("Quick actions"), true);
   assert.equal(frame.includes("kankaku-tui"), true);
   assert.equal(frame.includes("r refresh"), true);
   assert.equal(frame.includes("roots 1"), true);
@@ -56,11 +67,12 @@ test("renders the header, sidebar, panels and footer at a wide terminal", () => 
 test("reloads through `load` when 'r' is pressed", async () => {
   let loadCalls = 0;
   const { stdin } = render(
-    <TodayScreen
+    <DashboardScreen
       load={() => {
         loadCalls += 1;
         return model();
       }}
+      actions={actions()}
       roots={["/work"]}
       version="0.1.0"
       columns={120}
@@ -74,7 +86,7 @@ test("reloads through `load` when 'r' is pressed", async () => {
 test("enter on the selected project calls onOpenProject with its name", async () => {
   let opened: string | undefined;
   const { stdin } = render(
-    <TodayScreen load={() => model()} roots={["/work"]} version="0.1.0" columns={120} onOpenProject={(name) => (opened = name)} />,
+    <DashboardScreen load={() => model()} actions={actions()} roots={["/work"]} version="0.1.0" columns={120} onOpenProject={(name) => (opened = name)} />,
   );
   stdin.write("\u001B[B"); // down arrow -> select kankaku-tui
   await nextTick();
@@ -85,13 +97,13 @@ test("enter on the selected project calls onOpenProject with its name", async ()
 
 test("shows a plain note instead of the Hub panel body when the hub is not configured", () => {
   const { lastFrame } = render(
-    <TodayScreen load={() => model({ hub: { status: "unavailable" } })} roots={["/work"]} version="0.1.0" columns={120} />,
+    <DashboardScreen load={() => model({ hub: { status: "unavailable" } })} actions={actions()} roots={["/work"]} version="0.1.0" columns={120} />,
   );
   assert.equal((lastFrame() ?? "").includes("hub not configured"), true);
 });
 
 test("stacks the panels in one column under 70 columns without overflowing", () => {
-  const { lastFrame } = render(<TodayScreen load={() => model()} roots={["/work"]} version="0.1.0" columns={80} />);
+  const { lastFrame } = render(<DashboardScreen load={() => model()} actions={actions()} roots={["/work"]} version="0.1.0" columns={80} />);
   const frame = lastFrame() ?? "";
   assert.equal(frame.includes("Today"), true);
   assert.equal(frame.includes("Projects"), true);
@@ -113,7 +125,7 @@ function manyProjects(count: number): DashboardProjectRow[] {
 
 test("fits within `rows` with many projects at 100×24", async () => {
   const { lastFrame, stdin } = render(
-    <TodayScreen load={() => model({ projects: manyProjects(40) })} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+    <DashboardScreen load={() => model({ projects: manyProjects(40) })} actions={actions()} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
   );
   // Scroll into the middle of the list, so both indicators are visible at
   // once — the scenario where a fixed-width column overflowing the
@@ -132,7 +144,7 @@ test("fits within `rows` with many projects at 100×24", async () => {
 
 test("PageDown/Home/End move the Projects selection", async () => {
   const { lastFrame, stdin } = render(
-    <TodayScreen load={() => model({ projects: manyProjects(40) })} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
+    <DashboardScreen load={() => model({ projects: manyProjects(40) })} actions={actions()} roots={["/work"]} version="0.1.0" columns={100} rows={24} />,
   );
   const markedProject = (): string | undefined => (lastFrame() ?? "").match(/› (project-\d+)/)?.[1];
 
@@ -167,7 +179,7 @@ function longNameProjects(count: number): DashboardProjectRow[] {
 
 test("a long project name list never pushes the header out of view or any right-column panel past its budget, at 100×20", () => {
   const { lastFrame } = render(
-    <TodayScreen load={() => model({ projects: longNameProjects(40) })} roots={["/work"]} version="0.1.0" columns={100} rows={20} />,
+    <DashboardScreen load={() => model({ projects: longNameProjects(40) })} actions={actions()} roots={["/work"]} version="0.1.0" columns={100} rows={20} />,
   );
   const frame = lastFrame() ?? "";
   const lines = frame.split("\n");
@@ -176,4 +188,136 @@ test("a long project name list never pushes the header out of view or any right-
   assert.equal(lines[lines.length - 1]?.includes("q quit"), true, "the last line should be the footer hints");
   assert.equal(frame.includes("Last 7 days"), true);
   assert.equal(frame.includes("Hub"), true);
+});
+
+test("the Quick actions panel lists all four actions", () => {
+  const { lastFrame } = render(<DashboardScreen load={() => model()} actions={actions()} roots={["/work"]} version="0.1.0" columns={120} rows={30} />);
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("c") && frame.includes("refresh catalog"), true);
+  assert.equal(frame.includes("sync all projects"), true);
+  assert.equal(frame.includes("full sync all"), true);
+  assert.equal(frame.includes("reload"), true);
+});
+
+test("'c' shows a busy line while refreshCatalog runs, then the result", async () => {
+  let resolveRefresh: (value: string) => void = () => {};
+  const pending = new Promise<string>((resolve) => {
+    resolveRefresh = resolve;
+  });
+  const { lastFrame, stdin } = render(
+    <DashboardScreen
+      load={() => model()}
+      actions={actions({ refreshCatalog: () => pending })}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
+      rows={30}
+      focused
+    />,
+  );
+  stdin.write("c");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("… refresh catalog"), true);
+
+  resolveRefresh("catalog: 9 clients · 17 projects · 42 tasks");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("catalog: 9 clients · 17 projects · 42 tasks"), true);
+});
+
+test("after a quick action settles, the model reloads (Hub card and Projects table refresh)", async () => {
+  let loadCalls = 0;
+  const { stdin } = render(
+    <DashboardScreen
+      load={() => {
+        loadCalls += 1;
+        return model();
+      }}
+      actions={actions({ syncAll: async () => "uploaded 1, updated 0, skipped 0, failed 0" })}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
+      rows={30}
+      focused
+    />,
+  );
+  const before = loadCalls;
+  stdin.write("s");
+  await nextTick();
+  await nextTick();
+  assert.ok(loadCalls > before, "expected the dashboard model to reload after the action settled");
+});
+
+test("quick action keys are ignored while another action is busy", async () => {
+  let refreshCalls = 0;
+  let syncCalls = 0;
+  const pending = new Promise<string>(() => {}); // never resolves within this test
+  const { stdin } = render(
+    <DashboardScreen
+      load={() => model()}
+      actions={actions({
+        refreshCatalog: () => {
+          refreshCalls += 1;
+          return pending;
+        },
+        syncAll: async () => {
+          syncCalls += 1;
+          return "ok";
+        },
+      })}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
+      rows={30}
+      focused
+    />,
+  );
+  stdin.write("c");
+  await nextTick();
+  assert.equal(refreshCalls, 1);
+
+  stdin.write("s");
+  await nextTick();
+  assert.equal(syncCalls, 0, "sync should be ignored while refresh is busy");
+});
+
+test("quick action keys are ignored when the main zone is not focused", async () => {
+  let refreshCalls = 0;
+  const { stdin } = render(
+    <DashboardScreen
+      load={() => model()}
+      actions={actions({
+        refreshCatalog: async () => {
+          refreshCalls += 1;
+          return "done";
+        },
+      })}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
+      rows={30}
+      focused={false}
+    />,
+  );
+  stdin.write("c");
+  await nextTick();
+  assert.equal(refreshCalls, 0);
+});
+
+test("without hub credentials, the panel shows a note and 'c'/'s'/'S' do nothing", async () => {
+  let refreshCalls = 0;
+  const { lastFrame, stdin } = render(
+    <DashboardScreen
+      load={() => model()}
+      actions={actions({ hubAvailable: false, refreshCatalog: async () => (refreshCalls += 1, "unused") })}
+      roots={["/work"]}
+      version="0.1.0"
+      columns={120}
+      rows={30}
+      focused
+    />,
+  );
+  assert.equal((lastFrame() ?? "").includes("hub not configured"), true);
+  stdin.write("c");
+  await nextTick();
+  assert.equal(refreshCalls, 0);
 });

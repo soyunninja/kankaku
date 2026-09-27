@@ -4,15 +4,35 @@ import { formatMinutes } from "../domain/today-model.ts";
 import type { TodayRow } from "../domain/today-model.ts";
 import type { DashboardHubCard, DashboardModel, DashboardProjectRow, DayPoint } from "../domain/dashboard-model.ts";
 import { SCREENS, hintsFor } from "../domain/nav-model.ts";
+import { QUICK_ACTIONS, formatQuickActionLines } from "../domain/quick-actions.ts";
+import type { QuickActionKey, QuickActionState } from "../domain/quick-actions.ts";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
 import { Table } from "./components/table.tsx";
 import type { TableColumn } from "./components/table.tsx";
 import { Sparkline } from "./components/sparkline.tsx";
 import { renderBar } from "./components/bar.tsx";
+import { useTheme } from "./theme.ts";
 
-export interface TodayScreenProps {
+/**
+ * The Dashboard screen's Quick actions dependencies, supplied by
+ * `cli.tsx` from `adapters/hub.ts`: `refreshCatalog` refreshes the full
+ * catalog from the hub, `syncAll` syncs every discovered project
+ * (`full: true` for a full resync), both resolving to an already-formatted
+ * result message (reusing kankaku's own `formatCatalogRefreshLines`/
+ * `formatSyncSummaryLines` — never reimplemented here). `hubAvailable`
+ * mirrors the Hub card's own `status === "ready"`: when `false`, `c`/`s`/
+ * `S` do nothing and the panel shows why instead.
+ */
+export interface DashboardActions {
+  refreshCatalog: () => Promise<string>;
+  syncAll: (options: { full: boolean }) => Promise<string>;
+  hubAvailable: boolean;
+}
+
+export interface DashboardScreenProps {
   load: () => DashboardModel;
+  actions: DashboardActions;
   roots: string[];
   /** This app's own version, for the header bar (`>_ kankaku <version>`). */
   version: string;
@@ -31,6 +51,8 @@ const KEY_HINTS = [
   { key: "1-4", label: "screens" },
   { key: "q", label: "quit" },
 ];
+
+const HUB_UNAVAILABLE_REASON = "hub not configured (~/.kankaku/credentials.json)";
 
 /** `HH:MM`, local time, from an ISO timestamp. */
 function formatTime(iso: string): string {
@@ -140,6 +162,36 @@ function HubPanel({ hub, width, height }: { hub: DashboardHubCard; width: number
   );
 }
 
+/** Rows the Quick actions panel's own chrome takes outside its content: 1 top border + 1 bottom border. */
+const QUICK_ACTIONS_CHROME_ROWS = 2;
+/** Rows the Quick actions panel takes: its chrome, one line per `QUICK_ACTIONS` entry, plus one status line. */
+const QUICK_ACTIONS_PANEL_ROWS = QUICK_ACTIONS_CHROME_ROWS + QUICK_ACTIONS.length + 1;
+
+/**
+ * The `[ Quick actions ]` panel: `QUICK_ACTIONS` listed one per line (key
+ * in the accent colour, label muted — the same convention as the footer
+ * `KeyHints`), followed by one status line from `domain/quick-actions.ts#formatQuickActionLines`
+ * (always exactly one line, so this panel's height never changes with the
+ * message).
+ */
+function QuickActionsPanel({ state, width, height, active }: { state: QuickActionState; width: number; height: number; active: boolean }) {
+  const theme = useTheme();
+  const [statusLine] = formatQuickActionLines(Math.max(width - 2, 1), state);
+  return (
+    <Panel title="Quick actions" width={width} height={height} active={active}>
+      {QUICK_ACTIONS.map((action) => (
+        <Text key={action.key}>
+          <Text color={theme.accent}>{action.key}</Text>
+          <Text color={theme.muted}>{`  ${action.label}`}</Text>
+        </Text>
+      ))}
+      <Text dimColor={state.status === "busy" || state.status === "unavailable"} color={state.status === "done" && statusLine.startsWith("error:") ? theme.error : undefined}>
+        {statusLine}
+      </Text>
+    </Panel>
+  );
+}
+
 /** Below this main-content width, the two-column grid collapses to one column, stacking every panel. */
 const GRID_BREAKPOINT = 70;
 /** Rows the Today card's panel takes: 1 top border + 3 content lines + 1 bottom border. */
@@ -153,7 +205,7 @@ const TABLE_CHROME_ROWS = 3;
 
 /** How many data rows the Projects table can show for a given `mainHeight`, depending on whether the grid is two columns (`grid`) or stacked to one (`stacked`). */
 function projectsMaxRows(mainHeight: number, layout: "grid" | "stacked"): number {
-  const fixedRows = layout === "grid" ? TODAY_PANEL_ROWS : TODAY_PANEL_ROWS + LAST7_PANEL_ROWS + HUB_PANEL_ROWS;
+  const fixedRows = layout === "grid" ? TODAY_PANEL_ROWS : TODAY_PANEL_ROWS + LAST7_PANEL_ROWS + HUB_PANEL_ROWS + QUICK_ACTIONS_PANEL_ROWS;
   return Math.max(mainHeight - fixedRows - TABLE_CHROME_ROWS, 1);
 }
 
@@ -173,12 +225,14 @@ function DashboardGrid({
   mainWidth,
   mainHeight,
   focused,
+  actionState,
 }: {
   model: DashboardModel;
   selectedIndex: number;
   mainWidth: number;
   mainHeight: number;
   focused: boolean;
+  actionState: QuickActionState;
 }) {
   if (mainWidth < GRID_BREAKPOINT) {
     return (
@@ -193,6 +247,7 @@ function DashboardGrid({
           maxRows={projectsMaxRows(mainHeight, "stacked")}
           active={focused}
         />
+        <QuickActionsPanel state={actionState} width={mainWidth} height={QUICK_ACTIONS_PANEL_ROWS} active={false} />
         <HubPanel hub={model.hub} width={mainWidth} height={HUB_PANEL_ROWS} />
       </Box>
     );
@@ -217,28 +272,69 @@ function DashboardGrid({
       <Box flexDirection="column" width={rightWidth}>
         <Last7DaysPanel points={model.last7Days} width={rightWidth} height={LAST7_PANEL_ROWS} />
         <HubPanel hub={model.hub} width={rightWidth} height={HUB_PANEL_ROWS} />
+        <QuickActionsPanel state={actionState} width={rightWidth} height={QUICK_ACTIONS_PANEL_ROWS} active={false} />
       </Box>
     </Box>
   );
 }
 
+/** The Quick actions panel's initial state: idle when the hub is configured, `unavailable` (with its reason) otherwise. */
+function initialActionState(hubAvailable: boolean): QuickActionState {
+  return hubAvailable ? { status: "idle" } : { status: "unavailable", reason: HUB_UNAVAILABLE_REASON };
+}
+
 /**
- * The Today screen: a dashboard (Today card, Last 7 days sparklines,
- * Projects table with share bars, Hub card) inside the shared
- * header/sidebar/footer frame. `r` reloads through `load`; `↑↓` move the
- * Projects selection; `enter` opens the selected project in Tasks via
- * `onOpenProject`. Never writes anything to disk.
+ * The Dashboard screen: a Today card (work/wait/cost/tasks/cache hit), a
+ * Last 7 days card (work and cost sparklines with weekday labels), a
+ * Projects table (work, cost and a share bar per project), a Hub card
+ * (pending/stale, last sync time, catalog summary) and a Quick actions
+ * panel (`c` refresh the catalog, `s` sync every project, `S` full-sync
+ * every project, `r` reload) inside the shared header/sidebar/footer
+ * frame. `r` reloads through `load`; `↑↓` move the Projects selection;
+ * `enter` opens the selected project in Tasks via `onOpenProject`. `c`/
+ * `s`/`S` run through `actions` (never reimplementing kankaku's own
+ * catalog/sync adapters); only one quick action runs at a time, and the
+ * dashboard model reloads once it settles so the Hub card and Projects
+ * table reflect the new state.
  */
-export function TodayScreen({ load, roots, version, columns, rows, focused = true, onOpenProject }: TodayScreenProps) {
+export function DashboardScreen({ load, actions, roots, version, columns, rows, focused = true, onOpenProject }: DashboardScreenProps) {
   const [model, setModel] = useState<DashboardModel>(load);
   const [selected, setSelected] = useState(0);
+  const [actionState, setActionState] = useState<QuickActionState>(() => initialActionState(actions.hubAvailable));
   const maxRowsRef = useRef(0);
+  const busyRef = useRef(false);
+
+  const runQuickAction = (key: QuickActionKey) => {
+    if (busyRef.current) return;
+
+    if (key === "r") {
+      setModel(load());
+      return;
+    }
+
+    if (!actions.hubAvailable) return;
+
+    busyRef.current = true;
+    setActionState({ status: "busy", key });
+    const run = key === "c" ? actions.refreshCatalog() : actions.syncAll({ full: key === "S" });
+    run
+      .then((message) => {
+        setActionState({ status: "done", key, message });
+        setModel(load());
+      })
+      .catch((error: unknown) => {
+        setActionState({ status: "done", key, message: `error: ${error instanceof Error ? error.message : String(error)}` });
+      })
+      .finally(() => {
+        busyRef.current = false;
+      });
+  };
 
   useInput(
     (input, key) => {
       const lastIndex = Math.max(model.projects.length - 1, 0);
-      if (input === "r") {
-        setModel(load());
+      if (input === "c" || input === "s" || input === "S" || input === "r") {
+        runQuickAction(input as QuickActionKey);
       } else if (key.downArrow) {
         setSelected((index) => Math.min(index + 1, lastIndex));
       } else if (key.upArrow) {
@@ -266,14 +362,14 @@ export function TodayScreen({ load, roots, version, columns, rows, focused = tru
       headerLeft={`>_ kankaku ${version}`}
       headerRight={hubHeaderText(model.hub)}
       sidebarItems={SCREENS}
-      activeId="today"
+      activeId="dashboard"
       sidebarStats={[`roots ${roots.length}`, `projects ${model.projects.length}`]}
-      keyHints={hintsFor("today", focused ? "main" : "sidebar", KEY_HINTS)}
+      keyHints={hintsFor("dashboard", focused ? "main" : "sidebar", KEY_HINTS)}
       focus={focused ? "main" : "sidebar"}
     >
       {({ mainWidth, mainHeight }) => {
         maxRowsRef.current = projectsMaxRows(mainHeight, mainWidth < GRID_BREAKPOINT ? "stacked" : "grid");
-        return <DashboardGrid model={model} selectedIndex={selected} mainWidth={mainWidth} mainHeight={mainHeight} focused={focused} />;
+        return <DashboardGrid model={model} selectedIndex={selected} mainWidth={mainWidth} mainHeight={mainHeight} focused={focused} actionState={actionState} />;
       }}
     </Layout>
   );

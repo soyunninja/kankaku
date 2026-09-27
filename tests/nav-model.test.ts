@@ -18,7 +18,7 @@ test("SCREENS lists the four screens in order with their switch key", () => {
   assert.deepEqual(
     SCREENS.map((screen) => [screen.key, screen.id, screen.label]),
     [
-      ["1", "today", "Today"],
+      ["1", "dashboard", "Dashboard"],
       ["2", "tasks", "Tasks"],
       ["3", "catalog", "Catalog"],
       ["4", "sync", "Sync"],
@@ -27,7 +27,7 @@ test("SCREENS lists the four screens in order with their switch key", () => {
 });
 
 test("screenForKey maps a tab-bar digit to its screen id", () => {
-  assert.equal(screenForKey("1"), "today");
+  assert.equal(screenForKey("1"), "dashboard");
   assert.equal(screenForKey("2"), "tasks");
   assert.equal(screenForKey("3"), "catalog");
   assert.equal(screenForKey("4"), "sync");
@@ -43,7 +43,7 @@ test("buildTabBar marks exactly the active screen and keeps the fixed order", ()
   const items = buildTabBar("catalog");
   assert.deepEqual(
     items.map((item) => item.id),
-    ["today", "tasks", "catalog", "sync"],
+    ["dashboard", "tasks", "catalog", "sync"],
   );
   assert.deepEqual(
     items.map((item) => item.active),
@@ -51,22 +51,22 @@ test("buildTabBar marks exactly the active screen and keeps the fixed order", ()
   );
   assert.deepEqual(
     items.map((item) => item.text),
-    ["1 Today", "2 Tasks", "3 Catalog", "4 Sync"],
+    ["1 Dashboard", "2 Tasks", "3 Catalog", "4 Sync"],
   );
 });
 
-test("INITIAL_NAV_STATE starts on Today, focused on the sidebar, with no project filter", () => {
-  assert.deepEqual(INITIAL_NAV_STATE, { screen: "today", focus: "sidebar" });
+test("INITIAL_NAV_STATE starts on Dashboard, focused on the sidebar, with no project filter", () => {
+  assert.deepEqual(INITIAL_NAV_STATE, { screen: "dashboard", focus: "sidebar" });
 });
 
 test("switchScreen changes the active screen and keeps the project filter and focus", () => {
-  const withFilter = { screen: "today" as const, focus: "main" as const, projectFilter: "kankaku" };
+  const withFilter = { screen: "dashboard" as const, focus: "main" as const, projectFilter: "kankaku" };
   assert.deepEqual(switchScreen(withFilter, "catalog"), { screen: "catalog", focus: "main", projectFilter: "kankaku" });
 });
 
 test("openProjectInTasks switches to Tasks, sets the project filter and keeps focus", () => {
   assert.deepEqual(openProjectInTasks(INITIAL_NAV_STATE, "kankaku-tui"), { screen: "tasks", focus: "sidebar", projectFilter: "kankaku-tui" });
-  const mainFocused = { screen: "today" as const, focus: "main" as const };
+  const mainFocused = { screen: "dashboard" as const, focus: "main" as const };
   assert.deepEqual(openProjectInTasks(mainFocused, "kankaku-tui"), { screen: "tasks", focus: "main", projectFilter: "kankaku-tui" });
 });
 
@@ -88,18 +88,18 @@ test("focusSidebar switches focus to the sidebar, keeping the rest of the state"
 test("moveSidebar steps to the next/previous screen in SCREENS order", () => {
   const state = { screen: "tasks" as const, focus: "sidebar" as const };
   assert.deepEqual(moveSidebar(state, 1), { screen: "catalog", focus: "sidebar" });
-  assert.deepEqual(moveSidebar(state, -1), { screen: "today", focus: "sidebar" });
+  assert.deepEqual(moveSidebar(state, -1), { screen: "dashboard", focus: "sidebar" });
 });
 
 test("moveSidebar clamps at the first and last screen instead of wrapping", () => {
-  const first = { screen: "today" as const, focus: "sidebar" as const };
+  const first = { screen: "dashboard" as const, focus: "sidebar" as const };
   assert.deepEqual(moveSidebar(first, -1), first);
   const last = { screen: "sync" as const, focus: "sidebar" as const };
   assert.deepEqual(moveSidebar(last, 1), last);
 });
 
 test("moveSidebar keeps an existing project filter", () => {
-  const state = { screen: "today" as const, focus: "sidebar" as const, projectFilter: "kankaku" };
+  const state = { screen: "dashboard" as const, focus: "sidebar" as const, projectFilter: "kankaku" };
   assert.deepEqual(moveSidebar(state, 1), { screen: "tasks", focus: "sidebar", projectFilter: "kankaku" });
 });
 

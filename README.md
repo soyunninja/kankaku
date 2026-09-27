@@ -5,8 +5,8 @@ A standalone terminal app, `kankaku`, that reads every project's
 day across projects — the one view the [kankaku](https://kankaku.io) pi
 panel cannot give, since it only ever sees the one project pi is running
 in. Built with [Ink](https://github.com/vadimdemedes/ink) on Node 24. Four
-screens — Today, Tasks, Catalog and Sync — share one tab bar, and each has
-a plain-text subcommand for scripts and cron.
+screens — Dashboard, Tasks, Catalog and Sync — share one tab bar, and each
+has a plain-text subcommand for scripts and cron.
 
 ## Install
 
@@ -66,7 +66,7 @@ never guesses which coding agent produced someone else's worklog.
 
 ## Usage
 
-- `kankaku` — opens the interactive TUI on the Today screen.
+- `kankaku` — opens the interactive TUI on the Dashboard screen.
 - `kankaku today [--roots a,b]` — today's work per project, plain text.
 - `kankaku tasks [--all]` — every task's line (kankaku's own `formatTasks`),
   grouped under a `== <project> ==` header per project; restricted to
@@ -115,20 +115,22 @@ with a trailing `… N more lines` note instead of silently overflowing or
 pushing the header out of view.
 
 Any list that can grow past the available height (the Tasks table, the
-Catalog Clients/Projects lists, the Today Projects table, the Sync card
-grid) scrolls instead of overflowing the terminal: the viewport follows
-the current selection, and a `↑ N more` / `↓ N more` line marks rows
-hidden above or below it.
+Catalog Clients/Projects lists, the Dashboard Projects table, the Sync
+card grid) scrolls instead of overflowing the terminal: the viewport
+follows the current selection, and a `↑ N more` / `↓ N more` line marks
+rows hidden above or below it.
 
-Today is a dashboard: a Today card (work/wait/cost/tasks/cache hit), a
-Last 7 days card (work and cost sparklines with weekday labels), a
-Projects table (work, cost and a share bar per project) and a Hub card
-(pending/stale, last sync time, catalog summary):
+Dashboard is the app's home screen: a Today card (work/wait/cost/tasks/
+cache hit — it shows today's numbers, hence its own title), a Last 7 days
+card (work and cost sparklines with weekday labels), a Projects table
+(work, cost and a share bar per project), a Hub card (pending/stale, last
+sync time, catalog summary) and a Quick actions panel (`c` refresh the
+catalog, `s` sync every project, `S` full-sync every project, `r` reload):
 
 ```
  >_ kankaku 0.1.0                              hub ● kankaku.soyun.ninja · synced 08:20
 ┌──────────────┐ ╭─[ Today ]────────────────────╮ ╭─[ Last 7 days ]──────────────────╮
-│ › Today      │ │   work   1h 42m               │ │ work  ▂▅▇▃▁▆█   cost  ▁▃▆▂▁▅█    │
+│ › Dashboard  │ │   work   1h 42m               │ │ work  ▂▅▇▃▁▆█   cost  ▁▃▆▂▁▅█    │
 │   Tasks      │ │   wait      6m   cost  $9.83  │ │ mon tue wed thu fri sat sun       │
 │   Catalog    │ │   tasks 12       cache hit 68%│ ╰──────────────────────────────────╯
 │   Sync       │ ╰──────────────────────────────╯ ╭─[ Hub ]──────────────────────────╮
@@ -145,6 +147,26 @@ Projects table (work, cost and a share bar per project) and a Hub card
  ↑↓ move   enter open   r refresh   1-4 screens   q quit
 ```
 
+The Quick actions panel sits below the Hub card in wide mode (100+
+columns), or right after the Projects table in stacked mode (70-99
+columns):
+
+```
+╭─[ Quick actions ]────────────────╮
+│ c  refresh catalog               │
+│ s  sync all projects             │
+│ S  full sync all                 │
+│ r  reload                        │
+│ catalog: 9 clients · 17 projects │
+╰──────────────────────────────────╯
+```
+
+The bottom line is the status line: empty until the first action runs,
+`… <label>` while one is running, its result message once it settles
+(e.g. the catalog refresh above, or a sync summary), `error: <message>`
+if it failed, or `hub not configured (~/.kankaku/credentials.json)` when
+the hub has no credentials — in which case `c`/`s`/`S` do nothing.
+
 - **Tasks** — a table (time, project, work, cost, prompt) with a
   highlighted row on the left, and a `[ Task ]` detail panel on the right
   showing the selected row's full prompt, client, project, hub task,
@@ -160,8 +182,8 @@ Projects table (work, cost and a share bar per project) and a Hub card
 
 The app has two focus zones — the sidebar and the active screen's own main
 content — and one of them always has focus (`domain/nav-model.ts`'s
-`NavState.focus`, starting on the sidebar). `1`-`4` switch the Today/Tasks/
-Catalog/Sync tab bar and `q` quits from anywhere, in either zone; every
+`NavState.focus`, starting on the sidebar). `1`-`4` switch the Dashboard/
+Tasks/Catalog/Sync tab bar and `q` quits from anywhere, in either zone; every
 other key belongs to whichever zone currently has focus, so a screen's own
 list never moves by accident while you are still picking a screen.
 
@@ -172,7 +194,7 @@ list never moves by accident while you are still picking a screen.
 - **Main zone focused** — the active screen's own keys work as below.
   `←` or `Tab` return focus to the sidebar. `esc` also returns to the
   sidebar, unless the screen consumes it first: on Tasks with a project
-  filter set (from Today's `enter`), the first `esc` clears the filter
+  filter set (from Dashboard's `enter`), the first `esc` clears the filter
   and the next `esc` returns to the sidebar.
 
 The focused zone is visible in the frame: the sidebar's active-item marker
@@ -182,16 +204,18 @@ key hints change — the sidebar's own hints while it is focused, the
 screen's hints plus `← menu` while the main zone is focused.
 
 The app fills the whole terminal; every scrolling list (Tasks, Catalog's
-Clients/Projects, Today's Projects, Sync's cards) additionally takes
+Clients/Projects, Dashboard's Projects, Sync's cards) additionally takes
 `PageUp`/`PageDown` to move a full window at a time and `Home`/`End` to
 jump to the first/last row.
 
-- **Today** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the Projects
-  selection, `enter` opens the selected project in Tasks (filtered to
-  it), `r` refresh.
+- **Dashboard** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the
+  Projects selection, `enter` opens the selected project in Tasks
+  (filtered to it), `r` refresh; the Quick actions panel additionally
+  takes `c` (refresh catalog), `s` (sync all projects) and `S` (full sync
+  all) — one at a time, ignored while another is running.
 - **Tasks** — `a` toggle today/all, `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End`
   move the selection, `r` refresh, `esc` clears a project filter set from
-  Today.
+  Dashboard.
 - **Catalog** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the client
   selection, `r` refresh from the hub.
 - **Sync** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the selection,
@@ -199,7 +223,8 @@ jump to the first/last row.
   sync every project. Each action's summary shows inline in its card
   while it runs and once it settles.
 
-The TUI never writes to disk on its own — Today, Tasks and read-only
-Catalog views write nothing at all; Catalog's `refresh` and Sync's
-`s`/`f`/`S` write only through kankaku's own adapters (`CachedCatalog`,
-`SyncStateStore`, the hub itself), exactly as kankaku's own sync paths do.
+The TUI never writes to disk on its own — Dashboard, Tasks and read-only
+Catalog views write nothing at all; Catalog's `refresh`, Sync's
+`s`/`f`/`S` and Dashboard's Quick actions `c`/`s`/`S` write only through
+kankaku's own adapters (`CachedCatalog`, `SyncStateStore`, the hub
+itself), exactly as kankaku's own sync paths do.

@@ -10,7 +10,7 @@ import type { HubCredentials } from "kankaku/hub";
 import { readTuiConfig } from "./adapters/tui-config.ts";
 import { discoverProjects } from "./adapters/project-discovery.ts";
 import { readProjectRecords } from "./adapters/worklog-reader.ts";
-import { computeProjectSyncStatus, createCatalog, refreshCatalog, resolveHub, syncProject } from "./adapters/hub.ts";
+import { computeProjectSyncStatus, createCatalog, refreshCatalog as refreshCatalogAdapter, resolveHub, syncProject } from "./adapters/hub.ts";
 import { readOwnVersion } from "./adapters/app-info.ts";
 import { buildCatalogModel } from "./domain/catalog-model.ts";
 import { buildTodayRows, formatTodayLines } from "./domain/today-model.ts";
@@ -19,6 +19,7 @@ import { buildDashboardModel } from "./domain/dashboard-model.ts";
 import type { DashboardHubInput, DashboardModel } from "./domain/dashboard-model.ts";
 import type { ProjectRef } from "./ports/project-source.ts";
 import { App } from "./ui/app.tsx";
+import type { DashboardActions } from "./ui/dashboard-screen.tsx";
 import type { CatalogScreenProps } from "./ui/catalog-screen.tsx";
 import type { TasksModel } from "./domain/tasks-model.ts";
 import { buildTasksModel } from "./domain/tasks-model.ts";
@@ -173,7 +174,7 @@ async function runCatalogCommand(args: string[], deps: CliDeps): Promise<void> {
   const catalog = createCatalog(hub.credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
 
   if (doRefresh) {
-    const snapshot = await refreshCatalog(catalog);
+    const snapshot = await refreshCatalogAdapter(catalog);
     deps.stdout(formatCatalogRefreshLines(snapshot).join("\n"));
     if (!snapshot) deps.exit(1);
     return;
@@ -302,7 +303,7 @@ function catalogScreenDeps(deps: CliDeps): Pick<CatalogScreenProps, "load" | "re
   const catalog = createCatalog(hub.credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
   return {
     load: () => buildCatalogModel(catalog.read(), now()),
-    refresh: async () => buildCatalogModel(await refreshCatalog(catalog), now()),
+    refresh: async () => buildCatalogModel(await refreshCatalogAdapter(catalog), now()),
   };
 }
 
@@ -348,6 +349,41 @@ function syncScreenDeps(deps: CliDeps, roots: string[]): Pick<SyncScreenProps, "
   };
 }
 
+/**
+ * Build the Dashboard screen's Quick actions deps for the interactive app:
+ * `refreshCatalog` refreshes the cached catalog through `createCatalog`/
+ * `refreshCatalogAdapter`, `syncAll` runs `syncProject` over every
+ * discovered project — both reuse kankaku's own `formatCatalogRefreshLines`/
+ * `formatSyncSummaryLines` for the result message, never reimplementing
+ * them. Without hub credentials, `hubAvailable` is `false` and neither
+ * function is ever called by the screen. Used only by `renderApp`.
+ */
+function dashboardActionsDeps(deps: CliDeps, roots: string[]): DashboardActions {
+  const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  if (!hub.ok) {
+    const reason = hub.reason;
+    return { hubAvailable: false, refreshCatalog: async () => reason, syncAll: async () => reason };
+  }
+  const credentials: HubCredentials = hub.credentials;
+  const runnerDeps = envDeps(deps);
+  const { now, fetch: fetchOverride } = envDeps(deps);
+
+  return {
+    hubAvailable: true,
+    refreshCatalog: async () => {
+      const catalog = createCatalog(credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
+      const snapshot = await refreshCatalogAdapter(catalog);
+      return formatCatalogRefreshLines(snapshot).join(" · ");
+    },
+    syncAll: async (options) => {
+      const projects = discoverProjects(roots);
+      if (projects.length === 0) return "no projects to sync";
+      const summaries = await Promise.all(projects.map((project) => syncProject(project, credentials, options, runnerDeps)));
+      return summaries.flatMap((summary) => formatSyncSummaryLines(summary)).join(" · ");
+    },
+  };
+}
+
 const isMain = process.argv[1] !== undefined && import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isMain) {
@@ -376,6 +412,7 @@ if (isMain) {
             loadTasks={(options) => loadTasks(roots, options)}
             catalog={catalogScreenDeps(realDeps)}
             sync={syncScreenDeps(realDeps, roots)}
+            dashboardActions={dashboardActionsDeps(realDeps, roots)}
           />
         </ThemeProvider>,
         { alternateScreen: true, exitOnCtrlC: true },
