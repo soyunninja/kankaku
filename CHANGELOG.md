@@ -3,6 +3,16 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 0.2.1 — 2026-09-27
+
+### Fixed
+
+- **`kankaku setup` reports what it does**: every file it writes is
+  announced (`wrote <file>`, or `unchanged <file>` when nothing needed
+  changing), and refreshing the catalog prints the same result line as
+  `kankaku catalog refresh`. Previously the only feedback was the final
+  doctor report.
+
 ## 0.2.0 — 2026-09-27
 
 ### Added
