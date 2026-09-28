@@ -247,9 +247,11 @@ export async function installHub(options: InstallHubOptions, deps: HubManagerDep
     return { ok: true, steps, url: baseUrlFor(port) };
   }
 
+  // Reported as its own step: a hub that cannot start is not an accounts
+  // problem, and the accounts step must never claim to have run.
   const portConflict = await ensurePortFree(port, deps);
   if (portConflict) {
-    steps.push({ step: "provision accounts", outcome: "error", detail: portConflict });
+    steps.push({ step: "start hub", outcome: "error", detail: portConflict });
     return { ok: false, steps };
   }
 
@@ -259,9 +261,10 @@ export async function installHub(options: InstallHubOptions, deps: HubManagerDep
 
     const spawnResult = await spawnAndAwaitHealth(layout, manifest.version, port, deps);
     if (!spawnResult.healthy) {
-      steps.push({ step: "provision accounts", outcome: "error", detail: healthFailureDetail(layout, spawnResult.exitedEarly) });
+      steps.push({ step: "start hub", outcome: "error", detail: healthFailureDetail(layout, spawnResult.exitedEarly) });
       return { ok: false, steps };
     }
+    steps.push({ step: "start hub", outcome: "done" });
     const url = baseUrlFor(port);
 
     const superuser = { email: SUPERUSER_EMAIL, password: superuserPassword };

@@ -235,6 +235,7 @@ test("installHub: fresh install downloads pocketbase, copies app files, provisio
       "download pocketbase": "done",
       "install app files": "done",
       "write hub.json": "done",
+      "start hub": "done",
       "provision accounts": "done",
     });
 
@@ -326,8 +327,10 @@ test("installHub: refuses to provision accounts when another process already ans
     assert.equal(report.ok, false);
     const outcomes = Object.fromEntries(report.steps.map((s) => [s.step, s.outcome]));
     assert.equal(outcomes["write hub.json"], "done"); // the layout/config write already happened
-    assert.equal(outcomes["provision accounts"], "error");
-    const failedStep = report.steps.find((s) => s.step === "provision accounts")!;
+    // The failure is the START, not the accounts: the accounts step never ran.
+    assert.equal(outcomes["start hub"], "error");
+    assert.equal(outcomes["provision accounts"], undefined);
+    const failedStep = report.steps.find((s) => s.step === "start hub")!;
     assert.equal(failedStep.detail, "port 8090 is already in use by another process — pass --port <N> or stop it");
 
     assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "accounts.json")), false);
@@ -350,6 +353,7 @@ test("installHub: refuses to provision accounts when another process already ans
       "download pocketbase": "unchanged",
       "install app files": "unchanged",
       "write hub.json": "done",
+      "start hub": "done",
       "provision accounts": "done",
     });
     assert.equal(retrySpawnCalls.length, 1);

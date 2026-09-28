@@ -18,7 +18,10 @@ versions follow semver. Dates are the day the version was cut.
   spawning, we now check that no pid of ours is alive and that
   `/api/health` doesn't already answer; if it does, the step fails
   immediately with `port <N> is already in use by another process — pass
-  --port <N> or stop it`, without touching accounts or the pid file. If
+  --port <N> or stop it`, without touching accounts or the pid file —
+  reported as its own `start hub` step (which `install` now always
+  prints, `done` on success), so a hub that cannot start is never
+  mislabelled as an accounts problem. If
   the spawned process itself dies during startup (the same bind-conflict
   crash, or any other early exit), we stop waiting immediately instead of
   polling out the full 20s timeout, report the last `hub.log` line (e.g.
