@@ -23,7 +23,7 @@ export interface CliResult {
   stderr?: string;
 }
 
-const USAGE = "usage: node src/cli.ts <report|status|setup|sync|doctor> [--days N]\n";
+const USAGE = "usage: node dist/cli.js <report|status|setup|sync|doctor> [--days N]\n";
 
 /** CLI commands, resolved from `deps.cwd`. */
 export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> {

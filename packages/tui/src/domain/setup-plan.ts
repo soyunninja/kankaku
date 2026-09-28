@@ -40,7 +40,7 @@ export interface SettingsPackagesFacts {
 export interface ClaudeSettingsFacts {
   settingsPath: string;
   statusLineCommand: string | undefined;
-  /** The plugin root our own hook entries point at, when present (see `adapters/setup/agents.ts#extractHooksRoot`). */
+  /** The plugin root our own hook entries point at, when present (see `adapters/setup/agents.ts#extractHooksMatch`). */
   hooksRoot: string | undefined;
   /** True when the matched hook command uses the legacy `/src/hook.ts` checkout form rather than the current `/dist/hook.js` one. Defaults to `false` when omitted. */
   hooksLegacy?: boolean;
