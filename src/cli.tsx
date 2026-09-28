@@ -364,6 +364,7 @@ function buildHubManagerDeps(deps: CliDeps): HubManagerDeps {
     locatePackage: () => locateHubPackage(),
     platform: process.platform,
     arch: process.arch,
+    isAlive: (pid) => isAlive(pid),
     ...deps.hubManager,
   };
 }

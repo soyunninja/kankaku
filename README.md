@@ -172,7 +172,11 @@ Commands (macOS and Linux only — PocketBase ships no other build):
   — installs (or, run again, verifies) the hub and leaves it running. On
   a real terminal, a missing owner email/password is prompted for
   (masked); without a TTY, both flags are required. Idempotent: re-running
-  with everything already in place changes nothing.
+  with everything already in place changes nothing. If another process
+  already answers on the target port, `install`/`start`/`upgrade` refuse
+  with `port <N> is already in use by another process — pass --port <N>
+  or stop it` instead of provisioning accounts against it; pass a
+  different `--port` or free the port and retry.
 - `kankaku hub start` / `kankaku hub stop` — start or stop the server
   process; `stop` is a no-op when it isn't running.
 - `kankaku hub status` — `local hub: running 0.2.0 (PocketBase 0.40.4) at

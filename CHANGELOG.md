@@ -3,6 +3,39 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Fixed
+
+- **`kankaku hub install`/`start`/`upgrade` no longer provision accounts
+  against a foreign process holding the port**: when another process (not
+  ours) already answers on the configured port, these commands used to
+  spawn our own PocketBase anyway — it died immediately on the bind
+  conflict, but `waitForHealth` kept polling the *foreign* server's
+  `/api/health`, saw it answer, and went on to provision accounts against
+  it, failing with a confusing `superuser authentication failed: HTTP
+  400` and leaving a stale pid file pointing at a dead process. Before
+  spawning, we now check that no pid of ours is alive and that
+  `/api/health` doesn't already answer; if it does, the step fails
+  immediately with `port <N> is already in use by another process — pass
+  --port <N> or stop it`, without touching accounts or the pid file. If
+  the spawned process itself dies during startup (the same bind-conflict
+  crash, or any other early exit), we stop waiting immediately instead of
+  polling out the full 20s timeout, report the last `hub.log` line (e.g.
+  `the hub exited during startup: listen tcp 127.0.0.1:8090: bind:
+  address already in use`), and remove the stale pid file rather than
+  leaving it claiming a dead process.
+- **A previous hub's credentials could leak through the `.bak` backup**:
+  `~/.kankaku/credentials.json` is written 0600, but the one-time backup
+  `setup`'s writers make before overwriting an existing file
+  (`json-writer.ts#backupOnce`) was created at the platform's default
+  (umask-derived, typically world-readable) mode — so re-running `kankaku
+  hub install`/`setup` left the *previous* hub's service account password
+  readable by any local user in `credentials.json.bak`, even though the
+  live file stayed owner-only. The backup now mirrors a 0600 source's
+  mode, and an existing `.bak` from before this fix is tightened,
+  best-effort, the next time its 0600 source is backed up again.
+
 ## 0.4.0 — 2026-09-28
 
 ### Added

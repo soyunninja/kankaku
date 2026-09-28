@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHub, startHub, stopHub, hubStatus, upgradeHub, hubLogs } from "../src/adapters/hub-manager/install.ts";
 import type { HubManagerDeps } from "../src/adapters/hub-manager/install.ts";
-import { startDetached as realStartDetached } from "../src/adapters/hub-manager/process.ts";
+import { startDetached as realStartDetached, isAlive as realIsAlive } from "../src/adapters/hub-manager/process.ts";
 import type { ScriptRunner, ScriptRunResult } from "../src/ports/script-runner.ts";
 
 const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
@@ -103,14 +103,28 @@ interface FetchCall {
   init?: RequestInit;
 }
 
-/** A fake fetch serving the zip download, PocketBase health, and the accounts REST API. */
-function fakeFetch(zip: Buffer): { fetch: typeof fetch; calls: FetchCall[] } {
+/** Shared between a test's `fakeFetch` and `fakeStartDetached`: `/api/health` only answers once something has actually "started listening", exactly like a real PocketBase — a pre-spawn health probe must see nothing there. */
+interface ServerState {
+  listening: boolean;
+}
+
+/**
+ * A fake fetch serving the zip download, PocketBase health, and the
+ * accounts REST API. `/api/health` rejects (simulating `ECONNREFUSED`)
+ * until `state.listening` is set, which `fakeStartDetached` does once it
+ * spawns — so a pre-spawn port-availability probe genuinely sees the port
+ * as free, and a post-spawn health poll genuinely sees it as up.
+ */
+function fakeFetch(zip: Buffer, state: ServerState): { fetch: typeof fetch; calls: FetchCall[] } {
   const calls: FetchCall[] = [];
   const fn = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     calls.push({ url, init });
     if (url.includes("pb.zip")) return new Response(new Uint8Array(zip), { status: 200 });
-    if (url.endsWith("/api/health")) return new Response(null, { status: 200 });
+    if (url.endsWith("/api/health")) {
+      if (!state.listening) throw new Error("ECONNREFUSED");
+      return new Response(null, { status: 200 });
+    }
     if (url.includes("_superusers/auth-with-password")) return new Response(JSON.stringify({ token: "tok" }), { status: 200, headers: { "content-type": "application/json" } });
     if (url.includes("users/records?filter")) return new Response(JSON.stringify({ items: [] }), { status: 200 });
     if (url.includes("users/records") && init?.method === "POST") return new Response(JSON.stringify({ id: "u1" }), { status: 200 });
@@ -160,24 +174,32 @@ process.on("exit", () => {
  * binary/args, since the fake `hub-manifest.json` names no real
  * `pocketbase` binary) so `isAlive`/`stopProcess` observe a genuine
  * process instead of accidentally targeting the test runner's own pid.
+ * Flips `state.listening` to simulate the server coming up.
  */
-function fakeStartDetached(): { startDetached: HubManagerDeps["startDetached"]; calls: SpawnCall[] } {
+function fakeStartDetached(state: ServerState): { startDetached: HubManagerDeps["startDetached"]; calls: SpawnCall[] } {
   const calls: SpawnCall[] = [];
   return {
     startDetached: (binary, args, opts) => {
       calls.push({ binary, args });
       const pid = realStartDetached(process.execPath, ["-e", "process.on('SIGTERM', () => process.exit(0)); setInterval(() => {}, 1000)"], opts);
       spawnedPids.push(pid);
+      state.listening = true;
       return pid;
     },
     calls,
   };
 }
 
-function baseDeps(homeDir: string, packageDir: string, zip: Buffer, overrides: Partial<HubManagerDeps> = {}): { deps: HubManagerDeps; fetchCalls: FetchCall[]; runnerCalls: RunnerCall[]; spawnCalls: SpawnCall[] } {
-  const { fetch: doFetch, calls: fetchCalls } = fakeFetch(zip);
+function baseDeps(
+  homeDir: string,
+  packageDir: string,
+  zip: Buffer,
+  overrides: Partial<HubManagerDeps> = {},
+  state: ServerState = { listening: false },
+): { deps: HubManagerDeps; fetchCalls: FetchCall[]; runnerCalls: RunnerCall[]; spawnCalls: SpawnCall[]; state: ServerState } {
+  const { fetch: doFetch, calls: fetchCalls } = fakeFetch(zip, state);
   const { runner, calls: runnerCalls } = fakeRunner();
-  const { startDetached, calls: spawnCalls } = fakeStartDetached();
+  const { startDetached, calls: spawnCalls } = fakeStartDetached(state);
   const deps: HubManagerDeps = {
     homeDir,
     fetch: doFetch,
@@ -189,9 +211,10 @@ function baseDeps(homeDir: string, packageDir: string, zip: Buffer, overrides: P
     locatePackage: () => ({ dir: packageDir, manifest: JSON.parse(readFileSync(join(packageDir, "hub-manifest.json"), "utf8")) }),
     platform: "darwin",
     arch: "arm64",
+    isAlive: (pid) => realIsAlive(pid),
     ...overrides,
   };
-  return { deps, fetchCalls, runnerCalls, spawnCalls };
+  return { deps, fetchCalls, runnerCalls, spawnCalls, state };
 }
 
 test("installHub: fresh install downloads pocketbase, copies app files, provisions accounts, and leaves the server running", async () => {
@@ -272,6 +295,74 @@ test("installHub: re-running with everything present reports every step unchange
   }
 });
 
+test("installHub: refuses to provision accounts when another process already answers on the port, leaving no pid file and no accounts.json; retrying on a free --port then succeeds", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+
+    // A foreign PocketBase (or anything else) already listens on 8090: /api/health answers before we ever spawn.
+    // The zip download and account-REST endpoints are still served normally (via `listening: true` from the
+    // start) so the flow reaches the accounts-provisioning step exactly like the real bug report.
+    const { runner: runner1, calls: runnerCalls1 } = fakeRunner();
+    const { startDetached: startDetached1, calls: spawnCalls1 } = fakeStartDetached({ listening: false });
+    const conflictingDeps: HubManagerDeps = {
+      homeDir,
+      fetch: fakeFetch(zip, { listening: true }).fetch,
+      runner: runner1,
+      startDetached: startDetached1,
+      sleep: async () => {},
+      now: () => Date.parse("2026-09-28T00:00:00.000Z"),
+      randomBytes: (n) => new Uint8Array(n).fill(7),
+      locatePackage: () => ({ dir: packageDir, manifest: JSON.parse(readFileSync(join(packageDir, "hub-manifest.json"), "utf8")) }),
+      platform: "darwin",
+      arch: "arm64",
+      isAlive: () => false,
+    };
+
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, conflictingDeps);
+
+    assert.equal(report.ok, false);
+    const outcomes = Object.fromEntries(report.steps.map((s) => [s.step, s.outcome]));
+    assert.equal(outcomes["write hub.json"], "done"); // the layout/config write already happened
+    assert.equal(outcomes["provision accounts"], "error");
+    const failedStep = report.steps.find((s) => s.step === "provision accounts")!;
+    assert.equal(failedStep.detail, "port 8090 is already in use by another process — pass --port <N> or stop it");
+
+    assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "accounts.json")), false);
+    assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "pid")), false);
+    assert.equal(spawnCalls1.length, 0); // never spawned
+    assert.equal(runnerCalls1.length, 0); // upsertSuperuser never ran
+
+    const hubJsonAfterConflict = JSON.parse(readFileSync(join(homeDir, ".kankaku", "hub", "hub.json"), "utf8"));
+    assert.equal(hubJsonAfterConflict.port, 8090);
+
+    // Retrying with a free port succeeds: hub.json is rewritten, the hub starts on the new port, and accounts get provisioned.
+    const { deps: retryDeps, spawnCalls: retrySpawnCalls } = baseDeps(homeDir, packageDir, zip);
+    const retryReport = await installHub({ port: 8091, ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, retryDeps);
+
+    assert.equal(retryReport.ok, true);
+    assert.equal(retryReport.url, "http://127.0.0.1:8091");
+    const retryOutcomes = Object.fromEntries(retryReport.steps.map((s) => [s.step, s.outcome]));
+    assert.deepEqual(retryOutcomes, {
+      "create ~/.kankaku/hub": "unchanged",
+      "download pocketbase": "unchanged",
+      "install app files": "unchanged",
+      "write hub.json": "done",
+      "provision accounts": "done",
+    });
+    assert.equal(retrySpawnCalls.length, 1);
+
+    const hubJsonAfterRetry = JSON.parse(readFileSync(join(homeDir, ".kankaku", "hub", "hub.json"), "utf8"));
+    assert.equal(hubJsonAfterRetry.port, 8091);
+    assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "accounts.json")), true);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
 test("startHub/stopHub/hubStatus: not installed, then start/stop transitions after install", async () => {
   const homeDir = makeDir();
   const packageDir = makeDir();
@@ -279,41 +370,124 @@ test("startHub/stopHub/hubStatus: not installed, then start/stop transitions aft
     const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
     writePackage(packageDir, "0.2.0", "0.40.4", zip);
 
-    const { deps: statusDeps } = baseDeps(homeDir, packageDir, zip);
+    // One shared server state across every step below: it is the same
+    // (fake) real hub process throughout, so a status check must see it
+    // as up/down consistently with whatever the previous step just did.
+    const state: ServerState = { listening: false };
+
+    const { deps: statusDeps } = baseDeps(homeDir, packageDir, zip, {}, state);
     const notInstalled = await hubStatus(statusDeps);
     assert.deepEqual(notInstalled, { state: "not-installed" });
 
-    const { deps: installDeps } = baseDeps(homeDir, packageDir, zip);
+    const { deps: installDeps } = baseDeps(homeDir, packageDir, zip, {}, state);
     await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, installDeps);
 
     // The pid file was left by install's own startDetached; hubStatus should report running.
-    const { deps: statusDeps2 } = baseDeps(homeDir, packageDir, zip);
+    const { deps: statusDeps2 } = baseDeps(homeDir, packageDir, zip, {}, state);
     const running = await hubStatus(statusDeps2);
     assert.equal(running.state, "running");
     assert.equal(running.url, "http://127.0.0.1:8090");
 
-    const { deps: stopDeps } = baseDeps(homeDir, packageDir, zip);
+    const { deps: stopDeps } = baseDeps(homeDir, packageDir, zip, {}, state);
     const stopReport = await stopHub(stopDeps);
     assert.equal(stopReport.steps[0]!.outcome, "done");
     assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "pid")), false);
+    state.listening = false; // the real process was just stopped
 
-    const { deps: statusDeps3 } = baseDeps(homeDir, packageDir, zip);
+    const { deps: statusDeps3 } = baseDeps(homeDir, packageDir, zip, {}, state);
     const stopped = await hubStatus(statusDeps3);
     assert.equal(stopped.state, "stopped");
 
-    const { deps: startDeps, spawnCalls } = baseDeps(homeDir, packageDir, zip);
+    const { deps: startDeps, spawnCalls } = baseDeps(homeDir, packageDir, zip, {}, state);
     const startReport = await startHub(startDeps);
     assert.equal(startReport.ok, true);
     assert.equal(startReport.steps[0]!.outcome, "done");
     assert.equal(spawnCalls.length, 1);
 
-    const { deps: startAgainDeps, spawnCalls: spawnCallsAgain } = baseDeps(homeDir, packageDir, zip);
+    const { deps: startAgainDeps, spawnCalls: spawnCallsAgain } = baseDeps(homeDir, packageDir, zip, {}, state);
     const startAgainReport = await startHub(startAgainDeps);
     assert.equal(startAgainReport.steps[0]!.outcome, "unchanged");
     assert.equal(spawnCallsAgain.length, 0);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
     rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("startHub: fails immediately, reporting the last hub.log line, and removes the stale pid file when the spawned process exits during startup", async () => {
+  const homeDir = makeDir();
+  try {
+    mkdirSync(join(homeDir, ".kankaku", "hub"), { recursive: true });
+    const hubJson = { port: 8090, appVersion: "0.2.0", pocketbaseVersion: "0.40.4", installedAt: "2026-09-27T00:00:00.000Z" };
+    writeFileSync(join(homeDir, ".kankaku", "hub", "hub.json"), JSON.stringify(hubJson));
+
+    const logFile = join(homeDir, ".kankaku", "hub", "hub.log");
+    const pidFile = join(homeDir, ".kankaku", "hub", "pid");
+
+    // A real, short-lived process that fails to bind and exits, writing the
+    // exact error line a real PocketBase bind failure would produce.
+    const failureLine = "listen tcp 127.0.0.1:8090: bind: address already in use";
+    const startDetached: HubManagerDeps["startDetached"] = (_binary, _args, opts) => {
+      const pid = realStartDetached(process.execPath, ["-e", `process.stderr.write(${JSON.stringify(failureLine + "\n")}); process.exit(1);`], opts);
+      spawnedPids.push(pid);
+      return pid;
+    };
+
+    const deps: HubManagerDeps = {
+      homeDir,
+      fetch: (async () => {
+        throw new Error("ECONNREFUSED"); // nothing ever comes up to listen
+      }) as unknown as typeof fetch,
+      runner: fakeRunner().runner,
+      startDetached,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.parse("2026-09-28T00:00:00.000Z"),
+      randomBytes: (n) => new Uint8Array(n).fill(7),
+      locatePackage: () => {
+        throw new Error("not used: hub.json is already installed");
+      },
+      platform: "darwin",
+      arch: "arm64",
+      isAlive: (pid) => realIsAlive(pid),
+    };
+
+    const startedAt = Date.now();
+    const report = await startHub(deps);
+    const elapsedMs = Date.now() - startedAt;
+
+    assert.equal(report.ok, false);
+    assert.equal(report.steps[0]!.outcome, "error");
+    assert.equal(report.steps[0]!.detail, `the hub exited during startup: ${failureLine}`);
+    assert.equal(existsSync(pidFile), false); // no stale pid file left behind
+    assert.equal(existsSync(logFile), true);
+    assert.ok(elapsedMs < 10000, `expected the early exit to be fast, took ${elapsedMs}ms`); // well under the 20s health timeout
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+  }
+});
+
+test("hubStatus: a dead pid is reported stopped even when another process now answers on the port", async () => {
+  const homeDir = makeDir();
+  try {
+    mkdirSync(join(homeDir, ".kankaku", "hub"), { recursive: true });
+    const hubJson = { port: 8090, appVersion: "0.2.0", pocketbaseVersion: "0.40.4", installedAt: "2026-09-27T00:00:00.000Z" };
+    writeFileSync(join(homeDir, ".kankaku", "hub", "hub.json"), JSON.stringify(hubJson));
+    writeFileSync(join(homeDir, ".kankaku", "hub", "pid"), "999999"); // very unlikely to be alive
+
+    let healthCalls = 0;
+    const deps: Pick<HubManagerDeps, "homeDir" | "fetch"> = {
+      homeDir,
+      fetch: (async () => {
+        healthCalls += 1;
+        return new Response(null, { status: 200 }); // a foreign process now answers here
+      }) as typeof fetch,
+    };
+
+    const status = await hubStatus(deps);
+    assert.deepEqual(status, { state: "stopped", version: "0.2.0" });
+    assert.equal(healthCalls, 0); // health is never even checked once the pid is dead
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
   }
 });
 
@@ -349,6 +523,58 @@ test("upgradeHub: copies the new app version, downloads a new binary only if the
     const { deps: reUpgradeDeps } = baseDeps(homeDir, packageDir, zip2);
     const again = await upgradeHub(reUpgradeDeps);
     assert.equal(again.steps[0]!.outcome, "unchanged");
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("upgradeHub: refuses to restart when another process now holds the port, and leaves pb_data untouched", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip1 = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb1\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip1);
+    const { deps: installDeps } = baseDeps(homeDir, packageDir, zip1);
+    await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, installDeps);
+
+    writeFileSync(join(homeDir, ".kankaku", "hub", "pb_data", "data.db"), "sentinel");
+
+    const zip2 = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb2\n"));
+    writePackage(packageDir, "0.3.0", "0.41.0", zip2);
+
+    // Another process takes over 8090 right after upgradeHub stops ours to restart. The zip
+    // download still needs to work normally (the pocketbase version changed) so the flow reaches
+    // the restart step, exactly like the real bug report.
+    const { runner, calls: runnerCalls } = fakeRunner();
+    const { startDetached, calls: spawnCalls } = fakeStartDetached({ listening: false });
+    const upgradeDeps: HubManagerDeps = {
+      homeDir,
+      fetch: fakeFetch(zip2, { listening: true }).fetch,
+      runner,
+      startDetached,
+      sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+      now: () => Date.parse("2026-09-28T00:00:00.000Z"),
+      randomBytes: (n) => new Uint8Array(n).fill(7),
+      locatePackage: () => ({ dir: packageDir, manifest: JSON.parse(readFileSync(join(packageDir, "hub-manifest.json"), "utf8")) }),
+      platform: "darwin",
+      arch: "arm64",
+      isAlive: (pid) => realIsAlive(pid),
+    };
+
+    const report = await upgradeHub(upgradeDeps);
+
+    assert.equal(report.ok, false);
+    const outcomes = Object.fromEntries(report.steps.map((s) => [s.step, s.outcome]));
+    assert.equal(outcomes["install app files"], "done");
+    assert.equal(outcomes["download pocketbase"], "done");
+    assert.equal(outcomes["write hub.json"], "done");
+    assert.equal(outcomes["restart"], "error");
+    const restartStep = report.steps.find((s) => s.step === "restart")!;
+    assert.equal(restartStep.detail, "port 8090 is already in use by another process — pass --port <N> or stop it");
+    assert.equal(spawnCalls.length, 0);
+    assert.equal(runnerCalls.length, 0);
+    assert.equal(readFileSync(join(homeDir, ".kankaku", "hub", "pb_data", "data.db"), "utf8"), "sentinel");
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
     rmSync(packageDir, { recursive: true, force: true });

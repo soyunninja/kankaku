@@ -52,7 +52,7 @@ test("writeHubCredentials: is a no-op when the values already match", () => {
   }
 });
 
-test("writeHubCredentials: backs up the previous credentials.json before overwriting", () => {
+test("writeHubCredentials: backs up the previous credentials.json before overwriting, keeping the backup 0600 too", () => {
   const home = makeHome();
   try {
     writeHubCredentials(home, { url: "https://old.example.com", email: "a@b.com", password: "old-secret" });
@@ -60,7 +60,10 @@ test("writeHubCredentials: backs up the previous credentials.json before overwri
 
     writeHubCredentials(home, { url: "https://new.example.com", email: "a@b.com", password: "new-secret" });
 
-    assert.equal(readFileSync(`${credentialsPath(home)}.bak`, "utf8"), originalText);
+    const backupPath = `${credentialsPath(home)}.bak`;
+    assert.equal(readFileSync(backupPath, "utf8"), originalText);
+    // The backup holds the previous hub's service account password; it must never be more exposed than the live file.
+    assert.equal(statSync(backupPath).mode & 0o777, 0o600);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

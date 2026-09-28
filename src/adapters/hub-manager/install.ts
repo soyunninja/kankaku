@@ -7,7 +7,7 @@
  * injected (`HubManagerDeps`) so tests never touch the network, spawn a
  * real PocketBase, or run a real script.
  */
-import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   assetKeyFor,
@@ -17,7 +17,7 @@ import {
   parseHubConfig,
   serveArgs,
 } from "../../domain/local-hub-model.ts";
-import type { HubAccounts, HubConfig, HubStatus } from "../../domain/local-hub-model.ts";
+import type { HubAccounts, HubConfig, HubLayout, HubStatus } from "../../domain/local-hub-model.ts";
 import { locateHubPackage } from "./package.ts";
 import type { LocateHubPackageResult } from "./package.ts";
 import { downloadPocketBase } from "./download.ts";
@@ -71,6 +71,8 @@ export interface HubManagerDeps {
   locatePackage: () => LocateHubPackageResult;
   platform: NodeJS.Platform;
   arch: string;
+  /** `hub-manager/process.ts#isAlive`, injected so tests can simulate the spawned hub process dying during startup without needing a real spawned process. */
+  isAlive: (pid: number) => boolean;
 }
 
 function message(error: unknown): string {
@@ -95,6 +97,76 @@ function copyAppFiles(packageDir: string, appDir: string): void {
 
 function baseUrlFor(port: number): string {
   return `http://127.0.0.1:${port}`;
+}
+
+/** `hub.log`'s lines, oldest first, `[]` when unreadable or empty. Shared by `hubLogs` (public, by line count) and `healthFailureDetail` (the last line only). */
+function readLogLines(layout: HubLayout): string[] {
+  if (!existsSync(layout.logFile)) return [];
+  const content = readFileSync(layout.logFile, "utf8");
+  const lines = content.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines;
+}
+
+function portInUseMessage(port: number): string {
+  return `port ${port} is already in use by another process — pass --port <N> or stop it`;
+}
+
+/**
+ * Before spawning: if `GET /api/health` on `port` answers at all (ok or
+ * not — any response means something is already listening), the port is
+ * held by a process that is not ours. Callers only reach this once they
+ * have already established that no pid of ours is alive, so any response
+ * here means a foreign process. Returns the detail message to report, or
+ * `undefined` when the port is free.
+ */
+async function ensurePortFree(port: number, deps: Pick<HubManagerDeps, "fetch">): Promise<string | undefined> {
+  try {
+    await deps.fetch(`${baseUrlFor(port)}/api/health`);
+    return portInUseMessage(port);
+  } catch {
+    return undefined;
+  }
+}
+
+interface SpawnAndAwaitHealthResult {
+  pid: number;
+  healthy: boolean;
+  /** `true` when the process was no longer alive once `waitForHealth` gave up — as opposed to a plain timeout while it was still running. */
+  exitedEarly: boolean;
+}
+
+/**
+ * Spawns the hub detached and waits for it to become healthy, stopping
+ * immediately (rather than waiting out the full timeout) if the process
+ * dies first. On an early exit, removes the pid file it just wrote so a
+ * dead process is never left claiming to be running.
+ */
+async function spawnAndAwaitHealth(
+  layout: HubLayout,
+  appVersion: string,
+  port: number,
+  deps: Pick<HubManagerDeps, "startDetached" | "fetch" | "sleep" | "isAlive">,
+): Promise<SpawnAndAwaitHealthResult> {
+  const pid = deps.startDetached(layout.binary, serveArgs(layout, appVersion, port), { logFile: layout.logFile, pidFile: layout.pidFile });
+  const healthy = await waitForHealth(`${baseUrlFor(port)}/api/health`, {
+    fetch: deps.fetch,
+    sleep: deps.sleep,
+    timeoutMs: HEALTH_TIMEOUT_MS,
+    isAlive: () => deps.isAlive(pid),
+  });
+  if (healthy) return { pid, healthy: true, exitedEarly: false };
+
+  const exitedEarly = !deps.isAlive(pid);
+  if (exitedEarly && existsSync(layout.pidFile)) unlinkSync(layout.pidFile);
+  return { pid, healthy: false, exitedEarly };
+}
+
+/** The error detail for a failed `spawnAndAwaitHealth`: the last `hub.log` line when the process exited early and one is readable, otherwise a plain timeout message. */
+function healthFailureDetail(layout: HubLayout, exitedEarly: boolean): string {
+  if (!exitedEarly) return "the local hub did not become healthy within 20s";
+  const lastLine = readLogLines(layout).at(-1);
+  return lastLine ? `the hub exited during startup: ${lastLine}` : "the hub exited during startup";
 }
 
 /**
@@ -175,17 +247,22 @@ export async function installHub(options: InstallHubOptions, deps: HubManagerDep
     return { ok: true, steps, url: baseUrlFor(port) };
   }
 
+  const portConflict = await ensurePortFree(port, deps);
+  if (portConflict) {
+    steps.push({ step: "provision accounts", outcome: "error", detail: portConflict });
+    return { ok: false, steps };
+  }
+
   try {
     const superuserPassword = generatePassword(deps.randomBytes);
     await upsertSuperuser(layout.binary, layout.pbData, SUPERUSER_EMAIL, superuserPassword, deps.runner);
 
-    deps.startDetached(layout.binary, serveArgs(layout, manifest.version, port), { logFile: layout.logFile, pidFile: layout.pidFile });
-    const url = baseUrlFor(port);
-    const healthy = await waitForHealth(`${url}/api/health`, { fetch: deps.fetch, sleep: deps.sleep, timeoutMs: HEALTH_TIMEOUT_MS });
-    if (!healthy) {
-      steps.push({ step: "provision accounts", outcome: "error", detail: "the local hub did not become healthy within 20s" });
+    const spawnResult = await spawnAndAwaitHealth(layout, manifest.version, port, deps);
+    if (!spawnResult.healthy) {
+      steps.push({ step: "provision accounts", outcome: "error", detail: healthFailureDetail(layout, spawnResult.exitedEarly) });
       return { ok: false, steps };
     }
+    const url = baseUrlFor(port);
 
     const superuser = { email: SUPERUSER_EMAIL, password: superuserPassword };
     await createUser(url, superuser, { email: options.ownerEmail, password: options.ownerPassword, role: "owner" }, deps.fetch);
@@ -216,13 +293,16 @@ export async function startHub(deps: HubManagerDeps): Promise<HubActionReport> {
     return { ok: true, steps: [{ step: "start", outcome: "unchanged", detail: "already running" }], url: baseUrlFor(config.port) };
   }
 
-  deps.startDetached(layout.binary, serveArgs(layout, config.appVersion, config.port), { logFile: layout.logFile, pidFile: layout.pidFile });
-  const url = baseUrlFor(config.port);
-  const healthy = await waitForHealth(`${url}/api/health`, { fetch: deps.fetch, sleep: deps.sleep, timeoutMs: HEALTH_TIMEOUT_MS });
+  const portConflict = await ensurePortFree(config.port, deps);
+  if (portConflict) {
+    return { ok: false, steps: [{ step: "start", outcome: "error", detail: portConflict }] };
+  }
+
+  const spawnResult = await spawnAndAwaitHealth(layout, config.appVersion, config.port, deps);
   return {
-    ok: healthy,
-    steps: [{ step: "start", outcome: healthy ? "done" : "error", detail: healthy ? undefined : "did not become healthy within 20s" }],
-    url,
+    ok: spawnResult.healthy,
+    steps: [{ step: "start", outcome: spawnResult.healthy ? "done" : "error", detail: spawnResult.healthy ? undefined : healthFailureDetail(layout, spawnResult.exitedEarly) }],
+    url: baseUrlFor(config.port),
   };
 }
 
@@ -310,20 +390,23 @@ export async function upgradeHub(deps: HubManagerDeps): Promise<HubActionReport>
   steps.push({ step: "write hub.json", outcome: "done" });
 
   await stopProcess(layout.pidFile, { timeoutMs: STOP_TIMEOUT_MS, sleep: deps.sleep });
-  deps.startDetached(layout.binary, serveArgs(layout, newConfig.appVersion, newConfig.port), { logFile: layout.logFile, pidFile: layout.pidFile });
-  const url = baseUrlFor(newConfig.port);
-  const healthy = await waitForHealth(`${url}/api/health`, { fetch: deps.fetch, sleep: deps.sleep, timeoutMs: HEALTH_TIMEOUT_MS });
-  steps.push({ step: "restart", outcome: healthy ? "done" : "error", detail: healthy ? undefined : "did not become healthy within 20s" });
 
-  return { ok: healthy, steps, url };
+  const url = baseUrlFor(newConfig.port);
+  const portConflict = await ensurePortFree(newConfig.port, deps);
+  if (portConflict) {
+    steps.push({ step: "restart", outcome: "error", detail: portConflict });
+    return { ok: false, steps };
+  }
+
+  const spawnResult = await spawnAndAwaitHealth(layout, newConfig.appVersion, newConfig.port, deps);
+  steps.push({ step: "restart", outcome: spawnResult.healthy ? "done" : "error", detail: spawnResult.healthy ? undefined : healthFailureDetail(layout, spawnResult.exitedEarly) });
+
+  return { ok: spawnResult.healthy, steps, url };
 }
 
 /** The last `n` lines of `hub.log`, oldest first; `[]` when the hub has never logged anything. */
 export function hubLogs(n: number, deps: Pick<HubManagerDeps, "homeDir">): string[] {
   const layout = hubLayout(deps.homeDir);
-  if (!existsSync(layout.logFile)) return [];
-  const content = readFileSync(layout.logFile, "utf8");
-  const lines = content.split("\n");
-  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  const lines = readLogLines(layout);
   return lines.slice(Math.max(lines.length - n, 0));
 }

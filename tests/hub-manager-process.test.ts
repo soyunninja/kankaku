@@ -137,3 +137,51 @@ test("waitForHealth: false when fetch keeps rejecting (server not up yet)", asyn
   });
   assert.equal(healthy, false);
 });
+
+test("waitForHealth: a fetch that resolves ok on the very first attempt returns true without ever consulting isAlive", async () => {
+  const fakeFetch = (async () => new Response(null, { status: 200 })) as typeof fetch;
+  const healthy = await waitForHealth("http://127.0.0.1:8090/api/health", {
+    fetch: fakeFetch,
+    sleep: async () => {},
+    timeoutMs: 10000,
+    isAlive: () => {
+      throw new Error("isAlive should not be consulted once fetch already succeeded");
+    },
+  });
+  assert.equal(healthy, true);
+});
+
+test("waitForHealth: stops immediately once isAlive reports the process died, without waiting out the timeout", async () => {
+  const fakeFetch = (async () => {
+    throw new Error("ECONNREFUSED");
+  }) as unknown as typeof fetch;
+  const sleeps: number[] = [];
+  const healthy = await waitForHealth("http://127.0.0.1:8090/api/health", {
+    fetch: fakeFetch,
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+    },
+    timeoutMs: 10000, // large on purpose: proves the early exit, not the timeout, ended the wait
+    isAlive: () => false,
+  });
+  assert.equal(healthy, false);
+  assert.equal(sleeps.length, 0); // returned on the very first failed attempt, never slept
+});
+
+test("waitForHealth: keeps polling while isAlive reports the process alive, then stops once it dies", async () => {
+  const fakeFetch = (async () => {
+    throw new Error("ECONNREFUSED");
+  }) as unknown as typeof fetch;
+  let aliveChecks = 0;
+  const healthy = await waitForHealth("http://127.0.0.1:8090/api/health", {
+    fetch: fakeFetch,
+    sleep: async () => {},
+    timeoutMs: 10000,
+    isAlive: () => {
+      aliveChecks += 1;
+      return aliveChecks < 3;
+    },
+  });
+  assert.equal(healthy, false);
+  assert.ok(aliveChecks >= 3);
+});

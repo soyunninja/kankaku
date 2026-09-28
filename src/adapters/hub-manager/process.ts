@@ -105,11 +105,22 @@ export interface WaitForHealthDeps {
   fetch: typeof fetch;
   sleep: (ms: number) => Promise<void>;
   timeoutMs: number;
+  /**
+   * Optional: consulted only after a failed/non-ok fetch attempt. When
+   * provided and it reports the process is no longer alive, `waitForHealth`
+   * stops immediately instead of waiting out `timeoutMs` — the process
+   * exiting (e.g. a port bind failure) means it will never become healthy.
+   */
+  isAlive?: () => boolean;
 }
 
 const HEALTH_POLL_INTERVAL_MS = 500;
 
-/** Polls `GET url` every 500ms until it responds ok, or `deps.timeoutMs` elapses. Returns whether it became healthy. Never throws. */
+/**
+ * Polls `GET url` every 500ms until it responds ok, `deps.timeoutMs`
+ * elapses, or (when `deps.isAlive` is given) the process dies. Returns
+ * whether it became healthy. Never throws.
+ */
 export async function waitForHealth(url: string, deps: WaitForHealthDeps): Promise<boolean> {
   let elapsedMs = 0;
   for (;;) {
@@ -119,6 +130,7 @@ export async function waitForHealth(url: string, deps: WaitForHealthDeps): Promi
     } catch {
       // Not up yet; keep polling until the deadline.
     }
+    if (deps.isAlive && !deps.isAlive()) return false;
     if (elapsedMs >= deps.timeoutMs) return false;
     await deps.sleep(HEALTH_POLL_INTERVAL_MS);
     elapsedMs += HEALTH_POLL_INTERVAL_MS;

@@ -104,11 +104,19 @@ interface FetchCall {
   init?: RequestInit;
 }
 
-function fakeFetch(zip: Buffer): typeof fetch {
+/** Shared with `fakeHubManager`'s `startDetached`: `/api/health` only answers once the fake hub has "spawned", so the pre-spawn port-availability check genuinely sees the port as free. */
+interface ServerState {
+  listening: boolean;
+}
+
+function fakeFetch(zip: Buffer, state: ServerState): typeof fetch {
   return (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.includes("pb.zip")) return new Response(new Uint8Array(zip), { status: 200 });
-    if (url.endsWith("/api/health")) return new Response(null, { status: 200 });
+    if (url.endsWith("/api/health")) {
+      if (!state.listening) throw new Error("ECONNREFUSED");
+      return new Response(null, { status: 200 });
+    }
     if (url.includes("_superusers/auth-with-password")) return new Response(JSON.stringify({ token: "tok" }), { status: 200, headers: { "content-type": "application/json" } });
     if (url.includes("users/records?filter")) return new Response(JSON.stringify({ items: [] }), { status: 200 });
     if (url.includes("users/records") && init?.method === "POST") return new Response(JSON.stringify({ id: "u1" }), { status: 200 });
@@ -129,12 +137,13 @@ function fakeRunner(): ScriptRunner {
 
 let nextFakePid = 55000;
 
-function fakeHubManager(packageDir: string, zip: Buffer): Partial<HubManagerDeps> {
+function fakeHubManager(packageDir: string, zip: Buffer, state: ServerState): Partial<HubManagerDeps> {
   return {
     runner: fakeRunner(),
     startDetached: (_binary, _args, opts) => {
       const pid = (nextFakePid += 1);
       writeFileSync(opts.pidFile, String(pid));
+      state.listening = true;
       return pid;
     },
     sleep: async () => {},
@@ -142,6 +151,7 @@ function fakeHubManager(packageDir: string, zip: Buffer): Partial<HubManagerDeps
     locatePackage: () => ({ dir: packageDir, manifest: JSON.parse(readFileSync(join(packageDir, "hub-manifest.json"), "utf8")) }),
     platform: "darwin",
     arch: "arm64",
+    isAlive: () => false, // the fake pid never corresponds to a real process
   };
 }
 
@@ -167,9 +177,10 @@ test("hub install: with flags, runs every step and prints the result", async () 
   try {
     const lines: string[] = [];
     let exitCode: number | undefined;
+    const state: ServerState = { listening: false };
     await runCli(
       ["hub", "install", "--owner-email", "owner@example.test", "--owner-password", "s3cret"],
-      baseDeps(home, { fetch: fakeFetch(zip), hubManager: fakeHubManager(packageDir, zip), stdout: (text) => lines.push(text), exit: (code) => (exitCode = code) }),
+      baseDeps(home, { fetch: fakeFetch(zip, state), hubManager: fakeHubManager(packageDir, zip, state), stdout: (text) => lines.push(text), exit: (code) => (exitCode = code) }),
     );
 
     assert.equal(exitCode, undefined);
@@ -203,11 +214,12 @@ test("hub install: on a TTY without flags, prompts for owner email/password", as
       },
     };
     let exitCode: number | undefined;
+    const state: ServerState = { listening: false };
     await runCli(
       ["hub", "install"],
       baseDeps(home, {
-        fetch: fakeFetch(zip),
-        hubManager: fakeHubManager(packageDir, zip),
+        fetch: fakeFetch(zip, state),
+        hubManager: fakeHubManager(packageDir, zip, state),
         isTTY: () => true,
         prompter,
         exit: (code) => (exitCode = code),

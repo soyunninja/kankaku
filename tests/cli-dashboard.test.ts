@@ -103,10 +103,20 @@ test("dashboardActionsDeps: localHub.toggle starts a stopped local hub via the i
     writeCredentials(home, "http://127.0.0.1:8090");
 
     const startCalls: { binary: string; args: string[] }[] = [];
+    let listening = false; // flips once "spawned" below, so the pre-spawn port-availability check sees the port as free
     const hubManager: Partial<HubManagerDeps> = {
+      fetch: (async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.endsWith("/api/health")) {
+          if (!listening) throw new Error("ECONNREFUSED");
+          return new Response(null, { status: 200 });
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      }) as typeof fetch,
       startDetached: (binary, args, opts) => {
         startCalls.push({ binary, args });
         writeFileSync(opts.pidFile, String(process.pid));
+        listening = true;
         return process.pid;
       },
       sleep: async () => {},
