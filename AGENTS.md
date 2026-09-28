@@ -25,10 +25,15 @@ their own repositories.
   package's tests.
 - **Lockstep versions**: the three packages always carry the same version
   and are released together, in the order `kankaku` → `kankaku-claude` →
-  `kankaku-tui` (the consumers depend on `kankaku ^<that version>`). Bump
-  with `npm version <v> --workspaces --no-git-tag-version`, then update
-  the two `"kankaku": "^<v>"` ranges, commit `chore(release): prepare
-  <v>`, tag `v<v>`.
+  `kankaku-tui` (the consumers depend on `kankaku ^<that version>`). To
+  bump: FIRST update the internal ranges (`"kankaku": "^<v>"` in tui and
+  claude, `"kankaku-claude": "^<v>"` in tui), THEN `npm version <v>
+  --workspaces --no-git-tag-version` and `npm install`, and confirm no
+  `packages/*/node_modules/kankaku*` directory exists — the other order
+  makes npm fetch the old published version into a nested
+  `node_modules`, which the tests then resolve instead of the workspace
+  copy. Commit `chore(release): prepare <v>`, tag `v<v>`, then
+  `npm run publish:all`.
 - **One lockfile**, at the root. Never add a `package-lock.json` inside a
   package.
 - **Strict TDD and the per-package verification commands are unchanged**;
