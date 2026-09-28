@@ -27,7 +27,7 @@ function makeFullyConfiguredHome(): string {
     join(home, ".claude", "settings.json"),
     JSON.stringify(
       {
-        statusLine: { type: "command", command: `node "${CLAUDE_PLUGIN_ROOT}/src/statusline.ts"` },
+        statusLine: { type: "command", command: `node "${CLAUDE_PLUGIN_ROOT}/dist/statusline.js"` },
         hooks: buildSettingsHooks(CLAUDE_PLUGIN_ROOT, readPluginHooks(CLAUDE_PLUGIN_ROOT)),
       },
       null,
@@ -407,10 +407,10 @@ function makeFakePluginDir(): string {
   mkdirSync(join(dir, "hooks"), { recursive: true });
   writeFileSync(
     join(dir, "hooks", "hooks.json"),
-    JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/src/hook.ts"', timeout: 15 }] }] } }, null, 2),
+    JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"', timeout: 15 }] }] } }, null, 2),
   );
-  mkdirSync(join(dir, "src"), { recursive: true });
-  writeFileSync(join(dir, "src", "hook.ts"), "// fake\n");
+  mkdirSync(join(dir, "dist"), { recursive: true });
+  writeFileSync(join(dir, "dist", "hook.js"), "// fake\n");
   return dir;
 }
 
@@ -424,8 +424,8 @@ test("setup --yes --claude-plugin-dir <dir>: configures Claude Code from the ove
     await runCli(["setup", "--yes", "--claude-plugin-dir", pluginDir], baseDeps(home));
 
     const written = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
-    assert.equal(written.statusLine.command, `node "${pluginDir}/src/statusline.ts"`);
-    assert.deepEqual(written.hooks.SessionStart, [{ hooks: [{ type: "command", command: `node "${pluginDir}/src/hook.ts"`, timeout: 15 }] }]);
+    assert.equal(written.statusLine.command, `node "${pluginDir}/dist/statusline.js"`);
+    assert.deepEqual(written.hooks.SessionStart, [{ hooks: [{ type: "command", command: `node "${pluginDir}/dist/hook.js"`, timeout: 15 }] }]);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(pluginDir, { recursive: true, force: true });
@@ -442,7 +442,7 @@ test("setup --yes: KANKAKU_CLAUDE_PLUGIN_DIR env var overrides the bundled plugi
     await runCli(["setup", "--yes"], baseDeps(home, { env: { KANKAKU_CLAUDE_PLUGIN_DIR: pluginDir } }));
 
     const written = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
-    assert.equal(written.statusLine.command, `node "${pluginDir}/src/statusline.ts"`);
+    assert.equal(written.statusLine.command, `node "${pluginDir}/dist/statusline.js"`);
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(pluginDir, { recursive: true, force: true });

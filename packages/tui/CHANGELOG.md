@@ -5,6 +5,35 @@ versions follow semver. Dates are the day the version was cut.
 
 ## Unreleased
 
+### Fixed
+
+- **The Claude Code hooks and statusLine `kankaku setup` wrote could not
+  run once installed.** `kankaku setup` used to write commands pointing
+  at `kankaku-claude`'s `.ts` sources (`node ".../src/hook.ts"`); Node 24
+  refuses to type-strip a `.ts` file under a `node_modules` directory
+  (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so every hook and the
+  statusline failed at launch for anyone who installed `kankaku-tui`
+  rather than working from a git checkout. `kankaku-claude` now ships a
+  compiled `dist/` (see its own changelog), and `kankaku setup` writes
+  `node ".../dist/hook.js"` / `.../dist/statusline.js"` instead.
+  `domain/claude-integration.ts` still recognizes the legacy `/src/*.ts`
+  form as ours (so an already-configured machine gets its entries
+  replaced, or removed on uncheck, instead of left stale and duplicated);
+  "configured" (`doctor`/`setup --dry-run`/the wizard) now requires the
+  current `dist` form specifically — a legacy `src` form at the same root
+  is reported `outdated statusLine`/`outdated hooks` and setup rewrites
+  it. `adapters/setup/claude-plugin.ts#locateClaudePlugin` validates a
+  `--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR` override the same
+  way: a checkout missing `dist/hook.js` now fails with "run npm run
+  build in `<dir>` first" instead of silently writing a broken command.
+  A new integration test (`tests/claude-hook-dist-integration.test.ts`)
+  spawns the real `dist/hook.js` command against the workspace
+  `kankaku-claude` package with an isolated `HOME` and a real
+  `SessionStart` payload, asserting exit code 0 — the class of test that
+  would have caught this defect, since every prior test only imported
+  `src/*.ts` directly and never spawned the actual command as a child
+  process.
+
 ### Changed
 
 - **`kankaku setup`'s Claude Code step no longer asks for a checkout

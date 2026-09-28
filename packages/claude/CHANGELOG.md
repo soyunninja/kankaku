@@ -15,6 +15,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Installed as a dependency, the plugin could not run at all.** This
+  package now compiles to `dist/` (`npm run build`, `tsc -p
+  tsconfig.build.json`) and ships `dist/` instead of `src/`/`tsconfig.json`
+  in `package.json`'s `files`. Every hook/statusline/CLI command
+  (`hooks/hooks.json`, `commands/*.md`, the `statusLine` snippet
+  `kankaku setup`/`/kankaku:setup` prints) now points at the compiled
+  `dist/*.js`, never `src/*.ts` — Node 24 refuses to type-strip a `.ts`
+  file once it sits under a `node_modules` directory
+  (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so a `kankaku-tui`
+  install of this package (its dependency, not a checkout) could not run
+  a single hook, the statusline, or the CLI before this fix. `npm run
+  check`/`prepublishOnly` build first; a manual `--plugin-dir` checkout
+  now needs `npm install && npm run build` once (see README "Install").
+
 ### Changed
 
 - README "Install": the recommended path is now `npm i -g kankaku-tui &&

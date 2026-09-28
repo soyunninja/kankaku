@@ -5,7 +5,7 @@
  * read the real files (`src/adapters/setup/*.ts`) and pass plain facts in.
  */
 
-import { ourStatusLineCommandRoot } from "./claude-integration.ts";
+import { ourStatusLineCommandMatch } from "./claude-integration.ts";
 
 export type AgentId = "pi" | "gentle-shell" | "claude-code" | "codex" | "opencode";
 
@@ -42,6 +42,8 @@ export interface ClaudeSettingsFacts {
   statusLineCommand: string | undefined;
   /** The plugin root our own hook entries point at, when present (see `adapters/setup/agents.ts#extractHooksRoot`). */
   hooksRoot: string | undefined;
+  /** True when the matched hook command uses the legacy `/src/hook.ts` checkout form rather than the current `/dist/hook.js` one. Defaults to `false` when omitted. */
+  hooksLegacy?: boolean;
 }
 
 /** An agent kankaku-tui only detects, never configures (Codex, OpenCode). */
@@ -76,23 +78,38 @@ function settingsPackagesStatus(id: AgentId, facts: SettingsPackagesFacts | unde
 
 /**
  * Claude Code is `configured` only when our statusLine AND our hooks are
- * present and share the same root (see the module doc on `AgentStatus`).
- * A partial state carries a `detailNote` explaining exactly what's
- * missing or mismatched, reused by `agentStep`'s `todoAction` and, through
- * it, `kankaku doctor`'s output.
+ * present, share the same root, AND both use the current `/dist/*.js`
+ * form (see the module doc on `AgentStatus`) — the legacy `/src/*.ts`
+ * checkout form a pre-dist `kankaku setup` may have written is still
+ * recognized as ours (see `domain/claude-integration.ts`), but never as
+ * fully configured, since Node refuses to type-strip a `.ts` file under
+ * `node_modules`. A partial state carries a `detailNote` explaining
+ * exactly what's missing, mismatched or outdated, reused by `agentStep`'s
+ * `todoAction` and, through it, `kankaku doctor`'s output.
  */
 function claudeCodeStatus(facts: ClaudeSettingsFacts | undefined): AgentStatus {
   if (!facts) return { id: "claude-code", present: false, configured: false, adapterAvailable: true, detail: "not found" };
 
-  const statusLineRoot = facts.statusLineCommand !== undefined ? ourStatusLineCommandRoot(facts.statusLineCommand) : undefined;
+  const statusLineMatch = facts.statusLineCommand !== undefined ? ourStatusLineCommandMatch(facts.statusLineCommand) : undefined;
+  const statusLineRoot = statusLineMatch?.root;
   const hooksRoot = facts.hooksRoot;
-  const configured = statusLineRoot !== undefined && hooksRoot !== undefined && statusLineRoot === hooksRoot;
+  const sameRoot = statusLineRoot !== undefined && hooksRoot !== undefined && statusLineRoot === hooksRoot;
+  const statusLineLegacy = statusLineMatch?.legacy === true;
+  const hooksLegacy = facts.hooksLegacy === true;
+  const configured = sameRoot && !statusLineLegacy && !hooksLegacy;
 
   let detailNote: string | undefined;
   if (!configured) {
     if (statusLineRoot !== undefined && hooksRoot === undefined) detailNote = "statusLine only";
     else if (statusLineRoot === undefined && hooksRoot !== undefined) detailNote = "hooks only";
-    else if (statusLineRoot !== undefined && hooksRoot !== undefined) detailNote = `hooks point at ${hooksRoot}, statusLine at ${statusLineRoot}`;
+    else if (statusLineRoot !== undefined && hooksRoot !== undefined && !sameRoot) {
+      detailNote = `hooks point at ${hooksRoot}, statusLine at ${statusLineRoot}`;
+    } else if (sameRoot) {
+      const outdated: string[] = [];
+      if (statusLineLegacy) outdated.push("statusLine");
+      if (hooksLegacy) outdated.push("hooks");
+      detailNote = `outdated ${outdated.join(" and ")}`;
+    }
   }
 
   return { id: "claude-code", present: true, configured, adapterAvailable: true, detail: facts.settingsPath, ...(detailNote !== undefined ? { detailNote } : {}) };

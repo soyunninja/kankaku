@@ -47,9 +47,15 @@ npm run check -w kankaku-tui # check just one package
 `packages/kankaku` must build before `packages/claude` or `packages/tui`
 run anything, because they import `kankaku/domain`, `kankaku/ports` and
 `kankaku/hub` through the workspace symlink, which resolves to
-`packages/kankaku/dist`. `npm run check` at the root does this in order;
-running a single package's `check` directly assumes `packages/kankaku`
-was already built.
+`packages/kankaku/dist`. `packages/claude` must in turn build before
+`packages/tui`'s own check runs, since `kankaku setup` resolves and writes
+commands pointing at `kankaku-claude`'s compiled `dist/hook.js`/
+`dist/statusline.js` (Node cannot type-strip a `.ts` file once it sits
+under a `node_modules` directory, which every workspace dependency does).
+`npm run check`/`npm run build` at the root build in that exact order
+(`kankaku` → `kankaku-claude` → `kankaku-tui`); running a single package's
+`check` directly assumes the packages before it in that order were
+already built.
 
 Versions are lockstep: all three packages ship the same version number,
 bumped and released together, even when only one of them changed. Each

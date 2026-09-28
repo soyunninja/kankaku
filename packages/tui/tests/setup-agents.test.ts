@@ -28,7 +28,7 @@ test("readAgentFacts: reads Claude Code's hooksRoot from a matching kankaku hook
       JSON.stringify(
         {
           hooks: {
-            SessionStart: [{ hooks: [{ type: "command", command: 'node "/x/kankaku-claude/src/hook.ts"', timeout: 15 }] }],
+            SessionStart: [{ hooks: [{ type: "command", command: 'node "/x/kankaku-claude/dist/hook.js"', timeout: 15 }] }],
             Notification: [{ hooks: [{ type: "command", command: "node notify.js" }] }],
           },
         },
@@ -38,6 +38,27 @@ test("readAgentFacts: reads Claude Code's hooksRoot from a matching kankaku hook
     );
     const facts = readAgentFacts(home);
     assert.equal(facts.claudeCode?.hooksRoot, "/x/kankaku-claude");
+    assert.equal(facts.claudeCode?.hooksLegacy, false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("readAgentFacts: reads Claude Code's hooksLegacy=true from a legacy src-form kankaku hook entry", () => {
+  const home = makeHome();
+  try {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(
+      join(home, ".claude", "settings.json"),
+      JSON.stringify(
+        { hooks: { SessionStart: [{ hooks: [{ type: "command", command: 'node "/x/kankaku-claude/src/hook.ts"', timeout: 15 }] }] } },
+        null,
+        2,
+      ),
+    );
+    const facts = readAgentFacts(home);
+    assert.equal(facts.claudeCode?.hooksRoot, "/x/kankaku-claude");
+    assert.equal(facts.claudeCode?.hooksLegacy, true);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -89,13 +110,14 @@ test("readAgentFacts: reads Claude Code's statusLine.command", () => {
     mkdirSync(join(home, ".claude"), { recursive: true });
     writeFileSync(
       join(home, ".claude", "settings.json"),
-      JSON.stringify({ statusLine: { type: "command", command: 'node "/x/kankaku-claude/src/statusline.ts"' } }, null, 2),
+      JSON.stringify({ statusLine: { type: "command", command: 'node "/x/kankaku-claude/dist/statusline.js"' } }, null, 2),
     );
     const facts = readAgentFacts(home);
     assert.deepEqual(facts.claudeCode, {
       settingsPath: join(home, ".claude", "settings.json"),
-      statusLineCommand: 'node "/x/kankaku-claude/src/statusline.ts"',
+      statusLineCommand: 'node "/x/kankaku-claude/dist/statusline.js"',
       hooksRoot: undefined,
+      hooksLegacy: false,
     });
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -108,7 +130,7 @@ test("readAgentFacts: Claude Code settings.json without a statusLine reads as pr
     mkdirSync(join(home, ".claude"), { recursive: true });
     writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "x" }));
     const facts = readAgentFacts(home);
-    assert.deepEqual(facts.claudeCode, { settingsPath: join(home, ".claude", "settings.json"), statusLineCommand: undefined, hooksRoot: undefined });
+    assert.deepEqual(facts.claudeCode, { settingsPath: join(home, ".claude", "settings.json"), statusLineCommand: undefined, hooksRoot: undefined, hooksLegacy: false });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

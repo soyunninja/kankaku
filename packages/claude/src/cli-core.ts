@@ -94,7 +94,7 @@ function sessionIdFromStateFile(file: string): string {
 }
 
 function runSetup(deps: CliDeps): CliResult {
-  const statuslinePath = join(deps.pluginRoot, "src", "statusline.ts");
+  const statuslinePath = join(deps.pluginRoot, "dist", "statusline.js");
   const command = `node "${statuslinePath}"`;
   const snippet = JSON.stringify({ statusLine: { type: "command", command } }, null, 2);
   const explanation =

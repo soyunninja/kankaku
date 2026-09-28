@@ -8,7 +8,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentDetectionFacts, ClaudeSettingsFacts, ConfigFileFacts, SettingsPackagesFacts } from "../../domain/setup-plan.ts";
-import { ourHookCommandRoot } from "../../domain/claude-integration.ts";
+import { ourHookCommandMatch } from "../../domain/claude-integration.ts";
+import type { CommandMatch } from "../../domain/claude-integration.ts";
 
 function readJsonObject(filePath: string): Record<string, unknown> | undefined {
   if (!existsSync(filePath)) return undefined;
@@ -32,8 +33,8 @@ function readSettingsPackages(settingsPath: string): SettingsPackagesFacts | und
   return { settingsPath, packages };
 }
 
-/** Scans every event's hook entries for a command that is one of kankaku's own (see `domain/claude-integration.ts#ourHookCommandRoot`), returning the first matching root, or `undefined` when none is found. */
-function extractHooksRoot(parsed: Record<string, unknown>): string | undefined {
+/** Scans every event's hook entries for a command that is one of kankaku's own (see `domain/claude-integration.ts#ourHookCommandMatch`), returning the first match (root + whether it's the legacy `/src/hook.ts` form), or `undefined` when none is found. */
+function extractHooksMatch(parsed: Record<string, unknown>): CommandMatch | undefined {
   const hooks = parsed["hooks"];
   if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return undefined;
   for (const entries of Object.values(hooks as Record<string, unknown>)) {
@@ -46,8 +47,8 @@ function extractHooksRoot(parsed: Record<string, unknown>): string | undefined {
         if (!hook || typeof hook !== "object") continue;
         const command = (hook as Record<string, unknown>)["command"];
         if (typeof command !== "string") continue;
-        const root = ourHookCommandRoot(command);
-        if (root !== undefined) return root;
+        const match = ourHookCommandMatch(command);
+        if (match !== undefined) return match;
       }
     }
   }
@@ -62,7 +63,8 @@ function readClaudeSettings(settingsPath: string): ClaudeSettingsFacts | undefin
     statusLine && typeof statusLine === "object" && !Array.isArray(statusLine) && typeof (statusLine as Record<string, unknown>)["command"] === "string"
       ? ((statusLine as Record<string, unknown>)["command"] as string)
       : undefined;
-  return { settingsPath, statusLineCommand: command, hooksRoot: extractHooksRoot(parsed) };
+  const hooksMatch = extractHooksMatch(parsed);
+  return { settingsPath, statusLineCommand: command, hooksRoot: hooksMatch?.root, hooksLegacy: hooksMatch?.legacy ?? false };
 }
 
 function readConfigFilePresence(configPath: string): ConfigFileFacts | undefined {

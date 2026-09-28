@@ -13,7 +13,7 @@
     "packages/tui"
   ],
   "scripts": {
-    "build": "npm run build -w kankaku && npm run build -w kankaku-tui",
+    "build": "npm run build -w kankaku && npm run build -w kankaku-claude && npm run build -w kankaku-tui",
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm test --workspaces",
     "check": "npm run build -w kankaku && npm run check -w kankaku && npm run check -w kankaku-claude && npm run check -w kankaku-tui",

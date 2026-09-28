@@ -9,4 +9,4 @@ Then tell the user, briefly: paste the printed `statusLine` block into their
 because a Claude Code plugin cannot set `statusLine` for itself — the
 statusline is the only documented source of per-session cost.
 
-!node "${CLAUDE_PLUGIN_ROOT}/src/cli.ts" setup
+!node "${CLAUDE_PLUGIN_ROOT}/dist/cli.js" setup

@@ -7,7 +7,8 @@
  * untouched. Idempotent — a no-op when both already point at the given
  * root. Ours are identified by `../../domain/claude-integration.ts`'s
  * `ourHookCommandRoot`/`ourStatusLineCommandRoot`: a command matching
- * `node "<root>/src/hook.ts"`/`.../src/statusline.ts"` whose `<root>`
+ * `node "<root>/dist/hook.js"`/`.../dist/statusline.js"` (or the legacy
+ * `.../src/hook.ts"`/`.../src/statusline.ts"` checkout form) whose `<root>`
  * contains `kankaku-claude` or `packages/claude`.
  */
 import { ourHookCommandRoot, ourStatusLineCommandRoot } from "../../domain/claude-integration.ts";
@@ -21,7 +22,7 @@ export interface PackagesWriteResult {
 
 /** The exact `statusLine.command` kankaku-tui writes for a given plugin root. */
 export function statusLineCommand(root: string): string {
-  return `node "${root}/src/statusline.ts"`;
+  return `node "${root}/dist/statusline.js"`;
 }
 
 function currentStatusLineCommand(existing: Record<string, unknown>): string | undefined {

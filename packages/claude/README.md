@@ -28,8 +28,15 @@ manual and best-effort automatic hub sync through kankaku's public hub adapters 
 ## Requirements
 
 - Claude Code with plugin support.
-- Node.js >= 24 on `PATH` (this package's `.ts` sources run directly under
-  Node's built-in type stripping; there is no build step).
+- Node.js >= 24 on `PATH`. This package ships a compiled `dist/` (`npm
+  run build`, `tsc -p tsconfig.build.json`) — Node refuses to type-strip
+  a `.ts` file once it sits under a `node_modules` directory
+  (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so every published
+  hook/statusline/CLI command runs the built `dist/*.js` file, never the
+  `.ts` source. Installed via `kankaku-tui` (below) this needs no action
+  from you; a manual `--plugin-dir` checkout must run `npm install && npm
+  run build` once before Claude Code can load it (see "Manual/dev"
+  below).
 
 ## Install
 
@@ -52,12 +59,22 @@ README ("Claude Code") for the full behaviour, the
 should drop `--plugin-dir` (below) once this has run.
 
 **Manual/dev: `--plugin-dir` (also required for the `/kankaku:*` slash
-commands).** Clone this repository, then point Claude Code at it
-directly:
+commands).** Clone this repository, build it once, then point Claude Code
+at it directly:
 
 ```bash
+git clone https://github.com/soyunninja/kankaku.git
+cd kankaku/packages/claude
+npm install && npm run build
 claude --plugin-dir /path/to/kankaku-claude
 ```
+
+`npm run build` compiles `src/` into `dist/`; the hooks, statusline and
+`/kankaku:*` commands all run `dist/*.js`, never `src/*.ts` — a checkout
+that skips this step fails at the hook's very first launch with
+`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING` (or, for `--plugin-dir`
+itself, simply nothing recorded). Re-run `npm run build` after pulling
+new commits.
 
 If your Claude Code version does not recognize `--plugin-dir`, or plugin
 loading has changed since this was written, check your installed version's
@@ -111,22 +128,22 @@ anything behind in whatever project happens to be open.
 ## Commands
 
 - `/kankaku:report` — a report of recent work, grouped by day (wraps
-  `node src/cli.ts report`).
+  `node dist/cli.js report`).
 - `/kankaku:status` — the sessions kankaku-claude currently has state for:
   session id, whether its process is still alive, whether a prompt is open,
-  and the last cost the statusline reported (wraps `node src/cli.ts status`).
+  and the last cost the statusline reported (wraps `node dist/cli.js status`).
 - `/kankaku:setup` — prints the `statusLine` snippet described above (wraps
-  `node src/cli.ts setup`).
+  `node dist/cli.js setup`).
 - `/kankaku:sync` — manually syncs recent local work records to the hub
-  (wraps `node src/cli.ts sync`; the slash command does not forward arguments).
+  (wraps `node dist/cli.js sync`; the slash command does not forward arguments).
 - `/kankaku:sync-status` — inspects local pending counts and sync state
-  (wraps `node src/cli.ts sync status`; no hub request or credentials required).
-- `/kankaku:sync-all` — requests a full sync (wraps `node src/cli.ts sync all`).
+  (wraps `node dist/cli.js sync status`; no hub request or credentials required).
+- `/kankaku:sync-all` — requests a full sync (wraps `node dist/cli.js sync all`).
 - `/kankaku:doctor` — a read-only local diagnostic of plugin files, session and
-  cost visibility, and hub sync state (wraps `node src/cli.ts doctor`).
+  cost visibility, and hub sync state (wraps `node dist/cli.js doctor`).
 
 The report, status, setup, and doctor subcommands are also available directly via
-`node src/cli.ts <report|status|setup|doctor>`; `report` accepts `--days N` and
+`node dist/cli.js <report|status|setup|doctor>`; `report` accepts `--days N` and
 defaults to the last 7 days. Doctor reads only local data; it never contacts the
 hub or prints credentials. A missing cost file means cost has not been observed
 under the current `HOME` (it does not prove the statusline is misconfigured).
@@ -143,9 +160,9 @@ request or credentials. The same operations are available directly via CLI:
 
 | Command | Purpose |
 |---------|---------|
-| `node src/cli.ts sync` | Manually sync the recent window (24 hours by default). |
-| `node src/cli.ts sync all` | Request a full sync. |
-| `node src/cli.ts sync status` | Inspect local pending counts and sync state; no hub network request or credentials required. |
+| `node dist/cli.js sync` | Manually sync the recent window (24 hours by default). |
+| `node dist/cli.js sync all` | Request a full sync. |
+| `node dist/cli.js sync status` | Inspect local pending counts and sync state; no hub network request or credentials required. |
 
 Optional environment settings:
 

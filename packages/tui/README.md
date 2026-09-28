@@ -96,10 +96,13 @@ leaving everything else in `settings.json` untouched.
 different kankaku-claude checkout, pass `--claude-plugin-dir <dir>` to
 `kankaku setup`/`kankaku setup --yes`/`kankaku setup --dry-run`, or set
 `KANKAKU_CLAUDE_PLUGIN_DIR`. The flag/env value must be a directory
-containing `hooks/hooks.json` and `src/hook.ts` (i.e. a `kankaku-claude`
-checkout or `packages/claude` in a kankaku monorepo checkout). Without
-either, setup resolves the bundled package automatically — most users
-never need this.
+containing `hooks/hooks.json` and a built `dist/hook.js` (i.e. a
+`kankaku-claude` checkout or `packages/claude` in a kankaku monorepo
+checkout, after `npm install && npm run build` in it — Node cannot run a
+plugin's `.ts` sources directly once they are outside a fresh checkout,
+so setup reports "run npm run build in `<dir>` first" when the build is
+missing). Without either, setup resolves the bundled package
+automatically — most users never need this.
 
 `kankaku setup --yes` and `kankaku setup --dry-run` stay exactly as
 before: non-interactive, driven by argv/env only, never opening the

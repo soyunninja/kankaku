@@ -32,16 +32,21 @@ export type PluginHooks = Record<string, HookEventEntry[]>;
 
 /**
  * Resolves the kankaku-claude plugin's root directory: `override` when
- * given (validated to contain `hooks/hooks.json` and `src/hook.ts` — a
- * clear error otherwise), else the bundled package via
+ * given (validated to contain `hooks/hooks.json` and a built `dist/hook.js`
+ * — the compiled form every hook/statusLine command runs, since Node
+ * refuses to type-strip a `.ts` file under `node_modules` — a clear error
+ * otherwise), else the bundled package via
  * `require.resolve("kankaku-claude/package.json")`.
  */
 export function locateClaudePlugin(override?: string): LocateClaudePluginResult {
   if (override !== undefined) {
     const hooksPath = join(override, "hooks", "hooks.json");
-    const hookScriptPath = join(override, "src", "hook.ts");
-    if (!existsSync(hooksPath) || !existsSync(hookScriptPath)) {
-      throw new Error(`${override} does not look like a kankaku-claude plugin root (expected hooks/hooks.json and src/hook.ts)`);
+    if (!existsSync(hooksPath)) {
+      throw new Error(`${override} does not look like a kankaku-claude plugin root (expected hooks/hooks.json and dist/hook.js)`);
+    }
+    const hookScriptPath = join(override, "dist", "hook.js");
+    if (!existsSync(hookScriptPath)) {
+      throw new Error(`${override} has hooks/hooks.json but no dist/hook.js — run npm run build in ${override} first`);
     }
     return { root: override };
   }

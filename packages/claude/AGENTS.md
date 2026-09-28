@@ -91,7 +91,8 @@ extension has one. Instead:
   `buildTasks` from `kankaku/domain`.
 - `src/cli-core.ts` / `src/cli.ts` — `runCli(argv, deps)` (`report`,
   `status`, `setup`) and its thin `process.argv`/`process.exit` wrapper.
-- `hooks/hooks.json` — registers `src/hook.ts` for all 9 hook events.
+- `hooks/hooks.json` — registers the compiled `dist/hook.js` for all 9
+  hook events (see "Build step" below).
 - `commands/*.md` — the `/kankaku:report`, `/kankaku:status` and
   `/kankaku:setup` slash commands, each running the CLI via the `!` shell
   prefix.
@@ -153,10 +154,26 @@ extension has one. Instead:
   internal `src/` paths.
 - Code, comments, docs and commit messages are in English, neutral register.
 
+## Build step
+
+This package ships a compiled `dist/` (`npm run build`, `tsc -p
+tsconfig.build.json`, mirroring `packages/kankaku`/`packages/tui`'s own
+`tsconfig.build.json` pattern): every hook/statusline/CLI command Claude
+Code or `kankaku setup` actually runs points at `dist/*.js`, never
+`src/*.ts`. This is required, not cosmetic — Node refuses to type-strip a
+`.ts` file once it sits under a `node_modules` directory
+(`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so a `src/`-only publish
+cannot run at all once installed as a dependency (e.g. via `kankaku-tui`).
+`package.json`'s `files` therefore ships `dist/`, not `src/` or
+`tsconfig.json`; `npm run check` (below) and `prepublishOnly` both build
+first. Tests still run directly against `src/*.ts` (`node --test
+tests/*.test.ts`, never through `node_modules`, so type stripping applies
+normally there) and need no prior build.
+
 ## Verification before calling work done
 
 ```
-npm run check   # tsc --noEmit + node --test tests/*.test.ts
+npm run check   # tsc -p tsconfig.build.json + tsc --noEmit + node --test tests/*.test.ts
 ```
 
 For hook or statusline changes, also run a manual smoke check (never as an

@@ -14,15 +14,15 @@ const ROOT = "/Users/dev/kankaku-claude";
 
 function pluginHooks(): PluginHooks {
   return {
-    SessionStart: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/src/hook.ts"', timeout: 15 }] }],
-    UserPromptSubmit: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/src/hook.ts"', timeout: 5 }] }],
+    SessionStart: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"', timeout: 15 }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"', timeout: 5 }] }],
   };
 }
 
 function ourHooksFor(root: string): Record<string, { hooks: { type: string; command: string; timeout: number }[] }[]> {
   return {
-    SessionStart: [{ hooks: [{ type: "command", command: `node "${root}/src/hook.ts"`, timeout: 15 }] }],
-    UserPromptSubmit: [{ hooks: [{ type: "command", command: `node "${root}/src/hook.ts"`, timeout: 5 }] }],
+    SessionStart: [{ hooks: [{ type: "command", command: `node "${root}/dist/hook.js"`, timeout: 15 }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: `node "${root}/dist/hook.js"`, timeout: 5 }] }],
   };
 }
 
@@ -40,7 +40,7 @@ test("writeClaudeIntegration: sets statusLine and hooks for every plugin event, 
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.equal(written.model, "claude-fable-5-1");
     assert.deepEqual(written.permissions, { allow: [] });
-    assert.deepEqual(written.statusLine, { type: "command", command: `node "${ROOT}/src/statusline.ts"` });
+    assert.deepEqual(written.statusLine, { type: "command", command: `node "${ROOT}/dist/statusline.js"` });
     assert.deepEqual(written.hooks, ourHooksFor(ROOT));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -51,7 +51,7 @@ test("writeClaudeIntegration: is a no-op when statusLine and every event's hooks
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
-    const original = { statusLine: { type: "command", command: `node "${ROOT}/src/statusline.ts"` }, hooks: ourHooksFor(ROOT) };
+    const original = { statusLine: { type: "command", command: `node "${ROOT}/dist/statusline.js"` }, hooks: ourHooksFor(ROOT) };
     writeFileSync(settingsPath, JSON.stringify(original, null, 2));
     const before = readFileSync(settingsPath, "utf8");
 
@@ -103,14 +103,38 @@ test("writeClaudeIntegration: replaces stale entries pointing at another root", 
     const staleRoot = "/old/kankaku-claude";
     writeFileSync(
       settingsPath,
-      JSON.stringify({ statusLine: { type: "command", command: `node "${staleRoot}/src/statusline.ts"` }, hooks: ourHooksFor(staleRoot) }, null, 2),
+      JSON.stringify({ statusLine: { type: "command", command: `node "${staleRoot}/dist/statusline.js"` }, hooks: ourHooksFor(staleRoot) }, null, 2),
     );
 
     const result = writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
     assert.equal(result.changed, true);
 
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
-    assert.deepEqual(written.statusLine, { type: "command", command: `node "${ROOT}/src/statusline.ts"` });
+    assert.deepEqual(written.statusLine, { type: "command", command: `node "${ROOT}/dist/statusline.js"` });
+    assert.deepEqual(written.hooks, ourHooksFor(ROOT));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeClaudeIntegration: replaces a legacy src-form statusLine and hooks at the same root with the dist form", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const legacyHooks = {
+      SessionStart: [{ hooks: [{ type: "command", command: `node "${ROOT}/src/hook.ts"`, timeout: 15 }] }],
+      UserPromptSubmit: [{ hooks: [{ type: "command", command: `node "${ROOT}/src/hook.ts"`, timeout: 5 }] }],
+    };
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ statusLine: { type: "command", command: `node "${ROOT}/src/statusline.ts"` }, hooks: legacyHooks }, null, 2),
+    );
+
+    const result = writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
+    assert.equal(result.changed, true);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(written.statusLine, { type: "command", command: `node "${ROOT}/dist/statusline.js"` });
     assert.deepEqual(written.hooks, ourHooksFor(ROOT));
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -126,7 +150,7 @@ test("writeClaudeIntegration: replaces a non-kankaku statusLine", () => {
     const result = writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
     assert.equal(result.changed, true);
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
-    assert.equal(written.statusLine.command, `node "${ROOT}/src/statusline.ts"`);
+    assert.equal(written.statusLine.command, `node "${ROOT}/dist/statusline.js"`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -158,7 +182,7 @@ test("removeClaudeIntegration: removes exactly our statusLine and hooks, preserv
     const settingsPath = join(dir, "settings.json");
     const original = {
       model: "claude-fable-5-1",
-      statusLine: { type: "command", command: `node "${ROOT}/src/statusline.ts"` },
+      statusLine: { type: "command", command: `node "${ROOT}/dist/statusline.js"` },
       hooks: ourHooksFor(ROOT),
       permissions: { allow: [] },
     };
@@ -203,6 +227,26 @@ test("removeClaudeIntegration: drops an event array once it is empty, and the ho
 
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.equal("hooks" in written, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeClaudeIntegration: removes a legacy src-form statusLine and hooks", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const legacyHooks = {
+      SessionStart: [{ hooks: [{ type: "command", command: `node "${ROOT}/src/hook.ts"`, timeout: 15 }] }],
+    };
+    const original = { model: "x", statusLine: { type: "command", command: `node "${ROOT}/src/statusline.ts"` }, hooks: legacyHooks };
+    writeFileSync(settingsPath, JSON.stringify(original, null, 2));
+
+    const result = removeClaudeIntegration(settingsPath);
+    assert.equal(result.changed, true);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(Object.keys(written), ["model"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -259,7 +303,7 @@ test("removeClaudeIntegration: backs up the original file before removing, and n
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
-    const originalText = JSON.stringify({ statusLine: { type: "command", command: `node "${ROOT}/src/statusline.ts"` }, hooks: ourHooksFor(ROOT) }, null, 2);
+    const originalText = JSON.stringify({ statusLine: { type: "command", command: `node "${ROOT}/dist/statusline.js"` }, hooks: ourHooksFor(ROOT) }, null, 2);
     writeFileSync(settingsPath, originalText);
 
     removeClaudeIntegration(settingsPath);

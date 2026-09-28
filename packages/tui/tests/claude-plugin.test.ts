@@ -15,8 +15,8 @@ function writeHooksJson(dir: string, hooks: Record<string, unknown>): void {
 }
 
 function writeHookScript(dir: string): void {
-  mkdirSync(join(dir, "src"), { recursive: true });
-  writeFileSync(join(dir, "src", "hook.ts"), "// fake\n");
+  mkdirSync(join(dir, "dist"), { recursive: true });
+  writeFileSync(join(dir, "dist", "hook.js"), "// fake\n");
 }
 
 // ---- locateClaudePlugin ----
@@ -49,11 +49,21 @@ test("locateClaudePlugin: throws when the override is missing hooks/hooks.json",
   }
 });
 
-test("locateClaudePlugin: throws when the override is missing src/hook.ts", () => {
+test("locateClaudePlugin: throws when the override is missing dist/hook.js", () => {
   const dir = makePluginDir();
   try {
     writeHooksJson(dir, {});
-    assert.throws(() => locateClaudePlugin(dir), /src\/hook\.ts/);
+    assert.throws(() => locateClaudePlugin(dir), /dist\/hook\.js/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("locateClaudePlugin: throws a 'run npm run build' message when hooks/hooks.json exists but dist/hook.js was never built", () => {
+  const dir = makePluginDir();
+  try {
+    writeHooksJson(dir, {});
+    assert.throws(() => locateClaudePlugin(dir), new RegExp(`run npm run build in ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} first`));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

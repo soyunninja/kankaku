@@ -77,13 +77,53 @@ test("detectAgents: claude-code is configured only when the statusLine AND hooks
   const facts = baseFacts();
   facts.claudeCode = {
     settingsPath: "/home/.claude/settings.json",
-    statusLineCommand: 'node "/home/dev/kankaku-claude/src/statusline.ts"',
+    statusLineCommand: 'node "/home/dev/kankaku-claude/dist/statusline.js"',
     hooksRoot: "/home/dev/kankaku-claude",
   };
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, true);
   assert.equal(claude!.present, true);
   assert.equal(claude!.detailNote, undefined);
+});
+
+test("detectAgents: claude-code with a legacy src-form statusLine and hooks at the same root is not configured, detailNote 'outdated statusLine and hooks'", () => {
+  const facts = baseFacts();
+  facts.claudeCode = {
+    settingsPath: "/home/.claude/settings.json",
+    statusLineCommand: 'node "/home/dev/kankaku-claude/src/statusline.ts"',
+    hooksRoot: "/home/dev/kankaku-claude",
+    hooksLegacy: true,
+  };
+  const [, , claude] = detectAgents(facts);
+  assert.equal(claude!.configured, false);
+  assert.equal(claude!.present, true);
+  assert.equal(claude!.detailNote, "outdated statusLine and hooks");
+});
+
+test("detectAgents: claude-code with only the statusLine on the legacy src form (hooks already dist) is not configured, detailNote 'outdated statusLine'", () => {
+  const facts = baseFacts();
+  facts.claudeCode = {
+    settingsPath: "/home/.claude/settings.json",
+    statusLineCommand: 'node "/home/dev/kankaku-claude/src/statusline.ts"',
+    hooksRoot: "/home/dev/kankaku-claude",
+    hooksLegacy: false,
+  };
+  const [, , claude] = detectAgents(facts);
+  assert.equal(claude!.configured, false);
+  assert.equal(claude!.detailNote, "outdated statusLine");
+});
+
+test("detectAgents: claude-code with only the hooks on the legacy src form (statusLine already dist) is not configured, detailNote 'outdated hooks'", () => {
+  const facts = baseFacts();
+  facts.claudeCode = {
+    settingsPath: "/home/.claude/settings.json",
+    statusLineCommand: 'node "/home/dev/kankaku-claude/dist/statusline.js"',
+    hooksRoot: "/home/dev/kankaku-claude",
+    hooksLegacy: true,
+  };
+  const [, , claude] = detectAgents(facts);
+  assert.equal(claude!.configured, false);
+  assert.equal(claude!.detailNote, "outdated hooks");
 });
 
 test("detectAgents: claude-code with an unrelated statusLine is present but not configured", () => {
@@ -104,7 +144,7 @@ test("detectAgents: claude-code with no statusLine and no hooks at all is presen
 
 test("detectAgents: claude-code with only the statusLine set is not configured, detailNote 'statusLine only'", () => {
   const facts = baseFacts();
-  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/src/statusline.ts"', hooksRoot: undefined };
+  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/dist/statusline.js"', hooksRoot: undefined };
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, false);
   assert.equal(claude!.detailNote, "statusLine only");
@@ -120,7 +160,7 @@ test("detectAgents: claude-code with only hooks set is not configured, detailNot
 
 test("detectAgents: claude-code with hooks and statusLine pointing at different roots is not configured, detailNote names both", () => {
   const facts = baseFacts();
-  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/a/kankaku-claude/src/statusline.ts"', hooksRoot: "/b/kankaku-claude" };
+  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/a/kankaku-claude/dist/statusline.js"', hooksRoot: "/b/kankaku-claude" };
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, false);
   assert.equal(claude!.detailNote, "hooks point at /b/kankaku-claude, statusLine at /a/kankaku-claude");

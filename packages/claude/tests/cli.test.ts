@@ -144,15 +144,15 @@ test("runCli status lists each session's id, pid liveness, open prompt and last 
   }
 });
 
-test("runCli setup prints the statusLine snippet with an absolute, existing statusline.ts path", async () => {
+test("runCli setup prints the statusLine snippet with an absolute, existing statusline.js path under dist/", async () => {
   const { dir, homeDir, deps } = tmpDeps();
   try {
     const result = await runCli(["setup"], deps);
     assert.equal(result.exitCode, 0);
-    const match = result.stdout.match(/([^\s"\\]+\/src\/statusline\.ts)/);
-    assert.ok(match, "expected the snippet to contain a path ending in /src/statusline.ts");
+    const match = result.stdout.match(/([^\s"\\]+\/dist\/statusline\.js)/);
+    assert.ok(match, "expected the snippet to contain a path ending in /dist/statusline.js");
     const path = match![1]!;
-    assert.ok(path.endsWith("/src/statusline.ts"));
+    assert.ok(path.endsWith("/dist/statusline.js"));
     assert.equal(existsSync(path), true);
     assert.ok(result.stdout.includes("statusLine"));
   } finally {
