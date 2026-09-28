@@ -1,0 +1,10 @@
+node_modules/
+# Local ODD planning artifacts
+odd/
+# Local kankaku data written while developing in this repo
+.kankaku/
+# CodeGraph local index
+.codegraph/
+.DS_Store
+# Local Pi runtime state
+.atl/
