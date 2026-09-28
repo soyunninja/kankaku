@@ -17,6 +17,7 @@
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm test --workspaces",
     "check": "npm run build -w kankaku && npm run check -w kankaku && npm run check -w kankaku-claude && npm run check -w kankaku-tui",
-    "release:version": "npm version $npm_config_v --workspaces --no-git-tag-version"
+    "release:version": "npm version $npm_config_v --workspaces --no-git-tag-version",
+    "publish:all": "npm publish -w kankaku && npm publish -w kankaku-claude && npm publish -w kankaku-tui"
   }
 }

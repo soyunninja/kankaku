@@ -50,9 +50,11 @@ running a single package's `check` directly assumes `packages/kankaku`
 was already built.
 
 Versions are lockstep: all three packages ship the same version number,
-bumped and released together. Release order is `kankaku` →
-`kankaku-claude` → `kankaku-tui`, since the latter two depend on the
-former. Each package keeps its own `CHANGELOG.md`.
+bumped and released together, even when only one of them changed. Each
+package keeps its own `CHANGELOG.md`. To release: bump every package to
+the new version, commit `chore(release): prepare <v>`, tag `v<v>`, then
+run `npm run publish:all`, which publishes in dependency order
+(`kankaku` → `kankaku-claude` → `kankaku-tui`).
 
 ## License
 
