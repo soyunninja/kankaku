@@ -76,12 +76,16 @@ same read-only report: one line per agent, one for the hub, one for
 
 ## Install
 
-Until the next kankaku release, this package depends on the sibling
-`kankaku` checkout via `file:../kankaku`, so both repos must sit next to
-each other on disk. Run `npm install` inside `kankaku-tui/`.
+```
+npm install -g kankaku-tui
+```
 
-Later, once published: `npm install -g kankaku-tui`. For now, run it from
-this repo with `npm run dev`.
+Then run `kankaku setup` (or just `kankaku` the first time) to configure
+the coding agents on this machine, the hub and your project roots. The
+package depends on the published `kankaku` library (`kankaku/domain`,
+`kankaku/hub`) and on `kankaku-hub` for the local hub installer; nothing
+else needs to be checked out. To work on this repo itself, run
+`npm install` inside it and `npm run dev`.
 
 ## Configuration
 
