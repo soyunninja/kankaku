@@ -106,7 +106,7 @@ export async function syncConfigured(
       await catalog.refresh();
       const snapshot = catalog.read();
       return new PocketBaseSink({
-        client, clients: snapshot?.clients ?? [], projects: snapshot?.projects ?? [],
+        client, clients: snapshot?.clients ?? [], projects: snapshot?.projects ?? [], tasks: snapshot?.tasks ?? [],
         machine: deps.env.KANKAKU_MACHINE || (deps.hostname ?? hostname)(),
         promptMode: promptMode(deps.env), syncRecords: deps.env.KANKAKU_SYNC_RECORDS !== "0",
         agent: "claude-code", plugin: "kankaku-claude", pluginVersion: packageVersion(),
