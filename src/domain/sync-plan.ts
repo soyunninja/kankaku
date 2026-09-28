@@ -17,7 +17,7 @@ import type { TaskView } from "./task-view.ts";
 export interface SyncState {
   /** High-watermark ISO timestamp: everything with `endedAt` at or before `syncedThrough - window` is considered done. `undefined` before the first successful sync. */
   syncedThrough?: string;
-  /** Content hash per task id (see {@link computeTaskContentHash}), pruned to the revisit window so the file stays small. */
+  /** Content hash per task id (see {@link computeTaskContentHash}), kept for as long as the task exists — never pruned by the revisit window (see {@link pruneHashes}). */
   hashes: Record<string, string>;
   /** The hub URL this state was synced against; a state written for a different URL is treated as absent (full sync). */
   target: string;
@@ -36,7 +36,8 @@ export interface SyncState {
    * `Clock`-based timestamp (ms) of the last real (non-short-circuited)
    * automatic sync attempt, persisted so the automatic path's throttle
    * (`KANKAKU_SYNC_MIN_INTERVAL_MINUTES`) holds across processes, not just
-   * within one. Never touched by a manual sync.
+   * within one. Written by every run that reaches the sink, manual or
+   * automatic; only the automatic path READS it to throttle itself.
    */
   lastRunAt?: number;
 }
@@ -51,7 +52,7 @@ export interface SyncPlanOptions {
 }
 
 export interface SyncPlan {
-  /** Tasks whose content changed (or were never synced) and therefore need a request, in chronological (`endedAt`) order. */
+  /** Tasks whose content changed (or were never synced) and therefore need a request: new work in the window oldest-first, then corrections to rows the hub already holds, newest-first (see {@link planSync}). */
   toSync: TaskView[];
   /** How many eligible tasks were skipped because their stored hash already matched — no request needed for them. */
   unchangedCount: number;
@@ -199,10 +200,10 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
   const knownAndChanged = isFullSync ? allCorrections : allCorrections.slice(0, MAX_CORRECTIONS_PER_RUN);
   const correctionsDeferred = allCorrections.length - knownAndChanged.length;
   const toSync = [...eligible.filter(changed), ...knownAndChanged];
-  // R3: cheap, pure visibility into a task that changed but that this
-  // incremental run's window will not re-evaluate — see SyncPlan's doc
-  // comment. No extra work: `outsideWindow` is already computed above,
-  // this just re-applies the same hash-mismatch check to it.
+  // R3: cheap, pure visibility into a task this incremental run's window
+  // will not look at and that this hub has NEVER received (no stored hash)
+  // — see SyncPlan's doc comment. A known row that changed is a correction
+  // and is handled above, not reported here.
   const staleOutsideWindow = outsideWindow.filter((task) => hashes[task.id] === undefined);
 
   return { toSync, unchangedCount: eligible.length - eligible.filter(changed).length, isFullSync, staleOutsideWindow, correctionsDeferred };

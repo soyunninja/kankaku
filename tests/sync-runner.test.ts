@@ -692,3 +692,23 @@ test("switching hubs starts from an empty state: the old hub's hashes and waterm
   assert.equal(written.syncedThrough, iso(10), "the watermark restarts from this run, not from the old hub's");
   assert.deepEqual(Object.keys(written.hashes), ["task-1"], "no hash from the old hub survives");
 });
+
+test("a sink that throws on the first run against a NEW hub never persists the old hub's hashes or watermark under the new target", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const throwingSink: WorkSink = {
+    push: async () => {
+      throw new Error("boom");
+    },
+  };
+  const stateStore = fakeStateStore({ target: "https://old-hub.example", syncedThrough: iso(500), hashes: { "task-1": "old" } });
+  const clock = makeClock();
+
+  const summary = await runSync({ log: fakeLog([orchestrator]), sink: throwingSink, stateStore: stateStore as never, clock, target: "http://127.0.0.1:8090" });
+
+  assert.equal(summary.error, "boom");
+  assert.equal(summary.syncedThrough, undefined, "the old hub's watermark is not reported as this hub's");
+  const written = stateStore._state()!;
+  assert.deepEqual(written.hashes, {}, "no hash from the old hub may be persisted under the new target");
+  assert.equal(written.syncedThrough, undefined);
+  assert.equal(written.target, "http://127.0.0.1:8090");
+});

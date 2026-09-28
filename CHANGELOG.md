@@ -3,6 +3,22 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## 0.8.2 — 2026-09-28
+
+### Fixed
+
+- **A failed first sync against a new hub no longer carries the old hub's
+  state over.** 0.8.1 ignored a `sync-state.json` written for another hub
+  on the successful path, but when the very first run against the new hub
+  failed (a throwing sink, an unreachable hub) the error path still
+  persisted the old hub's watermark and hashes under the new URL, so the
+  next run skipped every task as "unchanged" again. Every path in
+  `adapters/sync-runner.ts` (summary, lock, error, success) now applies the
+  same gate. Stale comments in `domain/sync-plan.ts` and `AGENTS.md` that
+  described `hashes` as pruned to the window and `staleOutsideWindow` as
+  "changed" tasks are corrected: hashes are kept for as long as the task
+  exists, and the count is tasks this hub has never received.
+
 ## 0.8.1 — 2026-09-28
 
 ### Fixed

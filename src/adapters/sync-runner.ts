@@ -125,11 +125,18 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
   try {
     lockAcquired = deps.stateStore.tryLock();
     if (!lockAcquired) {
-      const state = deps.stateStore.read();
+      const state = stateForTarget(deps, deps.stateStore.read());
       return { ...emptySummary(deps.clock.now() - startedAt, state?.syncedThrough), locked: true };
     }
 
     const state = deps.stateStore.read();
+    // A state from another hub is ignored wholesale, on EVERY path below
+    // (the summary, the error path, and the successful merge): its
+    // watermark and its hashes describe rows the configured hub does not
+    // have (mirrors `domain/sync-plan.ts#planSync`'s gate). `planSync`
+    // still receives the raw `state`, since it applies that same gate
+    // itself and its `target` comparison is what makes the run a full one.
+    const priorState = stateForTarget(deps, state);
     // Captured once, here, and persisted as-is below: this is the version
     // the tasks below were actually built from, not whatever the log might
     // become by the time an awaited push finishes.
@@ -144,10 +151,15 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
       // WorkSink implementations are expected never to throw, but this
       // runner must hold that guarantee even if one does.
       const message = error instanceof Error ? error.message : String(error);
-      const summary = emptySummary(deps.clock.now() - startedAt, state?.syncedThrough);
+      const summary = emptySummary(deps.clock.now() - startedAt, priorState?.syncedThrough);
       summary.skipped = plan.unchangedCount;
       summary.error = message;
-      persistError(deps, state, message, logVersionAtRead);
+      // `priorState`, never `state`: a throwing sink on the first run
+      // against a NEW hub must not carry the old hub's hashes and
+      // watermark over under the new target, or the next run would
+      // skip every task as "unchanged" (the exact bug 0.8.1 fixed on the
+      // successful path).
+      persistError(deps, priorState, message, logVersionAtRead);
       return summary;
     }
 
@@ -163,10 +175,6 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
     const unassigned = new Map<string, number>();
     let uploaded = 0;
     let updated = 0;
-    // A state from another hub is ignored wholesale: its watermark and its
-    // hashes describe rows the configured hub does not have (mirrors
-    // `domain/sync-plan.ts#planSync`'s gate).
-    const priorState = state !== undefined && state.target === deps.target ? state : undefined;
     let syncedThrough = priorState?.syncedThrough;
     let stopError: string | undefined;
     // Whether at least one task was actually resolved (pushed or recorded
@@ -200,8 +208,11 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
         progressed = true;
       } else {
         // "error": a network/timeout/5xx/auth failure. Stop here — nothing
-        // after this point in the (chronologically sorted) results is
-        // considered resolved, so syncedThrough does not advance past it.
+        // after this point in the results is considered resolved. The
+        // results follow `plan.toSync`'s order (new work oldest-first,
+        // then corrections newest-first), and `syncedThrough` is a max
+        // over what WAS resolved, so stopping early can only leave it
+        // lower, never advance it past an unresolved task.
         stopError = result.outcome.reason;
         break;
       }
@@ -243,6 +254,12 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
   }
 }
 
+/** `state` when it was written against `deps.target`; `undefined` (as if there were no state at all) when it belongs to another hub. */
+function stateForTarget(deps: SyncRunnerDeps, state: ReturnType<SyncStateStore["read"]>): ReturnType<SyncStateStore["read"]> {
+  return state !== undefined && state.target === deps.target ? state : undefined;
+}
+
+/** Persist a failed run. `state` must already be gated by {@link stateForTarget}: what it carries is re-written under `deps.target`. */
 function persistError(deps: SyncRunnerDeps, state: ReturnType<SyncStateStore["read"]>, message: string, logVersionAtRead: string | number | undefined): void {
   deps.stateStore.write({
     target: deps.target,

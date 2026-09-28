@@ -276,12 +276,15 @@ lives, the four core flows, how to run and release, and the gotchas.
   `task-view.ts`'s `Math.max(parentEnd, ...subagentSettledAt)`) stays
   eligible for an ordinary incremental sync no matter how long the
   directory then goes unsynced, as long as no *other* task's sync has since
-  advanced the watermark past it; once it has, only `sync all` picks the
-  late join back up — `planSync`'s `staleOutsideWindow` (surfaced by
-  `/kankaku sync status` as "N task(s) changed but fall outside the sync
-  window") makes that case visible instead of silent, and ONLY when the
-  task's content genuinely changed since it was last synced (G2): a task's
-  content hash (`computeTaskContentHash`) is kept in `sync-state.json`'s
+  advanced the watermark past it. Once it has, the task is either a row
+  the hub already holds — then it is a *correction*, still sent by an
+  ordinary sync (newest first, capped per run by
+  `MAX_CORRECTIONS_PER_RUN`, the rest deferred to later runs) — or a task
+  this hub has never received, which only `sync all` uploads; `planSync`'s
+  `staleOutsideWindow` (surfaced by `/kankaku sync status` as "N task(s)
+  never synced fall outside the sync window") makes that second case
+  visible instead of silent, and ONLY for tasks with no stored hash (G2):
+  a task's content hash (`computeTaskContentHash`) is kept in `sync-state.json`'s
   `hashes` **for as long as the task itself exists**, never pruned just
   because it fell outside the revisit window
   (`domain/sync-plan.ts#pruneHashes`) — pruning by window used to mean a
