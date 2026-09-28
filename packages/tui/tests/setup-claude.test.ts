@@ -273,3 +273,27 @@ test("removeClaudeIntegration: backs up the original file before removing, and n
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("writeClaudeIntegration: tolerates a malformed existing hook entry instead of throwing", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionStart: [null, { notHooks: true }, { hooks: "not-an-array" }] } }, null, 2));
+
+    assert.doesNotThrow(() => writeClaudeIntegration(settingsPath, ROOT, pluginHooks()));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeClaudeIntegration: tolerates a malformed existing hook entry instead of throwing", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionStart: [null, { notHooks: true }, ...ourHooksFor(ROOT).SessionStart] } }, null, 2));
+
+    assert.doesNotThrow(() => removeClaudeIntegration(settingsPath));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

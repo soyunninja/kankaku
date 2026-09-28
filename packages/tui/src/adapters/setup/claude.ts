@@ -41,8 +41,10 @@ function currentHooksObject(existing: Record<string, unknown>): Record<string, H
   return result;
 }
 
+/** Never throws on a malformed entry (e.g. `null`, or missing/non-array `hooks`) — treated as foreign, never ours. */
 function isOurHookEntry(entry: HookEventEntry): boolean {
-  return entry.hooks.some((hook) => ourHookCommandRoot(hook.command) !== undefined);
+  if (!entry || typeof entry !== "object" || !Array.isArray(entry.hooks)) return false;
+  return entry.hooks.some((hook) => hook && typeof hook.command === "string" && ourHookCommandRoot(hook.command) !== undefined);
 }
 
 function sameEntries(a: HookEventEntry[], b: HookEventEntry[]): boolean {

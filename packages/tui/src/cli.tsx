@@ -74,7 +74,7 @@ export interface CliDeps {
 }
 
 const USAGE =
-  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run] [--from-checkout <dir>]|doctor|hub install [--port N] [--owner-email E] [--owner-password P]|hub start|hub stop|hub status|hub upgrade|hub logs [-n N]] [--roots a,b] [--theme name]\n";
+  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run] [--from-checkout <dir>] [--claude-plugin-dir <dir>]|doctor|hub install [--port N] [--owner-email E] [--owner-password P]|hub start|hub stop|hub status|hub upgrade|hub logs [-n N]] [--roots a,b] [--theme name]\n";
 
 /** Load today's model for `roots`: discover projects, read their worklogs, build rows. */
 export function loadToday(roots: string[]): TodayModel {
@@ -599,13 +599,6 @@ function makeAsker(yes: boolean, prompter: Prompter | undefined): Prompter {
   };
 }
 
-/**
- * `kankaku setup [--yes] [--dry-run]`: detects every agent, prompts (or
- * takes each question's own default with `--yes`) for what to install or
- * configure, writes only what was confirmed, and ends with the same
- * report as `kankaku doctor`. `--dry-run` prints the plan and writes
- * nothing — no prompt is asked and no default is applied.
- */
 /** Tell the user what setup just did to a file: nothing is written silently. */
 function announceWrite(deps: CliDeps, file: string, result: { changed: boolean }): void {
   deps.stdout(result.changed ? `wrote ${file}` : `unchanged ${file}`);
@@ -617,6 +610,17 @@ function fromCheckoutFlag(args: string[]): string | undefined {
   return index === -1 ? undefined : args[index + 1];
 }
 
+/**
+ * `kankaku setup [--yes] [--dry-run] [--from-checkout <dir>] [--claude-plugin-dir <dir>]`:
+ * detects every agent, prompts (or takes each question's own default with
+ * `--yes`) for what to install or configure, writes only what was
+ * confirmed, and ends with the same report as `kankaku doctor`.
+ * `--dry-run` prints the plan and writes nothing — no prompt is asked and
+ * no default is applied. `--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR`
+ * override the resolved `kankaku-claude` plugin root (see
+ * `resolveClaudePluginOverride`); without either, the bundled package is
+ * used.
+ */
 async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const yes = args.includes("--yes");
