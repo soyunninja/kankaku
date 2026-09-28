@@ -53,7 +53,9 @@ export function backupOnce(filePath: string): void {
     return;
   }
 
-  writeFileSync(backupPath, readFileSync(filePath));
+  // Created owner-only from the first byte when the source is: a chmod
+  // after the write would leave a window where the secret is readable.
+  writeFileSync(backupPath, readFileSync(filePath), sourceIsOwnerOnly ? { mode: OWNER_FILE_MODE } : {});
   if (sourceIsOwnerOnly) tightenBestEffort(backupPath);
 }
 
