@@ -3,6 +3,19 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## 0.8.1 — 2026-09-28
+
+### Fixed
+
+- **Switching hubs starts from an empty sync state.** `sync-state.json`
+  records the hub URL it was synced against, and a state from another hub
+  already forced a full sync, but its content hashes were still consulted,
+  so every task the old hub knew looked "unchanged" and the new hub
+  received nothing (`uploaded 0, skipped N`). The runner also carried the
+  old hub's watermark and hashes into the new state. Both now ignore a
+  state whose `target` is not the configured hub (`domain/sync-plan.ts`,
+  `adapters/sync-runner.ts`).
+
 ## 0.8.0 — 2026-09-27
 
 ### Added

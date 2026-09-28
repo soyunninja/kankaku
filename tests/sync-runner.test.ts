@@ -675,3 +675,20 @@ test("singleFlight: a call after the previous one resolved starts a fresh run", 
   assert.equal(await wrapped(), 2);
   assert.equal(calls, 2);
 });
+
+test("switching hubs starts from an empty state: the old hub's hashes and watermark are neither used nor carried over", async () => {
+  const record = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const { sink, calls } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  const stateStore = fakeStateStore({ target: "https://old-hub.example", syncedThrough: iso(500), hashes: { "task-1": "stale-hash", "gone": "x" } });
+  const clock = makeClock();
+
+  const summary = await runSync({ log: fakeLog([record]), sink, stateStore: stateStore as never, clock, target: "http://127.0.0.1:8090" });
+
+  assert.equal(summary.uploaded, 1, "the task must be pushed to the new hub even though the old state knew it");
+  assert.equal(summary.skipped, 0);
+  assert.deepEqual(calls.map((batch) => batch.map((t) => t.id)), [["task-1"]]);
+  const written = stateStore._state()!;
+  assert.equal(written.target, "http://127.0.0.1:8090");
+  assert.equal(written.syncedThrough, iso(10), "the watermark restarts from this run, not from the old hub's");
+  assert.deepEqual(Object.keys(written.hashes), ["task-1"], "no hash from the old hub survives");
+});

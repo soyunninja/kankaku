@@ -177,7 +177,11 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
     outsideWindow = sorted.filter((task) => Date.parse(task.endedAt) <= cutoff);
   }
 
-  const hashes = state?.hashes ?? {};
+  // A state written for another hub contributes nothing, not even its
+  // hashes: the new hub has none of these rows, so a task that matched
+  // the OLD hub's hash must still be pushed. `isFullSync` alone only
+  // widened the window; without this gate every task looked "unchanged".
+  const hashes = state !== undefined && state.target === options.target ? state.hashes : {};
   const changed = (task: TaskView): boolean => hashes[task.id] !== computeTaskContentHash(task);
   // A row the hub ALREADY holds is corrected wherever it sits: the window
   // bounds how far back NEW work is looked for, never whether a known row

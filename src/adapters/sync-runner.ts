@@ -163,7 +163,11 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
     const unassigned = new Map<string, number>();
     let uploaded = 0;
     let updated = 0;
-    let syncedThrough = state?.syncedThrough;
+    // A state from another hub is ignored wholesale: its watermark and its
+    // hashes describe rows the configured hub does not have (mirrors
+    // `domain/sync-plan.ts#planSync`'s gate).
+    const priorState = state !== undefined && state.target === deps.target ? state : undefined;
+    let syncedThrough = priorState?.syncedThrough;
     let stopError: string | undefined;
     // Whether at least one task was actually resolved (pushed or recorded
     // as failed) this run — as opposed to the run stopping on its very
@@ -203,7 +207,7 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
       }
     }
 
-    const mergedHashes = { ...(state?.hashes ?? {}), ...Object.fromEntries(newHashes) };
+    const mergedHashes = { ...(priorState?.hashes ?? {}), ...Object.fromEntries(newHashes) };
     // G2: no longer window-bound — see `domain/sync-plan.ts#pruneHashes`'s
     // doc comment. `tasks` here is every task `buildTasks` currently knows
     // about (the full `readAll()`, not just this run's eligible/window

@@ -441,3 +441,17 @@ test("computeTaskContentHash of a legacy task (no who-measured identity) is byte
   };
   assert.equal(computeTaskContentHash(buildTasks([legacy])[0]!), "0e721354");
 });
+
+test("a state written for another hub contributes nothing: every task is toSync and none counts as unchanged", () => {
+  const task = makeTask("a", 0, 10);
+  const stateFromOtherHub: SyncState = {
+    target: "https://old-hub.example",
+    syncedThrough: iso(10),
+    hashes: { a: computeTaskContentHash(task) },
+  };
+
+  const plan = planSync([task], stateFromOtherHub, { target: "http://127.0.0.1:8090" });
+
+  assert.deepEqual(plan.toSync.map((t) => t.id), ["a"]);
+  assert.equal(plan.unchangedCount, 0);
+});
