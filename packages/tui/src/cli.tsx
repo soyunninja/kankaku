@@ -34,7 +34,8 @@ import type { AgentStatus, HubPlanFacts, TuiPlanFacts } from "./domain/setup-pla
 import type { ApplyResult, WizardAction, WizardFacts, WizardState } from "./domain/setup-wizard.ts";
 import { readAgentFacts } from "./adapters/setup/agents.ts";
 import { addKankakuPackage, removeKankakuPackage } from "./adapters/setup/pi.ts";
-import { removeStatusLine, writeStatusLine } from "./adapters/setup/claude.ts";
+import { removeClaudeIntegration, writeClaudeIntegration } from "./adapters/setup/claude.ts";
+import { locateClaudePlugin, readPluginHooks } from "./adapters/setup/claude-plugin.ts";
 import { checkHubHealth, credentialsPath, writeHubCredentials } from "./adapters/setup/hub.ts";
 import { tuiConfigPath, writeTuiConfig } from "./adapters/setup/tui-config.ts";
 import { installLocalHub } from "./adapters/setup/local-hub.ts";
@@ -55,7 +56,7 @@ export interface CliDeps {
   stdout: (text: string) => void;
   stderr: (text: string) => void;
   exit: (code: number) => void;
-  renderApp: (roots: string[], theme: Theme, options?: { startInWizard?: boolean }) => void;
+  renderApp: (roots: string[], theme: Theme, options?: { startInWizard?: boolean; claudePluginDir?: string }) => void;
   /** Whether stdout is a real terminal; drives `kankaku setup`'s TTY-vs-readline split. Injectable for tests; defaults to `false` when omitted, so every existing test keeps exercising the readline flow. */
   isTTY?: () => boolean;
   /** Injectable for tests; defaults to `process.env` at the real entry point. */
@@ -387,15 +388,17 @@ async function performLocalHubInstallFromCheckout(checkout: string, deps: CliDep
  * Apply one planned `WizardAction` for real, through the matching
  * `adapters/setup/*` writer. Several kinds need a value `planFromWizard`
  * never put in the action itself (`file` is always the target path, not
- * what to write) — `state` carries it: `state.claudeCheckout` for
- * `write-claude`, `state.hub` for `write-hub`/`install-local-hub`,
- * `state.roots` for `write-roots`. `install-local-hub` runs the real
- * `hub-manager/install.ts#installHub` (which writes `accounts.json` and
- * `~/.kankaku/credentials.json` itself), reporting every install step in
- * the result detail. Never throws: any adapter failure becomes an
- * `"error"` outcome instead.
+ * what to write) — `state` carries it: `state.hub` for
+ * `write-hub`/`install-local-hub`, `state.roots` for `write-roots`.
+ * `write-claude` resolves the plugin root itself (`claudePluginOverride`,
+ * `--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR` — see
+ * `runCli`/`resolveClaudePluginOverride`), never from wizard state.
+ * `install-local-hub` runs the real `hub-manager/install.ts#installHub`
+ * (which writes `accounts.json` and `~/.kankaku/credentials.json`
+ * itself), reporting every install step in the result detail. Never
+ * throws: any adapter failure becomes an `"error"` outcome instead.
  */
-async function applyWizardAction(action: WizardAction, state: WizardState, deps: CliDeps): Promise<ApplyResult> {
+async function applyWizardAction(action: WizardAction, state: WizardState, deps: CliDeps, claudePluginOverride: string | undefined): Promise<ApplyResult> {
   try {
     switch (action.kind) {
       case "install-pi": {
@@ -407,11 +410,12 @@ async function applyWizardAction(action: WizardAction, state: WizardState, deps:
         return { action, outcome: result.changed ? "removed" : "unchanged" };
       }
       case "write-claude": {
-        const result = writeStatusLine(action.file, state.claudeCheckout);
+        const { root } = locateClaudePlugin(claudePluginOverride);
+        const result = writeClaudeIntegration(action.file, root, readPluginHooks(root));
         return { action, outcome: result.changed ? "wrote" : "unchanged" };
       }
       case "remove-claude": {
-        const result = removeStatusLine(action.file);
+        const result = removeClaudeIntegration(action.file);
         return { action, outcome: result.changed ? "removed" : "unchanged" };
       }
       case "write-hub": {
@@ -435,11 +439,16 @@ async function applyWizardAction(action: WizardAction, state: WizardState, deps:
 }
 
 /** Build the setup wizard's `WizardActions` for the interactive app: every write goes through the same real `adapters/setup/*` writers `kankaku setup --yes` uses. Used only by `renderApp`. */
-function buildWizardActions(deps: CliDeps): WizardActions {
+function buildWizardActions(deps: CliDeps, claudePluginOverride: string | undefined): WizardActions {
   return {
-    apply: (action, state) => applyWizardAction(action, state, deps),
+    apply: (action, state) => applyWizardAction(action, state, deps, claudePluginOverride),
     checkHealth: (url) => checkHubHealth(url, { fetch: deps.fetch }),
   };
+}
+
+/** `--claude-plugin-dir <dir>`'s value when given, else `KANKAKU_CLAUDE_PLUGIN_DIR`; `undefined` resolves to the bundled `kankaku-claude` package (see `adapters/setup/claude-plugin.ts#locateClaudePlugin`). */
+function resolveClaudePluginOverride(args: string[], env: NodeJS.ProcessEnv | undefined): string | undefined {
+  return flagValue(args, "--claude-plugin-dir") ?? env?.["KANKAKU_CLAUDE_PLUGIN_DIR"];
 }
 
 /** `<value> <unit>`, picking the largest unit that keeps `bytes` at least 1 (`B`/`KB`/`MB`/`GB`), one decimal place past `B`. */
@@ -577,18 +586,6 @@ async function runHubCommand(args: string[], deps: CliDeps): Promise<void> {
   deps.exit(1);
 }
 
-/**
- * Extract a plausible kankaku-claude checkout path from an existing
- * `statusLine.command` of the shape `node "<checkout>/src/statusline.ts"`,
- * whatever package it currently points at — used as the `text()` prompt's
- * default. `undefined` when the command doesn't match that shape at all.
- */
-function guessClaudeCheckout(existingCommand: string | undefined): string | undefined {
-  if (!existingCommand) return undefined;
-  const match = /^node\s+"(.+)\/src\/statusline\.ts"$/.exec(existingCommand.trim());
-  return match ? match[1] : undefined;
-}
-
 /** Answers one question at a time: `--yes` always takes `defaultValue` without touching `prompter`; otherwise a `Prompter` must have been injected. */
 function makeAsker(yes: boolean, prompter: Prompter | undefined): Prompter {
   function requirePrompter(): Prompter {
@@ -624,12 +621,23 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
   const dryRun = args.includes("--dry-run");
   const yes = args.includes("--yes");
   const fromCheckout = fromCheckoutFlag(args);
+  const claudePluginOverride = resolveClaudePluginOverride(args, deps.env);
 
   const initial = await gatherSetupFacts(deps);
   const steps = planSetup(initial.agents, initial.hub, initial.tui);
 
   if (dryRun) {
-    deps.stdout(formatSetupPlanLines(steps).join("\n"));
+    const lines = formatSetupPlanLines(steps);
+    const claudeStep = steps.find((step) => step.id === "claude-code");
+    if (claudeStep && claudeStep.file) {
+      try {
+        const { root } = locateClaudePlugin(claudePluginOverride);
+        lines.push(`Claude plugin root: ${root} (would write ${claudeStep.file})`);
+      } catch {
+        // The plugin isn't resolvable (e.g. not installed yet); the rest of the plan still prints.
+      }
+    }
+    deps.stdout(lines.join("\n"));
     return;
   }
 
@@ -642,11 +650,14 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
     if (step.state !== "todo") continue;
 
     if (agent.id === "claude-code") {
-      const doIt = await ask.confirm(`Configure Claude Code's statusLine for kankaku (${step.file})?`, true);
+      const doIt = await ask.confirm(`Configure Claude Code (statusLine + hooks) for kankaku (${step.file})?`, true);
       if (!doIt) continue;
-      const guessed = guessClaudeCheckout(readAgentFacts(deps.homeDir).claudeCode?.statusLineCommand) ?? "";
-      const checkoutPath = await ask.text("Path to your kankaku-claude checkout", guessed);
-      if (checkoutPath !== "") announceWrite(deps, step.file, writeStatusLine(step.file, checkoutPath));
+      try {
+        const { root } = locateClaudePlugin(claudePluginOverride);
+        announceWrite(deps, step.file, writeClaudeIntegration(step.file, root, readPluginHooks(root)));
+      } catch (error) {
+        deps.stderr(`kankaku setup: could not configure Claude Code: ${error instanceof Error ? error.message : String(error)}\n`);
+      }
       continue;
     }
 
@@ -764,7 +775,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
     const setupArgs = rest.slice(1);
     const interactiveTTY = !setupArgs.includes("--yes") && !setupArgs.includes("--dry-run") && !setupArgs.includes("--from-checkout") && (deps.isTTY?.() ?? false);
     if (interactiveTTY) {
-      deps.renderApp(roots, theme, { startInWizard: true });
+      deps.renderApp(roots, theme, { startInWizard: true, claudePluginDir: resolveClaudePluginOverride(setupArgs, deps.env) });
       return;
     }
     await runSetupCommand(setupArgs, deps);
@@ -950,7 +961,7 @@ if (isMain) {
             catalog={catalogScreenDeps(realDeps)}
             sync={syncScreenDeps(realDeps, roots)}
             dashboardActions={dashboardActionsDeps(realDeps, roots)}
-            wizard={{ facts: gatherWizardFacts(realDeps), actions: buildWizardActions(realDeps) }}
+            wizard={{ facts: gatherWizardFacts(realDeps), actions: buildWizardActions(realDeps, options?.claudePluginDir ?? process.env["KANKAKU_CLAUDE_PLUGIN_DIR"]) }}
             startInWizard={options?.startInWizard}
           />
         </ThemeProvider>,

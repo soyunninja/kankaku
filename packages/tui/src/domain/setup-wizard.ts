@@ -8,7 +8,7 @@
 import { detectAgents } from "./setup-plan.ts";
 import type { AgentDetectionFacts, AgentId, AgentStatus } from "./setup-plan.ts";
 
-export type WizardStep = "agents" | "claude" | "hub" | "roots" | "review" | "apply" | "done";
+export type WizardStep = "agents" | "hub" | "roots" | "review" | "apply" | "done";
 
 export type HubMode = "existing" | "local" | "skip";
 
@@ -24,7 +24,7 @@ export interface WizardHubState {
   ownerPassword: string;
 }
 
-export type WizardErrorKey = "claudeCheckout" | "url" | "email" | "password" | "roots" | "ownerEmail" | "ownerPassword";
+export type WizardErrorKey = "url" | "email" | "password" | "roots" | "ownerEmail" | "ownerPassword";
 
 export type WizardActionKind = "install-pi" | "remove-pi" | "write-claude" | "remove-claude" | "write-hub" | "install-local-hub" | "write-roots";
 
@@ -48,7 +48,6 @@ export interface WizardState {
   step: WizardStep;
   agents: AgentStatus[];
   selected: Record<AgentId, boolean>;
-  claudeCheckout: string;
   hub: WizardHubState;
   roots: string[];
   errors: Partial<Record<WizardErrorKey, string>>;
@@ -87,15 +86,6 @@ export interface WizardKeyHint {
   label: string;
 }
 
-const CLAUDE_STATUS_LINE_RE = /^node "(.+)\/src\/statusline\.ts"$/;
-
-/** The inverse of `adapters/setup/claude.ts#statusLineCommand`: recovers the checkout path from an existing `statusLine.command`, or `""` when it isn't kankaku's. */
-export function guessClaudeCheckout(statusLineCommand: string | undefined): string {
-  if (!statusLineCommand) return "";
-  const match = CLAUDE_STATUS_LINE_RE.exec(statusLineCommand);
-  return match ? match[1]! : "";
-}
-
 /**
  * Shorten `path` for display by replacing a leading `homeDir` with `~`.
  * Only a real path-boundary match counts (`homeDir` itself, or `homeDir`
@@ -132,7 +122,6 @@ export function createWizardState(facts: WizardFacts): WizardState {
     step: "agents",
     agents,
     selected,
-    claudeCheckout: guessClaudeCheckout(facts.agentFacts.claudeCode?.statusLineCommand),
     hub: {
       mode: facts.hub.credentialsPresent ? "existing" : "skip",
       url: facts.hub.url ?? "",
@@ -148,19 +137,9 @@ export function createWizardState(facts: WizardFacts): WizardState {
   };
 }
 
-/** Whether the Claude Code step should be shown: Claude is selected and not already configured. Exported so `ui/setup/wizard-screen.tsx` can number only the steps that will actually be shown for this run. */
-export function claudeStepNeeded(state: WizardState): boolean {
-  const claude = state.agents.find((agent) => agent.id === "claude-code");
-  return state.selected["claude-code"] === true && claude !== undefined && !claude.configured;
-}
-
 export function toggleAgent(state: WizardState, id: AgentId): WizardState {
   if (id === "codex" || id === "opencode") return state;
   return { ...state, selected: { ...state.selected, [id]: !state.selected[id] } };
-}
-
-export function setClaudeCheckout(state: WizardState, value: string): WizardState {
-  return { ...state, claudeCheckout: value, errors: clearError(state.errors, "claudeCheckout") };
 }
 
 export function setHubMode(state: WizardState, mode: HubMode): WizardState {
@@ -234,8 +213,8 @@ export function planFromWizard(state: WizardState, facts: WizardFacts): WizardAc
     if (selected !== claude.configured) {
       actions.push(
         selected
-          ? { kind: "write-claude", file: claude.detail, label: `set the Claude Code status line (${claude.detail})` }
-          : { kind: "remove-claude", file: claude.detail, label: `remove the kankaku status line from Claude Code (${claude.detail})` },
+          ? { kind: "write-claude", file: claude.detail, label: `configure Claude Code (statusLine + hooks) in ${claude.detail}` }
+          : { kind: "remove-claude", file: claude.detail, label: `remove kankaku from Claude Code (${claude.detail})` },
       );
     }
   }
@@ -266,14 +245,7 @@ export function planFromWizard(state: WizardState, facts: WizardFacts): WizardAc
 export function next(state: WizardState, facts: WizardFacts): WizardState {
   switch (state.step) {
     case "agents":
-      return { ...state, step: claudeStepNeeded(state) ? "claude" : "hub", errors: {} };
-
-    case "claude": {
-      if (state.claudeCheckout.trim() === "") {
-        return { ...state, errors: { ...state.errors, claudeCheckout: "enter the kankaku-claude checkout path (packages/claude in a kankaku checkout)" } };
-      }
-      return { ...state, step: "hub", errors: clearError(state.errors, "claudeCheckout") };
-    }
+      return { ...state, step: "hub", errors: {} };
 
     case "hub": {
       const hubErrors = validateHub(state.hub);
@@ -302,15 +274,13 @@ export function next(state: WizardState, facts: WizardFacts): WizardState {
   }
 }
 
-/** Move back to the previous step, mirroring `next`'s claude-step skip. Terminal/first steps (`agents`, `apply`, `done`) are no-ops. */
+/** Move back to the previous step. Terminal/first steps (`agents`, `apply`, `done`) are no-ops. */
 export function back(state: WizardState): WizardState {
   switch (state.step) {
     case "agents":
       return state;
-    case "claude":
-      return { ...state, step: "agents", errors: {} };
     case "hub":
-      return { ...state, step: claudeStepNeeded(state) ? "claude" : "agents", errors: {} };
+      return { ...state, step: "agents", errors: {} };
     case "roots":
       return { ...state, step: "hub", errors: {} };
     case "review":
@@ -333,8 +303,6 @@ export function hintsForStep(step: WizardStep): WizardKeyHint[] {
     case "agents":
       // The first step: esc quits (handled by the caller), so it isn't hinted as "back" here.
       return [{ key: "space", label: "toggle" }, { key: "↑↓", label: "move" }, { key: "enter", label: "next" }, quit];
-    case "claude":
-      return [{ key: "enter", label: "next" }, { key: "esc", label: "back" }, quit];
     case "hub":
       return [{ key: "↑↓", label: "choose" }, { key: "enter", label: "next" }, { key: "esc", label: "back" }, quit];
     case "roots":

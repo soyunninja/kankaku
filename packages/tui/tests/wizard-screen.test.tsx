@@ -82,33 +82,12 @@ test("Agents step: Space toggles the cursor row's selection, disabled rows never
   assert.equal((lastFrame() ?? "").includes("not installed"), true);
 });
 
-test("Claude step: Enter with an empty checkout shows the error and stays on the step", async () => {
-  const { actions } = fakeActions();
-  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
-
-  stdin.write("\u001B[B"); // pi -> gentle-shell
-  await nextTick();
-  stdin.write("\u001B[B"); // gentle-shell -> claude-code
-  await nextTick();
-  stdin.write(" "); // select claude-code
-  await nextTick();
-  stdin.write("\r"); // agents -> claude (selected, not configured)
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Claude"), true);
-
-  stdin.write("\r"); // submit an empty checkout
-  await nextTick();
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("Setup · Claude"), true);
-  assert.equal(frame.includes("enter the kankaku-claude checkout path"), true);
-});
-
 test("Hub step (existing mode): 'c' runs the health check and shows the result", async () => {
   const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://hub.example.com", email: "a@b.com", password: "s", credentialsPath: "/home/.kankaku/credentials.json" } });
   const { actions, calls } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
-  stdin.write("\r"); // agents -> hub (claude not selected: skipped)
+  stdin.write("\r"); // agents -> hub (there is no separate Claude step)
   await nextTick();
   assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
   assert.equal((lastFrame() ?? "").includes("hub.example.com"), true);
@@ -232,7 +211,18 @@ test("no sidebar: no left-hand step list with a › step marker or ✓ completed
   assert.equal(frame.includes("✓ Hub"), false);
 });
 
-test("title carries progress numbering: Agents 1/5 once Claude Code is selected", async () => {
+test("title carries progress numbering across steps: Agents 1/4 -> Hub 2/4", async () => {
+  const { actions } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+
+  assert.equal((lastFrame() ?? "").includes("Setup · Agents 1/4"), true);
+
+  stdin.write("\r"); // agents -> hub
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Hub 2/4"), true);
+});
+
+test("title numbering stays at 1/4 even when Claude Code is selected (no separate Claude step)", async () => {
   const { actions } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
@@ -240,20 +230,9 @@ test("title carries progress numbering: Agents 1/5 once Claude Code is selected"
   await nextTick();
   stdin.write("\u001B[B"); // gentle-shell -> claude-code
   await nextTick();
-  stdin.write(" "); // select claude-code (not configured -> the Claude step is needed)
+  stdin.write(" "); // select claude-code
   await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Agents 1/5"), true);
-});
-
-test("title numbers only the steps shown this run: Claude skipped drops the total to 4", async () => {
-  const { actions } = fakeActions();
-  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
-
   assert.equal((lastFrame() ?? "").includes("Setup · Agents 1/4"), true);
-
-  stdin.write("\r"); // agents -> hub (claude not selected)
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Hub 2/4"), true);
 });
 
 test("title has no numbering on Done", async () => {

@@ -4,12 +4,10 @@ import {
   DEFAULT_HUB_PORT,
   applyResult,
   back,
-  claudeStepNeeded,
   createWizardState,
   hintsForStep,
   next,
   planFromWizard,
-  setClaudeCheckout,
   setHubField,
   setHubHealth,
   setHubMode,
@@ -41,12 +39,15 @@ const FOOTER_ROWS = 1;
 /**
  * The wizard's own dependency surface, built by `cli.tsx` from the real
  * `adapters/setup/*` writers: `apply` carries the current `WizardState`
- * alongside the plan `WizardAction`, since several actions (`write-claude`,
- * `write-hub`, `write-roots`) need a value that never made it into the
- * action itself (see `domain/setup-wizard.ts#planFromWizard` — `file` is
- * always the target path, never the checkout/credentials/roots to write).
- * `install-local-hub` itself (`hub-manager/install.ts#installHub`) runs
- * entirely inside `apply`; the UI never calls it directly.
+ * alongside the plan `WizardAction`, since several actions (`write-hub`,
+ * `write-roots`) need a value that never made it into the action itself
+ * (see `domain/setup-wizard.ts#planFromWizard` — `file` is always the
+ * target path, never the credentials/roots to write). `write-claude`
+ * resolves the bundled `kankaku-claude` plugin's root itself (`cli.tsx`'s
+ * own `--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR` override), so the
+ * wizard never asks for a checkout path. `install-local-hub` itself
+ * (`hub-manager/install.ts#installHub`) runs entirely inside `apply`; the
+ * UI never calls it directly.
  */
 export interface WizardActions {
   apply(action: WizardAction, state: WizardState): Promise<ApplyResult>;
@@ -66,10 +67,9 @@ export interface SetupWizardProps {
   rows?: number;
 }
 
-/** Panel titles for every step. Used verbatim for `apply`/`done` (never numbered); `agents`/`claude`/`hub`/`roots`/`review` get a `n/total` suffix from {@link panelTitle}. */
+/** Panel titles for every step. Used verbatim for `apply`/`done` (never numbered); `agents`/`hub`/`roots`/`review` get a `n/total` suffix from {@link panelTitle}. */
 const STEP_TITLES: Record<WizardStep, string> = {
   agents: "Agents",
-  claude: "Claude Code",
   hub: "Hub",
   roots: "Roots",
   review: "Review",
@@ -77,20 +77,14 @@ const STEP_TITLES: Record<WizardStep, string> = {
   done: "Done",
 };
 
-/** The steps a run numbers in its panel title, in order; `claude` is dropped from this list when the run doesn't need it (see {@link numberedStepsForRun}). `apply` and `done` are never numbered — `apply` is Review's own execution and `done` is the terminal summary. */
-const NUMBERED_STEPS: WizardStep[] = ["agents", "claude", "hub", "roots", "review"];
+/** The steps every run numbers in its panel title, in order. `apply` and `done` are never numbered — `apply` is Review's own execution and `done` is the terminal summary. */
+const NUMBERED_STEPS: WizardStep[] = ["agents", "hub", "roots", "review"];
 
-/** The steps that will actually be shown for this run, e.g. `["agents", "hub", "roots", "review"]` when Claude Code is skipped. */
-function numberedStepsForRun(state: WizardState): WizardStep[] {
-  return NUMBERED_STEPS.filter((step) => step !== "claude" || claudeStepNeeded(state));
-}
-
-/** `[ Setup · Agents 1/5 ]`-style progress title: `n/total` over only the steps this run will show; `apply`/`done` render unnumbered. */
+/** `[ Setup · Agents 1/4 ]`-style progress title; `apply`/`done` render unnumbered. */
 function panelTitle(state: WizardState): string {
   const title = STEP_TITLES[state.step];
-  const steps = numberedStepsForRun(state);
-  const index = steps.indexOf(state.step);
-  return index === -1 ? `Setup · ${title}` : `Setup · ${title} ${index + 1}/${steps.length}`;
+  const index = NUMBERED_STEPS.indexOf(state.step);
+  return index === -1 ? `Setup · ${title}` : `Setup · ${title} ${index + 1}/${NUMBERED_STEPS.length}`;
 }
 
 const AGENT_TITLES: Record<AgentId, string> = {
@@ -162,9 +156,9 @@ function healthLine(healthOk: boolean | undefined, checking: boolean): string {
  * screen it renders its own header/panel/footer frame directly instead of
  * `ui/layout.tsx`'s `Layout` — there is no sidebar to show, since the
  * wizard's progress lives in the panel's own title instead (`panelTitle`,
- * e.g. `Setup · Agents 1/5`, numbering only the steps this run will
- * actually show — Claude Code is dropped when it isn't needed). Enter
- * advances (validating first), Esc goes back (quits from Agents, the
+ * e.g. `Setup · Agents 1/4`, over the four fixed steps: Agents, Hub,
+ * Roots, Review). Enter advances (validating first), Esc goes back
+ * (quits from Agents, the
  * first step, via `onQuit`); `q` quits from anywhere a text field isn't
  * currently capturing keystrokes.
  */
@@ -182,8 +176,7 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
   }, [state.step]);
 
   const hubFieldCount = state.hub.mode === "existing" ? 4 : state.hub.mode === "local" ? 3 : 1;
-  const textInputFocused =
-    state.step === "claude" || state.step === "roots" || (state.step === "hub" && hubFocus >= 1 && hubFocus < hubFieldCount);
+  const textInputFocused = state.step === "roots" || (state.step === "hub" && hubFocus >= 1 && hubFocus < hubFieldCount);
 
   useEffect(() => {
     if (state.step !== "apply" || applyStartedRef.current) return;
@@ -260,14 +253,6 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
               onMove={(delta) => setAgentCursor((c) => Math.min(Math.max(c + delta, 0), state.agents.length - 1))}
               focused
             />
-          )}
-
-          {state.step === "claude" && (
-            <Box flexDirection="column">
-              <Text>kankaku-claude checkout path (packages/claude in a kankaku checkout):</Text>
-              <TextInput value={state.claudeCheckout} onChange={(value) => setState((s) => setClaudeCheckout(s, value))} focused />
-              {state.errors.claudeCheckout && <Text color={theme.error}>{state.errors.claudeCheckout}</Text>}
-            </Box>
           )}
 
           {state.step === "hub" && (

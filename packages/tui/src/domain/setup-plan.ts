@@ -5,6 +5,8 @@
  * read the real files (`src/adapters/setup/*.ts`) and pass plain facts in.
  */
 
+import { ourStatusLineCommandRoot } from "./claude-integration.ts";
+
 export type AgentId = "pi" | "gentle-shell" | "claude-code" | "codex" | "opencode";
 
 export interface AgentStatus {
@@ -17,6 +19,15 @@ export interface AgentStatus {
   adapterAvailable: boolean;
   /** The settings file path when `present`, else `"not found"`. */
   detail: string;
+  /**
+   * Extra context for a partially-configured agent — currently only
+   * Claude Code, whose `configured` requires both the statusLine and
+   * hooks to be present and point at the same root: `"statusLine only"`,
+   * `"hooks only"`, or `"hooks point at <root>, statusLine at <root>"`
+   * when they disagree. `undefined` when fully configured, absent, or
+   * for every other agent.
+   */
+  detailNote?: string;
 }
 
 /** A pi-family settings file (`pi`, `gentle-shell`): `{ packages: string[], ... }`. */
@@ -25,10 +36,12 @@ export interface SettingsPackagesFacts {
   packages: string[];
 }
 
-/** Claude Code's `~/.claude/settings.json`: only the `statusLine.command` field matters here. */
+/** Claude Code's `~/.claude/settings.json`: the `statusLine.command` field and the root our hooks (if any) point at. */
 export interface ClaudeSettingsFacts {
   settingsPath: string;
   statusLineCommand: string | undefined;
+  /** The plugin root our own hook entries point at, when present (see `adapters/setup/agents.ts#extractHooksRoot`). */
+  hooksRoot: string | undefined;
 }
 
 /** An agent kankaku-tui only detects, never configures (Codex, OpenCode). */
@@ -61,10 +74,28 @@ function settingsPackagesStatus(id: AgentId, facts: SettingsPackagesFacts | unde
   return { id, present: true, configured: facts.packages.some(isKankakuPackage), adapterAvailable: true, detail: facts.settingsPath };
 }
 
+/**
+ * Claude Code is `configured` only when our statusLine AND our hooks are
+ * present and share the same root (see the module doc on `AgentStatus`).
+ * A partial state carries a `detailNote` explaining exactly what's
+ * missing or mismatched, reused by `agentStep`'s `todoAction` and, through
+ * it, `kankaku doctor`'s output.
+ */
 function claudeCodeStatus(facts: ClaudeSettingsFacts | undefined): AgentStatus {
   if (!facts) return { id: "claude-code", present: false, configured: false, adapterAvailable: true, detail: "not found" };
-  const configured = facts.statusLineCommand !== undefined && facts.statusLineCommand.includes("kankaku");
-  return { id: "claude-code", present: true, configured, adapterAvailable: true, detail: facts.settingsPath };
+
+  const statusLineRoot = facts.statusLineCommand !== undefined ? ourStatusLineCommandRoot(facts.statusLineCommand) : undefined;
+  const hooksRoot = facts.hooksRoot;
+  const configured = statusLineRoot !== undefined && hooksRoot !== undefined && statusLineRoot === hooksRoot;
+
+  let detailNote: string | undefined;
+  if (!configured) {
+    if (statusLineRoot !== undefined && hooksRoot === undefined) detailNote = "statusLine only";
+    else if (statusLineRoot === undefined && hooksRoot !== undefined) detailNote = "hooks only";
+    else if (statusLineRoot !== undefined && hooksRoot !== undefined) detailNote = `hooks point at ${hooksRoot}, statusLine at ${statusLineRoot}`;
+  }
+
+  return { id: "claude-code", present: true, configured, adapterAvailable: true, detail: facts.settingsPath, ...(detailNote !== undefined ? { detailNote } : {}) };
 }
 
 function noAdapterStatus(id: AgentId, facts: ConfigFileFacts | undefined): AgentStatus {
@@ -117,7 +148,7 @@ const AGENT_TITLES: Record<AgentId, string> = {
 };
 
 function todoAction(agent: AgentStatus): string {
-  if (agent.id === "claude-code") return `set statusLine in ${agent.detail} to the kankaku status line`;
+  if (agent.id === "claude-code") return `write the kankaku statusLine and hooks to ${agent.detail}${agent.detailNote ? ` (${agent.detailNote})` : ""}`;
   return `add "npm:kankaku" to packages in ${agent.detail}`;
 }
 

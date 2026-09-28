@@ -6,10 +6,14 @@ import { join, dirname } from "node:path";
 import { runCli } from "../src/cli.tsx";
 import type { CliDeps } from "../src/cli.tsx";
 import type { Prompter } from "../src/ports/prompter.ts";
+import { locateClaudePlugin, readPluginHooks, buildSettingsHooks } from "../src/adapters/setup/claude-plugin.ts";
 
 function makeHome(): string {
   return mkdtempSync(join(tmpdir(), "kankaku-tui-cli-setup-home-"));
 }
+
+/** The bundled `kankaku-claude` plugin's real resolved root, used to build a matching `settings.json` fixture without depending on where this checkout happens to live. */
+const CLAUDE_PLUGIN_ROOT = locateClaudePlugin().root;
 
 /** A machine where pi, gentle-shell, Claude Code and the hub are already configured; only tui.json is missing — mirrors the real machine's acceptance-criteria shape. */
 function makeFullyConfiguredHome(): string {
@@ -21,7 +25,14 @@ function makeFullyConfiguredHome(): string {
   mkdirSync(join(home, ".claude"), { recursive: true });
   writeFileSync(
     join(home, ".claude", "settings.json"),
-    JSON.stringify({ statusLine: { type: "command", command: 'node "/x/kankaku-claude/src/statusline.ts"' } }, null, 2),
+    JSON.stringify(
+      {
+        statusLine: { type: "command", command: `node "${CLAUDE_PLUGIN_ROOT}/src/statusline.ts"` },
+        hooks: buildSettingsHooks(CLAUDE_PLUGIN_ROOT, readPluginHooks(CLAUDE_PLUGIN_ROOT)),
+      },
+      null,
+      2,
+    ),
   );
   mkdirSync(join(home, ".kankaku"), { recursive: true });
   writeFileSync(join(home, ".kankaku", "credentials.json"), JSON.stringify({ url: "https://hub.example.com", email: "a@b.com", password: "s" }, null, 2));
@@ -388,5 +399,88 @@ test("setup --yes --from-checkout <dir>: on a checkout missing its dev scripts, 
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(checkout, { recursive: true, force: true });
+  }
+});
+
+function makeFakePluginDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "kankaku-tui-fake-claude-plugin-"));
+  mkdirSync(join(dir, "hooks"), { recursive: true });
+  writeFileSync(
+    join(dir, "hooks", "hooks.json"),
+    JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/src/hook.ts"', timeout: 15 }] }] } }, null, 2),
+  );
+  mkdirSync(join(dir, "src"), { recursive: true });
+  writeFileSync(join(dir, "src", "hook.ts"), "// fake\n");
+  return dir;
+}
+
+test("setup --yes --claude-plugin-dir <dir>: configures Claude Code from the override plugin root", async () => {
+  const home = makeHome();
+  const pluginDir = makeFakePluginDir();
+  try {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "x" }, null, 2));
+    mkdirSync(join(home, "project"), { recursive: true });
+    await runCli(["setup", "--yes", "--claude-plugin-dir", pluginDir], baseDeps(home));
+
+    const written = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
+    assert.equal(written.statusLine.command, `node "${pluginDir}/src/statusline.ts"`);
+    assert.deepEqual(written.hooks.SessionStart, [{ hooks: [{ type: "command", command: `node "${pluginDir}/src/hook.ts"`, timeout: 15 }] }]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(pluginDir, { recursive: true, force: true });
+  }
+});
+
+test("setup --yes: KANKAKU_CLAUDE_PLUGIN_DIR env var overrides the bundled plugin root", async () => {
+  const home = makeHome();
+  const pluginDir = makeFakePluginDir();
+  try {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "x" }, null, 2));
+    mkdirSync(join(home, "project"), { recursive: true });
+    await runCli(["setup", "--yes"], baseDeps(home, { env: { KANKAKU_CLAUDE_PLUGIN_DIR: pluginDir } }));
+
+    const written = JSON.parse(readFileSync(join(home, ".claude", "settings.json"), "utf8"));
+    assert.equal(written.statusLine.command, `node "${pluginDir}/src/statusline.ts"`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(pluginDir, { recursive: true, force: true });
+  }
+});
+
+test("setup --dry-run --claude-plugin-dir <dir>: prints the resolved plugin root and the exact settings file it would change", async () => {
+  const home = makeHome();
+  const pluginDir = makeFakePluginDir();
+  try {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "x" }, null, 2));
+    const lines: string[] = [];
+    await runCli(["setup", "--dry-run", "--claude-plugin-dir", pluginDir], baseDeps(home, { stdout: (text) => lines.push(text) }));
+
+    const output = lines.join("\n");
+    assert.match(output, new RegExp(`Claude plugin root: ${pluginDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(would write ${join(home, ".claude", "settings.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\)`));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(pluginDir, { recursive: true, force: true });
+  }
+});
+
+test("setup --yes --claude-plugin-dir <bad dir>: reports the failure on stderr and still completes the rest of setup", async () => {
+  const home = makeHome();
+  const badDir = mkdtempSync(join(tmpdir(), "kankaku-tui-bad-claude-plugin-"));
+  try {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "x" }, null, 2));
+    const errors: string[] = [];
+    const lines: string[] = [];
+    await runCli(["setup", "--yes", "--claude-plugin-dir", badDir], baseDeps(home, { stderr: (text) => errors.push(text), stdout: (text) => lines.push(text) }));
+
+    assert.match(errors.join(""), /could not configure Claude Code/);
+    // Setup still reports doctor's final status for everything else.
+    assert.match(lines.join("\n"), /^Codex: unavailable/m);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(badDir, { recursive: true, force: true });
   }
 });

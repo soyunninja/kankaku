@@ -73,30 +73,57 @@ test("detectAgents: a local path package NOT ending in 'kankaku' is not configur
   assert.equal(gentleShell!.configured, false);
 });
 
-test("detectAgents: claude-code with a statusLine command mentioning kankaku is configured", () => {
+test("detectAgents: claude-code is configured only when the statusLine AND hooks are present and point at the same root", () => {
   const facts = baseFacts();
   facts.claudeCode = {
     settingsPath: "/home/.claude/settings.json",
     statusLineCommand: 'node "/home/dev/kankaku-claude/src/statusline.ts"',
+    hooksRoot: "/home/dev/kankaku-claude",
   };
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, true);
   assert.equal(claude!.present, true);
+  assert.equal(claude!.detailNote, undefined);
 });
 
 test("detectAgents: claude-code with an unrelated statusLine is present but not configured", () => {
   const facts = baseFacts();
-  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: "node other-tool.js" };
+  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: "node other-tool.js", hooksRoot: undefined };
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, false);
   assert.equal(claude!.present, true);
 });
 
-test("detectAgents: claude-code with no statusLine at all is present but not configured", () => {
+test("detectAgents: claude-code with no statusLine and no hooks at all is present but not configured", () => {
   const facts = baseFacts();
-  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: undefined };
+  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: undefined, hooksRoot: undefined };
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, false);
+  assert.equal(claude!.detailNote, undefined);
+});
+
+test("detectAgents: claude-code with only the statusLine set is not configured, detailNote 'statusLine only'", () => {
+  const facts = baseFacts();
+  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/src/statusline.ts"', hooksRoot: undefined };
+  const [, , claude] = detectAgents(facts);
+  assert.equal(claude!.configured, false);
+  assert.equal(claude!.detailNote, "statusLine only");
+});
+
+test("detectAgents: claude-code with only hooks set is not configured, detailNote 'hooks only'", () => {
+  const facts = baseFacts();
+  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: undefined, hooksRoot: "/x/kankaku-claude" };
+  const [, , claude] = detectAgents(facts);
+  assert.equal(claude!.configured, false);
+  assert.equal(claude!.detailNote, "hooks only");
+});
+
+test("detectAgents: claude-code with hooks and statusLine pointing at different roots is not configured, detailNote names both", () => {
+  const facts = baseFacts();
+  facts.claudeCode = { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/a/kankaku-claude/src/statusline.ts"', hooksRoot: "/b/kankaku-claude" };
+  const [, , claude] = detectAgents(facts);
+  assert.equal(claude!.configured, false);
+  assert.equal(claude!.detailNote, "hooks point at /b/kankaku-claude, statusLine at /a/kankaku-claude");
 });
 
 test("detectAgents: codex/opencode present is reported with adapterAvailable false and never configured", () => {
@@ -156,6 +183,29 @@ test("planSetup: an agent whose settings file is missing entirely is unavailable
   const pi = steps.find((s) => s.id === "pi")!;
   assert.equal(pi.state, "unavailable");
   assert.equal(pi.file, "");
+});
+
+test("planSetup: claude-code todo action mentions statusLine and hooks, plus a detailNote when partially configured", () => {
+  const hub: HubPlanFacts = { credentialsPresent: true, url: "https://hub.example.com", healthOk: true, credentialsPath: "/home/.kankaku/credentials.json" };
+  const tui: TuiPlanFacts = { present: true, path: "/home/.kankaku/tui.json" };
+  const steps = planSetup(
+    agentsFixture({
+      "claude-code": {
+        id: "claude-code",
+        present: true,
+        configured: false,
+        adapterAvailable: true,
+        detail: "/home/.claude/settings.json",
+        detailNote: "statusLine only",
+      },
+    }),
+    hub,
+    tui,
+  );
+  const claude = steps.find((s) => s.id === "claude-code")!;
+  assert.equal(claude.state, "todo");
+  assert.match(claude.action, /statusLine and hooks/);
+  assert.match(claude.action, /\(statusLine only\)$/);
 });
 
 test("planSetup: hub is todo when credentials are missing", () => {

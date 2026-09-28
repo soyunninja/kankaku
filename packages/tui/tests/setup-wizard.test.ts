@@ -3,10 +3,8 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_HUB_PORT,
   createWizardState,
-  guessClaudeCheckout,
   shortenHome,
   toggleAgent,
-  setClaudeCheckout,
   setHubMode,
   setHubField,
   setHubHealth,
@@ -58,7 +56,7 @@ test("createWizardState: selected starts equal to configured for pi/gentle-shell
       ...baseAgentFacts(),
       pi: { settingsPath: "/home/.pi/agent/settings.json", packages: ["npm:kankaku"] },
       gentleShell: { settingsPath: "/home/.gentle-shell/agent/settings.json", packages: [] },
-      claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: undefined },
+      claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: undefined, hooksRoot: undefined },
     },
   });
   const state = createWizardState(facts);
@@ -97,17 +95,6 @@ test("createWizardState: hub.ownerEmail/ownerPassword start empty", () => {
   assert.equal(state.hub.ownerPassword, "");
 });
 
-test("createWizardState: claudeCheckout is guessed from the current statusLine command", () => {
-  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/Users/dev/kankaku-claude/src/statusline.ts"' } } });
-  const state = createWizardState(facts);
-  assert.equal(state.claudeCheckout, "/Users/dev/kankaku-claude");
-});
-
-test("createWizardState: claudeCheckout is empty when there is no statusLine to guess from", () => {
-  const state = createWizardState(baseFacts());
-  assert.equal(state.claudeCheckout, "");
-});
-
 test("createWizardState: roots default to the current tui.json roots when present", () => {
   const state = createWizardState(baseFacts({ roots: { current: ["/a", "/b"], defaultRoots: ["/work"], path: "/x" } }));
   assert.deepEqual(state.roots, ["/a", "/b"]);
@@ -116,20 +103,6 @@ test("createWizardState: roots default to the current tui.json roots when presen
 test("createWizardState: roots fall back to the default when no tui.json exists", () => {
   const state = createWizardState(baseFacts({ roots: { current: undefined, defaultRoots: ["/work"], path: "/x" } }));
   assert.deepEqual(state.roots, ["/work"]);
-});
-
-// ---- guessClaudeCheckout ----
-
-test("guessClaudeCheckout: extracts the checkout path from the exact command kankaku-tui writes", () => {
-  assert.equal(guessClaudeCheckout('node "/Users/dev/kankaku-claude/src/statusline.ts"'), "/Users/dev/kankaku-claude");
-});
-
-test("guessClaudeCheckout: returns '' for an unrelated command", () => {
-  assert.equal(guessClaudeCheckout("node other.js"), "");
-});
-
-test("guessClaudeCheckout: returns '' when undefined", () => {
-  assert.equal(guessClaudeCheckout(undefined), "");
 });
 
 // ---- toggleAgent ----
@@ -152,13 +125,6 @@ test("toggleAgent: is a no-op for opencode", () => {
 });
 
 // ---- field setters ----
-
-test("setClaudeCheckout: sets the value and clears its error", () => {
-  const state = { ...createWizardState(baseFacts()), errors: { claudeCheckout: "enter a path" } };
-  const updated = setClaudeCheckout(state, "/checkout");
-  assert.equal(updated.claudeCheckout, "/checkout");
-  assert.equal(updated.errors.claudeCheckout, undefined);
-});
 
 test("setHubMode: switches mode and clears hub errors", () => {
   const state = { ...createWizardState(baseFacts()), errors: { url: "bad", email: "bad" } };
@@ -212,40 +178,26 @@ test("setHubField: updates ownerPassword and clears its error", () => {
 
 // ---- next() ----
 
-test("next: agents -> claude when Claude is selected and not configured", () => {
-  const facts = baseFacts();
-  const state = toggleAgent(stateAt("agents", {}, facts), "claude-code");
-  assert.equal(next(state, facts).step, "claude");
-});
-
-test("next: agents -> hub when Claude is not selected", () => {
+test("next: agents -> hub always (there is no separate Claude step)", () => {
   const facts = baseFacts();
   const state = stateAt("agents", {}, facts);
   assert.equal(state.selected["claude-code"], false);
   assert.equal(next(state, facts).step, "hub");
 });
 
-test("next: agents -> hub when Claude is selected but already configured", () => {
-  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/src/statusline.ts"' } } });
-  const state = stateAt("agents", {}, facts);
-  assert.equal(state.selected["claude-code"], true);
+test("next: agents -> hub even when Claude is selected and not yet configured", () => {
+  const facts = baseFacts();
+  const state = toggleAgent(stateAt("agents", {}, facts), "claude-code");
   assert.equal(next(state, facts).step, "hub");
 });
 
-test("next: claude step stays and reports an error when the checkout is empty", () => {
-  const facts = baseFacts();
-  const state = stateAt("claude", { claudeCheckout: "" }, facts);
-  const result = next(state, facts);
-  assert.equal(result.step, "claude");
-  assert.equal(typeof result.errors.claudeCheckout, "string");
-});
-
-test("next: claude step advances to hub once the checkout is set", () => {
-  const facts = baseFacts();
-  const state = stateAt("claude", { claudeCheckout: "/checkout" }, facts);
-  const result = next(state, facts);
-  assert.equal(result.step, "hub");
-  assert.equal(result.errors.claudeCheckout, undefined);
+test("next: agents -> hub when Claude is selected and already configured", () => {
+  const facts = baseFacts({
+    agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/src/statusline.ts"', hooksRoot: "/x/kankaku-claude" } },
+  });
+  const state = stateAt("agents", {}, facts);
+  assert.equal(state.selected["claude-code"], true);
+  assert.equal(next(state, facts).step, "hub");
 });
 
 test("next: hub existing mode rejects a non-http(s) url", () => {
@@ -354,18 +306,13 @@ test("back: agents is a no-op (first step)", () => {
   assert.equal(back(stateAt("agents")).step, "agents");
 });
 
-test("back: claude -> agents", () => {
-  assert.equal(back(stateAt("claude")).step, "agents");
-});
-
-test("back: hub -> claude when the claude step was shown", () => {
-  const state = toggleAgent(stateAt("hub"), "claude-code");
-  assert.equal(back(state).step, "claude");
-});
-
-test("back: hub -> agents when the claude step was skipped", () => {
+test("back: hub -> agents always (there is no separate Claude step)", () => {
   const state = stateAt("hub");
-  assert.equal(state.selected["claude-code"], false);
+  assert.equal(back(state).step, "agents");
+});
+
+test("back: hub -> agents even when Claude is selected", () => {
+  const state = toggleAgent(stateAt("hub"), "claude-code");
   assert.equal(back(state).step, "agents");
 });
 
@@ -420,19 +367,21 @@ test("planFromWizard: gentle-shell reuses the same install-pi/remove-pi kinds", 
   assert.equal(action?.kind, "install-pi");
 });
 
-test("planFromWizard: write-claude when Claude is selected and configured with a checkout", () => {
-  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: undefined } } });
-  const state = setClaudeCheckout(toggleAgent(createWizardState(facts), "claude-code"), "/checkout");
+test("planFromWizard: write-claude when Claude is selected and not configured", () => {
+  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: undefined, hooksRoot: undefined } } });
+  const state = toggleAgent(createWizardState(facts), "claude-code");
   const plan = planFromWizard(state, facts);
   assert.deepEqual(plan.find((a) => a.kind === "write-claude"), {
     kind: "write-claude",
     file: "/home/.claude/settings.json",
-    label: "set the Claude Code status line (/home/.claude/settings.json)",
+    label: "configure Claude Code (statusLine + hooks) in /home/.claude/settings.json",
   });
 });
 
 test("planFromWizard: remove-claude when Claude is unselected but configured", () => {
-  const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/src/statusline.ts"' } } });
+  const facts = baseFacts({
+    agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/src/statusline.ts"', hooksRoot: "/x/kankaku-claude" } },
+  });
   const state = toggleAgent(createWizardState(facts), "claude-code");
   const plan = planFromWizard(state, facts);
   assert.equal(plan.some((a) => a.kind === "remove-claude" && a.file === "/home/.claude/settings.json"), true);

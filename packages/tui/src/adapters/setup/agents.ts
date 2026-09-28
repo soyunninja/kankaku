@@ -8,6 +8,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentDetectionFacts, ClaudeSettingsFacts, ConfigFileFacts, SettingsPackagesFacts } from "../../domain/setup-plan.ts";
+import { ourHookCommandRoot } from "../../domain/claude-integration.ts";
 
 function readJsonObject(filePath: string): Record<string, unknown> | undefined {
   if (!existsSync(filePath)) return undefined;
@@ -31,6 +32,28 @@ function readSettingsPackages(settingsPath: string): SettingsPackagesFacts | und
   return { settingsPath, packages };
 }
 
+/** Scans every event's hook entries for a command that is one of kankaku's own (see `domain/claude-integration.ts#ourHookCommandRoot`), returning the first matching root, or `undefined` when none is found. */
+function extractHooksRoot(parsed: Record<string, unknown>): string | undefined {
+  const hooks = parsed["hooks"];
+  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return undefined;
+  for (const entries of Object.values(hooks as Record<string, unknown>)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      const innerHooks = (entry as Record<string, unknown>)["hooks"];
+      if (!Array.isArray(innerHooks)) continue;
+      for (const hook of innerHooks) {
+        if (!hook || typeof hook !== "object") continue;
+        const command = (hook as Record<string, unknown>)["command"];
+        if (typeof command !== "string") continue;
+        const root = ourHookCommandRoot(command);
+        if (root !== undefined) return root;
+      }
+    }
+  }
+  return undefined;
+}
+
 function readClaudeSettings(settingsPath: string): ClaudeSettingsFacts | undefined {
   const parsed = readJsonObject(settingsPath);
   if (!parsed) return undefined;
@@ -39,7 +62,7 @@ function readClaudeSettings(settingsPath: string): ClaudeSettingsFacts | undefin
     statusLine && typeof statusLine === "object" && !Array.isArray(statusLine) && typeof (statusLine as Record<string, unknown>)["command"] === "string"
       ? ((statusLine as Record<string, unknown>)["command"] as string)
       : undefined;
-  return { settingsPath, statusLineCommand: command };
+  return { settingsPath, statusLineCommand: command, hooksRoot: extractHooksRoot(parsed) };
 }
 
 function readConfigFilePresence(configPath: string): ConfigFileFacts | undefined {

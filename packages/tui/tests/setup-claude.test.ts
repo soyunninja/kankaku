@@ -3,54 +3,59 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { writeStatusLine, removeStatusLine } from "../src/adapters/setup/claude.ts";
+import { writeClaudeIntegration, removeClaudeIntegration } from "../src/adapters/setup/claude.ts";
+import type { PluginHooks } from "../src/adapters/setup/claude-plugin.ts";
 
 function makeDir(): string {
   return mkdtempSync(join(tmpdir(), "kankaku-tui-setup-claude-"));
 }
 
-test("writeStatusLine: sets statusLine.command to run the given checkout's statusline.ts, preserving other keys", () => {
+const ROOT = "/Users/dev/kankaku-claude";
+
+function pluginHooks(): PluginHooks {
+  return {
+    SessionStart: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/src/hook.ts"', timeout: 15 }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/src/hook.ts"', timeout: 5 }] }],
+  };
+}
+
+function ourHooksFor(root: string): Record<string, { hooks: { type: string; command: string; timeout: number }[] }[]> {
+  return {
+    SessionStart: [{ hooks: [{ type: "command", command: `node "${root}/src/hook.ts"`, timeout: 15 }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: `node "${root}/src/hook.ts"`, timeout: 5 }] }],
+  };
+}
+
+// ---- writeClaudeIntegration ----
+
+test("writeClaudeIntegration: sets statusLine and hooks for every plugin event, preserving other keys", () => {
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
     writeFileSync(settingsPath, JSON.stringify({ model: "claude-fable-5-1", permissions: { allow: [] } }, null, 2));
 
-    const result = writeStatusLine(settingsPath, "/Users/dev/kankaku-claude");
+    const result = writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
     assert.equal(result.changed, true);
 
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.equal(written.model, "claude-fable-5-1");
     assert.deepEqual(written.permissions, { allow: [] });
-    assert.deepEqual(written.statusLine, { type: "command", command: 'node "/Users/dev/kankaku-claude/src/statusline.ts"' });
+    assert.deepEqual(written.statusLine, { type: "command", command: `node "${ROOT}/src/statusline.ts"` });
+    assert.deepEqual(written.hooks, ourHooksFor(ROOT));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("writeStatusLine: replaces an existing non-kankaku statusLine", () => {
+test("writeClaudeIntegration: is a no-op when statusLine and every event's hooks already match this root", () => {
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
-    writeFileSync(settingsPath, JSON.stringify({ statusLine: { type: "command", command: "node other.js" } }, null, 2));
-
-    const result = writeStatusLine(settingsPath, "/Users/dev/kankaku-claude");
-    assert.equal(result.changed, true);
-    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
-    assert.equal(written.statusLine.command, 'node "/Users/dev/kankaku-claude/src/statusline.ts"');
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
-});
-
-test("writeStatusLine: is a no-op when the statusLine already points at kankaku's statusline.ts for this checkout", () => {
-  const dir = makeDir();
-  try {
-    const settingsPath = join(dir, "settings.json");
-    const original = { statusLine: { type: "command", command: 'node "/Users/dev/kankaku-claude/src/statusline.ts"' } };
+    const original = { statusLine: { type: "command", command: `node "${ROOT}/src/statusline.ts"` }, hooks: ourHooksFor(ROOT) };
     writeFileSync(settingsPath, JSON.stringify(original, null, 2));
     const before = readFileSync(settingsPath, "utf8");
 
-    const result = writeStatusLine(settingsPath, "/Users/dev/kankaku-claude");
+    const result = writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
     assert.equal(result.changed, false);
     assert.equal(readFileSync(settingsPath, "utf8"), before);
     assert.equal(existsSync(`${settingsPath}.bak`), false);
@@ -59,51 +64,175 @@ test("writeStatusLine: is a no-op when the statusLine already points at kankaku'
   }
 });
 
-test("writeStatusLine: backs up the original file before the first modification, and never overwrites an existing .bak", () => {
+test("writeClaudeIntegration: preserves a foreign hook entry in the same event, merging ours alongside it", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const foreignEntry = { hooks: [{ type: "command", command: "node other-tool.js" }] };
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { SessionStart: [foreignEntry] } }, null, 2));
+
+    writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(written.hooks.SessionStart, [foreignEntry, ...ourHooksFor(ROOT).SessionStart]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeClaudeIntegration: preserves an unrelated event entirely untouched", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const notificationEntry = { hooks: [{ type: "command", command: "node notify.js" }] };
+    writeFileSync(settingsPath, JSON.stringify({ hooks: { Notification: [notificationEntry] } }, null, 2));
+
+    writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(written.hooks.Notification, [notificationEntry]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeClaudeIntegration: replaces stale entries pointing at another root", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const staleRoot = "/old/kankaku-claude";
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ statusLine: { type: "command", command: `node "${staleRoot}/src/statusline.ts"` }, hooks: ourHooksFor(staleRoot) }, null, 2),
+    );
+
+    const result = writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
+    assert.equal(result.changed, true);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(written.statusLine, { type: "command", command: `node "${ROOT}/src/statusline.ts"` });
+    assert.deepEqual(written.hooks, ourHooksFor(ROOT));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeClaudeIntegration: replaces a non-kankaku statusLine", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ statusLine: { type: "command", command: "node other.js" } }, null, 2));
+
+    const result = writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
+    assert.equal(result.changed, true);
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.equal(written.statusLine.command, `node "${ROOT}/src/statusline.ts"`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeClaudeIntegration: backs up the original file before the first modification, and never overwrites an existing .bak", () => {
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
     const originalText = JSON.stringify({ model: "x" }, null, 2);
     writeFileSync(settingsPath, originalText);
 
-    writeStatusLine(settingsPath, "/Users/dev/kankaku-claude");
+    writeClaudeIntegration(settingsPath, ROOT, pluginHooks());
     assert.equal(readFileSync(`${settingsPath}.bak`, "utf8"), originalText);
 
     writeFileSync(`${settingsPath}.bak`, "sentinel");
-    writeStatusLine(settingsPath, "/Users/dev/other-checkout");
+    writeClaudeIntegration(settingsPath, "/other/kankaku-claude", pluginHooks());
     assert.equal(readFileSync(`${settingsPath}.bak`, "utf8"), "sentinel");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("removeStatusLine: removes statusLine when its command contains 'kankaku', preserving other keys", () => {
+// ---- removeClaudeIntegration ----
+
+test("removeClaudeIntegration: removes exactly our statusLine and hooks, preserving other keys", () => {
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
-    const original = { model: "claude-fable-5-1", statusLine: { type: "command", command: 'node "/Users/dev/kankaku-claude/src/statusline.ts"' }, permissions: { allow: [] } };
+    const original = {
+      model: "claude-fable-5-1",
+      statusLine: { type: "command", command: `node "${ROOT}/src/statusline.ts"` },
+      hooks: ourHooksFor(ROOT),
+      permissions: { allow: [] },
+    };
     writeFileSync(settingsPath, JSON.stringify(original, null, 2));
 
-    const result = removeStatusLine(settingsPath);
+    const result = removeClaudeIntegration(settingsPath);
     assert.equal(result.changed, true);
 
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.deepEqual(Object.keys(written), ["model", "permissions"]);
-    assert.equal(written.model, "claude-fable-5-1");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("removeStatusLine: is a no-op when the statusLine command does not contain 'kankaku'", () => {
+test("removeClaudeIntegration: keeps a foreign hook entry in a shared event, dropping only ours", () => {
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
-    const original = { statusLine: { type: "command", command: "node other.js" } };
+    const foreignEntry = { hooks: [{ type: "command", command: "node other-tool.js" }] };
+    const original = { hooks: { SessionStart: [foreignEntry, ...ourHooksFor(ROOT).SessionStart!] } };
+    writeFileSync(settingsPath, JSON.stringify(original, null, 2));
+
+    const result = removeClaudeIntegration(settingsPath);
+    assert.equal(result.changed, true);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(written.hooks.SessionStart, [foreignEntry]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeClaudeIntegration: drops an event array once it is empty, and the hooks key once every event is empty", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ hooks: ourHooksFor(ROOT) }, null, 2));
+
+    const result = removeClaudeIntegration(settingsPath);
+    assert.equal(result.changed, true);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.equal("hooks" in written, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeClaudeIntegration: preserves a foreign statusLine untouched", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const original = { statusLine: { type: "command", command: "node other.js" }, hooks: ourHooksFor(ROOT) };
+    writeFileSync(settingsPath, JSON.stringify(original, null, 2));
+
+    removeClaudeIntegration(settingsPath);
+
+    const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.deepEqual(written.statusLine, { type: "command", command: "node other.js" });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeClaudeIntegration: is a no-op when neither statusLine nor hooks are ours", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const original = { statusLine: { type: "command", command: "node other.js" }, hooks: { Notification: [{ hooks: [{ type: "command", command: "node notify.js" }] }] } };
     writeFileSync(settingsPath, JSON.stringify(original, null, 2));
     const before = readFileSync(settingsPath, "utf8");
 
-    const result = removeStatusLine(settingsPath);
+    const result = removeClaudeIntegration(settingsPath);
     assert.equal(result.changed, false);
     assert.equal(readFileSync(settingsPath, "utf8"), before);
     assert.equal(existsSync(`${settingsPath}.bak`), false);
@@ -112,13 +241,13 @@ test("removeStatusLine: is a no-op when the statusLine command does not contain 
   }
 });
 
-test("removeStatusLine: is a no-op when there is no statusLine at all", () => {
+test("removeClaudeIntegration: is a no-op when there is nothing at all", () => {
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
     writeFileSync(settingsPath, JSON.stringify({ model: "x" }, null, 2));
 
-    const result = removeStatusLine(settingsPath);
+    const result = removeClaudeIntegration(settingsPath);
     assert.equal(result.changed, false);
     assert.equal(existsSync(`${settingsPath}.bak`), false);
   } finally {
@@ -126,19 +255,19 @@ test("removeStatusLine: is a no-op when there is no statusLine at all", () => {
   }
 });
 
-test("removeStatusLine: backs up the original file before removing, and never overwrites an existing .bak", () => {
+test("removeClaudeIntegration: backs up the original file before removing, and never overwrites an existing .bak", () => {
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
-    const originalText = JSON.stringify({ statusLine: { type: "command", command: 'node "/x/kankaku-claude/src/statusline.ts"' } }, null, 2);
+    const originalText = JSON.stringify({ statusLine: { type: "command", command: `node "${ROOT}/src/statusline.ts"` }, hooks: ourHooksFor(ROOT) }, null, 2);
     writeFileSync(settingsPath, originalText);
 
-    removeStatusLine(settingsPath);
+    removeClaudeIntegration(settingsPath);
     assert.equal(readFileSync(`${settingsPath}.bak`, "utf8"), originalText);
 
     writeFileSync(settingsPath, originalText);
     writeFileSync(`${settingsPath}.bak`, "sentinel");
-    removeStatusLine(settingsPath);
+    removeClaudeIntegration(settingsPath);
     assert.equal(readFileSync(`${settingsPath}.bak`, "utf8"), "sentinel");
   } finally {
     rmSync(dir, { recursive: true, force: true });
