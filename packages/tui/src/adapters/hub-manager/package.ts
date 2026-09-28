@@ -1,7 +1,6 @@
 /**
- * Locates the installed `kankaku-hub` npm package (a real dependency —
- * `file:../kankaku-hub-worktrees/npm-package` until the package is
- * published) and reads/validates its `hub-manifest.json`.
+ * Locates the installed `kankaku-hub` npm package (a real registry
+ * dependency) and reads/validates its `hub-manifest.json`.
  */
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";

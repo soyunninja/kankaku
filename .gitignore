@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.kankaku/
+.codegraph/
+.atl/
+odd/
+.gga
+.DS_Store
+
+packages/*/node_modules/
+packages/*/dist/
+packages/*/.kankaku/
+packages/*/.codegraph/
+packages/*/odd/

@@ -3,6 +3,14 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## 0.9.0 — 2026-09-28
+
+### Changed
+
+- Moved into the kankaku monorepo (`github.com/soyunninja/kankaku`,
+  `packages/kankaku`); versions are now lockstep with the other client
+  packages (`kankaku-claude`, `kankaku-tui`). No behaviour change.
+
 ## 0.8.2 — 2026-09-28
 
 ### Fixed

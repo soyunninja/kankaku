@@ -4,7 +4,9 @@ A [pi](https://pi.dev) extension that measures how long an agent actually
 spends working on each prompt, so the time can later be accounted for
 (billing, reporting).
 
-Docs and guide: [kankaku.io](https://kankaku.io).
+Docs and guide: [kankaku.io](https://kankaku.io). This package lives in
+the [kankaku monorepo](https://github.com/soyunninja/kankaku), under
+`packages/kankaku`.
 
 ## What it measures
 
@@ -28,9 +30,9 @@ joined later.
 kankaku is a pi package. Pick one source:
 
 ```
-pi install npm:kankaku                          # from npm
-pi install git:github.com/soyunninja/kankaku    # from git (add @v0.1.0 to pin)
-pi install /absolute/path/to/kankaku            # local checkout, no copy
+pi install npm:kankaku                                    # from npm
+pi install git:github.com/soyunninja/kankaku              # from git (add @v0.1.0 to pin)
+pi install /absolute/path/to/kankaku/packages/kankaku     # local checkout, no copy
 ```
 
 `pi install` writes to your global `~/.pi/agent/settings.json`, so the
@@ -39,7 +41,7 @@ extension loads in every pi process, including the subagent children that
 instead; note that project-local resources load only after the project is
 trusted, which a subagent child may not inherit.
 
-To try it without installing: `pi -e /absolute/path/to/kankaku`.
+To try it without installing: `pi -e /absolute/path/to/kankaku/packages/kankaku`.
 
 ## Quick start
 

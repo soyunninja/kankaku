@@ -4,6 +4,9 @@ A [Claude Code](https://claude.com/claude-code) plugin that records how long
 Claude Code works on each of your prompts, in the same worklog format as the
 [kankaku](https://kankaku.io) pi extension.
 
+This package lives in the [kankaku monorepo](https://github.com/soyunninja/kankaku),
+under `packages/claude`.
+
 ## What it measures
 
 One record per user prompt, appended to `<KANKAKU_DIR>/worklog.jsonl`:

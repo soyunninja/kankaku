@@ -1,0 +1,22 @@
+{
+  "name": "kankaku-monorepo",
+  "private": true,
+  "version": "0.9.0",
+  "description": "kankaku client monorepo: the pi extension/library, the Claude Code plugin, and the terminal dashboard, released in lockstep.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "workspaces": [
+    "packages/kankaku",
+    "packages/claude",
+    "packages/tui"
+  ],
+  "scripts": {
+    "build": "npm run build -w kankaku && npm run build -w kankaku-tui",
+    "typecheck": "npm run typecheck --workspaces",
+    "test": "npm test --workspaces",
+    "check": "npm run build -w kankaku && npm run check -w kankaku && npm run check -w kankaku-claude && npm run check -w kankaku-tui",
+    "release:version": "npm version $npm_config_v --workspaces --no-git-tag-version"
+  }
+}

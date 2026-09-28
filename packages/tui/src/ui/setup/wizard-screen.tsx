@@ -264,7 +264,7 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
 
           {state.step === "claude" && (
             <Box flexDirection="column">
-              <Text>kankaku-claude checkout path:</Text>
+              <Text>kankaku-claude checkout path (packages/claude in a kankaku checkout):</Text>
               <TextInput value={state.claudeCheckout} onChange={(value) => setState((s) => setClaudeCheckout(s, value))} focused />
               {state.errors.claudeCheckout && <Text color={theme.error}>{state.errors.claudeCheckout}</Text>}
             </Box>

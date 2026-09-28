@@ -1,6 +1,6 @@
 {
   "name": "kankaku-tui",
-  "version": "0.4.1",
+  "version": "0.9.0",
   "description": "Terminal app that shows today's kankaku work across every project on disk",
   "license": "MIT",
   "type": "module",
@@ -25,7 +25,7 @@
   },
   "dependencies": {
     "ink": "^7.1.1",
-    "kankaku": "^0.8.2",
+    "kankaku": "^0.9.0",
     "kankaku-hub": "^0.2.0",
     "react": "^19.3.0"
   },
@@ -35,5 +35,10 @@
     "ink-testing-library": "^4",
     "tsx": "^4",
     "typescript": "^5.7.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/soyunninja/kankaku.git",
+    "directory": "packages/tui"
   }
 }

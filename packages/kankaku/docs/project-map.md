@@ -16,18 +16,32 @@ PocketBase **hub** so time is billed to a client, a project and, optionally,
 a hub task. In pi's TUI, `/kankaku` opens a settings-like **panel** that
 manages all of it; every action is also a `/kankaku <subcommand>`.
 
-Current release: **0.7.1** (2026-09-25). Node 24 runs the TypeScript
+Current release: **0.9.0** (2026-09-28). This package now lives inside the
+`kankaku` monorepo, at `packages/kankaku`. Node 24 runs the TypeScript
 directly (type stripping); pi loads `src/extension.ts` straight from the
 package (`package.json` → `pi.extensions`).
 
-## 2. Repositories around it
+## 2. This monorepo, and the repositories around it
+
+`kankaku` (the GitHub repo, `github.com/soyunninja/kankaku`) is an npm
+workspaces monorepo with three packages, all released in lockstep at the
+same version:
+
+| Directory | npm package | What it is |
+|---|---|---|
+| `packages/kankaku` (this one) | `kankaku` | the pi extension + published `domain`/`ports`/`hub` library entry points |
+| `packages/claude` | `kankaku-claude` | Claude Code plugin, phase 1 (local measurement only); phase 2 parked |
+| `packages/tui` | `kankaku-tui` | terminal dashboard across every project on disk, setup wizard, hub install/manage |
+
+`packages/claude` and `packages/tui` both depend on `kankaku ^0.9.0` and
+import it as `kankaku/domain`, `kankaku/ports`, `kankaku/hub`. The hub
+server and the public site are separate repositories, not part of this
+monorepo:
 
 | Repo | Where | What |
 |---|---|---|
-| `kankaku` (this) | `~/desarrollo/soyun.ninja/kankaku` | the pi extension + published library entry points |
-| `kankaku-hub` | `~/desarrollo/soyun.ninja/kankaku-hub` | PocketBase hub: schema, migrations, web app, `docs/contract.md` (the sync contract) |
+| `kankaku-hub` | `~/desarrollo/soyun.ninja/kankaku-hub`, `github.com/soyunninja/kankaku_hub` (note the underscore) | PocketBase hub: schema, migrations, web app, `docs/contract.md` (the sync contract) |
 | `kankaku-site` | `~/desarrollo/soyun.ninja/kankaku-site` | public site (Astro, en/es/ja); deploy = upload `dist/` |
-| `kankaku-claude` | `~/desarrollo/soyun.ninja/kankaku-claude` | Claude Code plugin, phase 1 (local measurement only); phase 2 parked |
 
 The hub contract (`kankaku-hub/docs/contract.md`) is the source of truth for
 every field kankaku sends. When a payload changes, change the contract first.
@@ -35,12 +49,21 @@ every field kankaku sends. When a payload changes, change the contract first.
 ## 3. How to work here
 
 ```
-npm run check      # build (tsc -p tsconfig.build.json) + typecheck + node --test tests/*.test.ts
-node --test tests/<name>.test.ts        # one file
+npm install                             # once, at the monorepo root
+npm run check                           # root: builds packages/kankaku first, then check in each package
+npm run check -w kankaku                # this package only (build + typecheck + node --test tests/*.test.ts)
+                                         # — assumes packages/kankaku was already built once for the others
+node --test tests/<name>.test.ts        # one file, from packages/kankaku/
 KANKAKU_DIR=/tmp/kankaku-smoke KANKAKU_SYNC_AUTO=0 pi -p --no-session "Reply with exactly the word OK."
                                         # headless smoke: must leave one record in /tmp/kankaku-smoke/worklog.jsonl
-npm run e2e:hub / e2e:cross-worktree    # opt-in end-to-end scripts (scripts/)
+npm run e2e:hub / e2e:cross-worktree    # opt-in end-to-end scripts (scripts/), run from packages/kankaku/
 ```
+
+`packages/kankaku` must build before `packages/claude` or `packages/tui`
+run anything of their own: they import the compiled `dist/` barrels
+through the npm workspace symlink. The root `check` script does this in
+the right order; running a package's own `check` directly does not
+rebuild its dependencies.
 
 - **Strict TDD**: failing test in `tests/<module>.test.ts` first, then code.
   Every module with behaviour has a test file of the same name; ports,
@@ -55,16 +78,27 @@ npm run e2e:hub / e2e:cross-worktree    # opt-in end-to-end scripts (scripts/)
   re-running the identical commit is the accepted response.
 - **Branches**: `feat/<name>` from `main`; merged with `git merge --ff-only`;
   no pull requests so far.
-- **Release** (what has been done for 0.5.x–0.7.1): on `main`,
-  `npm version X.Y.Z --no-git-tag-version`, rename `## Unreleased` to
-  `## X.Y.Z — YYYY-MM-DD` in `CHANGELOG.md`, commit
-  `chore(release): prepare X.Y.Z`, tag `vX.Y.Z`, `git push origin main` and
-  `git push origin vX.Y.Z`, then `npm publish` **by the owner** (the agent
-  has no npm login). `prepublishOnly` runs `npm run check`.
-- **Trying the working tree in pi**: `gentle-shell` loads this directory as
-  a package (isolated home at `~/.gentle-shell/agent`), so whatever branch
-  is checked out is what runs there. Plain `pi` loads `npm:kankaku`; use
-  `pi --no-extensions -e /absolute/path/to/kankaku` to test locally.
+- **Release, since 0.9.0 (lockstep across the monorepo)**: from the
+  repository root, bump all three packages together
+  (`npm version 0.Y.Z --workspaces --no-git-tag-version`, or the root
+  `npm run release:version --v=0.Y.Z`), add each package's
+  `## 0.Y.Z — YYYY-MM-DD` section to its own `CHANGELOG.md`, commit
+  `chore(release): prepare 0.Y.Z`, tag `v0.Y.Z`, `git push origin main`
+  and `git push origin v0.Y.Z`. Then, **by the owner** (the agent has no
+  npm login), publish in dependency order so each package's `kankaku
+  ^0.Y.Z` dependency already resolves on the registry:
+  `npm publish -w kankaku`, then `npm publish -w kankaku-claude`, then
+  `npm publish -w kankaku-tui`. Each package's own `prepublishOnly` (where
+  present) runs its own `check`; run the root `npm run check` first
+  regardless, since it builds `packages/kankaku` before checking the
+  others. (What was done for 0.5.x–0.8.2, before the monorepo, was the
+  same shape but for this package alone.)
+- **Trying the working tree in pi**: `gentle-shell` loads
+  `packages/kankaku` as a package (isolated home at
+  `~/.gentle-shell/agent`), so whatever branch is checked out is what runs
+  there. Plain `pi` loads `npm:kankaku`; use
+  `pi --no-extensions -e /absolute/path/to/kankaku/packages/kankaku` to
+  test locally.
 
 ## 4. Data on disk
 

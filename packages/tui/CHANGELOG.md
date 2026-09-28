@@ -3,6 +3,15 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 0.9.0 — 2026-09-28
+
+### Changed
+
+- Moved into the kankaku monorepo (`github.com/soyunninja/kankaku`,
+  `packages/tui`); versions are now lockstep with the other client
+  packages (`kankaku`, `kankaku-claude`). Depends on `kankaku ^0.9.0`. No
+  behaviour change.
+
 ## 0.4.1 — 2026-09-28
 
 ### Fixed

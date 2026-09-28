@@ -1,0 +1,59 @@
+# kankaku
+
+kankaku records how long coding agents actually work on each prompt —
+wall time, waiting time on the user, and work time (`wallMs - waitingMs`)
+— per prompt and per project, and rolls that up into tasks you can bill
+to a client through a small hub. It ships as a pi extension, a Claude
+Code plugin, and a terminal dashboard that reads across every project on
+disk.
+
+## Quick start
+
+```
+npm install -g kankaku-tui
+kankaku setup
+```
+
+`kankaku setup` runs a wizard that configures whichever agents you use
+(pi, gentle-shell, Claude Code), the hub — point it at an existing one or
+run `kankaku hub install` to run one locally — and the project roots you
+want tracked. Once it's done, `kankaku` opens the dashboard.
+
+## Packages
+
+| Directory | npm package | What it is | README |
+|---|---|---|---|
+| `packages/kankaku` | [`kankaku`](https://www.npmjs.com/package/kankaku) | pi extension + the published domain/ports/hub library | [README](packages/kankaku/README.md) |
+| `packages/claude` | [`kankaku-claude`](https://www.npmjs.com/package/kankaku-claude) | Claude Code plugin (hooks-based measurement) | [README](packages/claude/README.md) |
+| `packages/tui` | [`kankaku-tui`](https://www.npmjs.com/package/kankaku-tui) | terminal dashboard, setup wizard, hub install/manage | [README](packages/tui/README.md) |
+
+`kankaku` is the shared library; `kankaku-claude` and `kankaku-tui` both
+depend on it. The hub server (`kankaku-hub`,
+[github.com/soyunninja/kankaku_hub](https://github.com/soyunninja/kankaku_hub))
+and the public site
+(private `kankaku-site`) live in their own repositories and are not part
+of this monorepo.
+
+## Development
+
+```
+npm install                  # once, at the root
+npm run check                # builds packages/kankaku first, then checks every package
+npm run check -w kankaku-tui # check just one package
+```
+
+`packages/kankaku` must build before `packages/claude` or `packages/tui`
+run anything, because they import `kankaku/domain`, `kankaku/ports` and
+`kankaku/hub` through the workspace symlink, which resolves to
+`packages/kankaku/dist`. `npm run check` at the root does this in order;
+running a single package's `check` directly assumes `packages/kankaku`
+was already built.
+
+Versions are lockstep: all three packages ship the same version number,
+bumped and released together. Release order is `kankaku` →
+`kankaku-claude` → `kankaku-tui`, since the latter two depend on the
+former. Each package keeps its own `CHANGELOG.md`.
+
+## License
+
+MIT

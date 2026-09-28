@@ -8,6 +8,9 @@ in. Built with [Ink](https://github.com/vadimdemedes/ink) on Node 24. Four
 screens — Dashboard, Tasks, Catalog and Sync — share one tab bar, and each
 has a plain-text subcommand for scripts and cron.
 
+This package lives in the [kankaku monorepo](https://github.com/soyunninja/kankaku),
+under `packages/tui`.
+
 ## Install everything
 
 ```
@@ -33,9 +36,10 @@ The wizard's steps, `enter` to advance and `esc` to go back throughout
    agent schedules removing kankaku from it, not just skipping it. Codex
    and OpenCode are listed but disabled, showing `no adapter yet` (found,
    but kankaku can't write its config) or `not installed` (not found).
-2. **Claude Code** — the `kankaku-claude` checkout path (only shown when
-   Claude Code is checked and not already configured), guessed from any
-   existing `statusLine`.
+2. **Claude Code** — the `kankaku-claude` checkout path (packages/claude
+   inside a kankaku monorepo checkout; only shown when Claude Code is
+   checked and not already configured), guessed from any existing
+   `statusLine`.
 3. **Hub** — `use an existing hub` (URL, email, masked password, a `c`
    inline health check, reusing the current credentials as the default),
    `install locally`, or `skip`. Installing locally looks for a

@@ -4,6 +4,15 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 0.9.0 — 2026-09-28
+
+### Changed
+
+- Moved into the kankaku monorepo (`github.com/soyunninja/kankaku`,
+  `packages/claude`); versions are now lockstep with the other client
+  packages (`kankaku`, `kankaku-tui`). Depends on `kankaku ^0.9.0` (was
+  `^0.6.0`). No behaviour change.
+
 ## [Unreleased]
 
 ### Added

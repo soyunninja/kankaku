@@ -1,12 +1,13 @@
 {
   "name": "kankaku",
-  "version": "0.8.2",
+  "version": "0.9.0",
   "description": "pi extension that records agent work time per prompt, excluding waits for the user, with subagent linkage and task/session views",
   "license": "MIT",
   "author": "soyunninja",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/soyunninja/kankaku.git"
+    "url": "git+https://github.com/soyunninja/kankaku.git",
+    "directory": "packages/kankaku"
   },
   "homepage": "https://kankaku.io",
   "bugs": {

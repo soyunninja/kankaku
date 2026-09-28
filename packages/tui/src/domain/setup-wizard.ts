@@ -270,7 +270,7 @@ export function next(state: WizardState, facts: WizardFacts): WizardState {
 
     case "claude": {
       if (state.claudeCheckout.trim() === "") {
-        return { ...state, errors: { ...state.errors, claudeCheckout: "enter the kankaku-claude checkout path" } };
+        return { ...state, errors: { ...state.errors, claudeCheckout: "enter the kankaku-claude checkout path (packages/claude in a kankaku checkout)" } };
       }
       return { ...state, step: "hub", errors: clearError(state.errors, "claudeCheckout") };
     }
