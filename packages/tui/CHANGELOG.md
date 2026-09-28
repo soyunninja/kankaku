@@ -3,6 +3,30 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Changed
+
+- **`kankaku setup`'s Claude Code step no longer asks for a checkout
+  path.** `kankaku-tui` now depends directly on `kankaku-claude`
+  (`^0.9.0`), so the plugin's files ship inside every `kankaku-tui`
+  install; setup resolves their location itself
+  (`adapters/setup/claude-plugin.ts#locateClaudePlugin`, the same
+  `require.resolve` pattern `hub-manager/package.ts` already used for
+  `kankaku-hub`). Checking Claude Code now writes both `statusLine` and
+  `hooks` (read from the plugin's own `hooks/hooks.json`) into
+  `~/.claude/settings.json` in one step, merged with — never clobbering —
+  every other key, foreign hook and event already there; unchecking it
+  removes exactly kankaku's own entries. "Configured" now means both the
+  statusLine and hooks are present and point at the same root; a partial
+  state (only one of the two, or pointing at different roots) is reported
+  with a detail (`doctor`/`setup --dry-run`) instead of being reported as
+  done. The wizard's separate Claude Code step is gone (renumbered:
+  Agents → Hub → Roots → Review → Apply → Done); a new
+  `--claude-plugin-dir <dir>` flag (`setup`, `--yes`, `--dry-run`, and the
+  wizard) and `KANKAKU_CLAUDE_PLUGIN_DIR` env var override the resolved
+  plugin root for local development or a non-bundled checkout.
+
 ## 0.9.0 — 2026-09-28
 
 ### Changed

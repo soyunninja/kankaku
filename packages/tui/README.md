@@ -21,10 +21,9 @@ kankaku setup
 On a real terminal, `kankaku setup` opens as a full-screen wizard — one
 step at a time, in the same header/panel/footer look as the rest of the
 app (there's no sidebar in the wizard itself: the panel's own title
-tracks progress instead, e.g. `Setup · Agents 1/5`, numbering only the
-steps this run will actually show). `kankaku` with no arguments does the
-same the very first time (no `~/.kankaku/tui.json` yet); after that first
-run it opens straight into the Dashboard as usual.
+tracks progress instead, e.g. `Setup · Agents 1/4`). `kankaku` with no
+arguments does the same the very first time (no `~/.kankaku/tui.json`
+yet); after that first run it opens straight into the Dashboard as usual.
 
 The wizard's steps, `enter` to advance and `esc` to go back throughout
 (`esc` at the first step, Agents, quits):
@@ -36,11 +35,9 @@ The wizard's steps, `enter` to advance and `esc` to go back throughout
    agent schedules removing kankaku from it, not just skipping it. Codex
    and OpenCode are listed but disabled, showing `no adapter yet` (found,
    but kankaku can't write its config) or `not installed` (not found).
-2. **Claude Code** — the `kankaku-claude` checkout path (packages/claude
-   inside a kankaku monorepo checkout; only shown when Claude Code is
-   checked and not already configured), guessed from any existing
-   `statusLine`.
-3. **Hub** — `use an existing hub` (URL, email, masked password, a `c`
+   Checking Claude Code needs no extra step or path — see "Claude Code"
+   below.
+2. **Hub** — `use an existing hub` (URL, email, masked password, a `c`
    inline health check, reusing the current credentials as the default),
    `install locally`, or `skip`. Installing locally looks for a
    `kankaku-hub` checkout first; if found, its path is prefilled and
@@ -52,15 +49,57 @@ The wizard's steps, `enter` to advance and `esc` to go back throughout
    wizard shows the exact commands to run in another terminal and a `c`
    "check again" action, plus `m` to acknowledge you'll install it
    manually.
-4. **Roots** — the comma-separated project roots, defaulting to the
+3. **Roots** — the comma-separated project roots, defaulting to the
    current `tui.json` (or the parent of the current directory the first
    time). See "Configuration" below for how deep each root is searched.
-5. **Review** — the plan: one line per change, with the exact file it
+4. **Review** — the plan: one line per change, with the exact file it
    touches. `enter` applies it.
-6. **Apply** — runs each change and shows its result
+5. **Apply** — runs each change and shows its result
    (`wrote`/`unchanged`/`removed`/`started`/`error: …`) as it happens.
-7. **Done** — a summary, then `enter` opens the Dashboard in place — no
+6. **Done** — a summary, then `enter` opens the Dashboard in place — no
    restart.
+
+### Claude Code
+
+Checking Claude Code (in the wizard, or answering yes in `kankaku setup`'s
+non-interactive flow) writes two things into `~/.claude/settings.json`,
+merged in — every other key, every foreign hook and every other event is
+left untouched:
+
+- `statusLine.command`, so Claude Code reports per-prompt cost.
+- `hooks` for every event the bundled `kankaku-claude` plugin declares
+  (`packages/claude/hooks/hooks.json`), so the plugin actually measures
+  time even when Claude Code is started as plain `claude` — **no
+  `--plugin-dir` flag needed**.
+
+`kankaku-tui` depends on `kankaku-claude` directly (lockstep, same as its
+`kankaku`/`kankaku-hub` dependencies), so the plugin's files ship inside
+every `kankaku-tui` install; setup resolves their location on disk itself.
+There is nothing to check out and no second `npm install`.
+
+**If you previously ran Claude Code with `--plugin-dir <checkout>` to load
+kankaku-claude, drop that flag once `kankaku setup` has configured Claude
+Code** — the hooks it now writes into `settings.json` run on every Claude
+Code launch regardless, so a `--plugin-dir` load on top of that would run
+the hooks twice and double-write worklog records. The `/kankaku:*` slash
+commands (`/kankaku:report`, `/kankaku:setup`, …) only exist when the
+plugin itself is loaded via `--plugin-dir`, since a Claude Code plugin
+installed only through its hooks (not loaded as a plugin) never registers
+commands — keep using `--plugin-dir` if you want those, just be aware of
+the double-run cost above.
+
+Unchecking Claude Code (or removing it from an already-configured
+machine) removes exactly kankaku's own statusLine and hooks entries,
+leaving everything else in `settings.json` untouched.
+
+**Overriding the plugin root.** For local development, or to point at a
+different kankaku-claude checkout, pass `--claude-plugin-dir <dir>` to
+`kankaku setup`/`kankaku setup --yes`/`kankaku setup --dry-run`, or set
+`KANKAKU_CLAUDE_PLUGIN_DIR`. The flag/env value must be a directory
+containing `hooks/hooks.json` and `src/hook.ts` (i.e. a `kankaku-claude`
+checkout or `packages/claude` in a kankaku monorepo checkout). Without
+either, setup resolves the bundled package automatically — most users
+never need this.
 
 `kankaku setup --yes` and `kankaku setup --dry-run` stay exactly as
 before: non-interactive, driven by argv/env only, never opening the
@@ -87,9 +126,10 @@ npm install -g kankaku-tui
 Then run `kankaku setup` (or just `kankaku` the first time) to configure
 the coding agents on this machine, the hub and your project roots. The
 package depends on the published `kankaku` library (`kankaku/domain`,
-`kankaku/hub`) and on `kankaku-hub` for the local hub installer; nothing
-else needs to be checked out. To work on this repo itself, run
-`npm install` inside it and `npm run dev`.
+`kankaku/hub`), on `kankaku-hub` for the local hub installer, and on
+`kankaku-claude` for the bundled Claude Code plugin files (see "Claude
+Code" above); nothing else needs to be checked out. To work on this repo
+itself, run `npm install` inside it and `npm run dev`.
 
 ## Configuration
 

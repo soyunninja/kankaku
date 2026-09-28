@@ -15,6 +15,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- README "Install": the recommended path is now `npm i -g kankaku-tui &&
+  kankaku setup` — `kankaku-tui` depends on this package directly and its
+  setup wizard/`--yes` flow writes both `statusLine` and `hooks` into
+  `~/.claude/settings.json` in one step, so no checkout or `--plugin-dir`
+  is required for the plugin to measure time or report cost.
+  `--plugin-dir <checkout>` remains documented as the manual/dev path
+  (also the only way to get the `/kankaku:*` slash commands), with a note
+  that combining it with a `kankaku setup`-configured machine double-runs
+  the hooks and double-writes worklog records.
+
 ### Added
 
 - `/kankaku:doctor` and `node src/cli.ts doctor` provide a read-only local

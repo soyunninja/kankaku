@@ -17,7 +17,9 @@ kankaku setup
 `kankaku setup` runs a wizard that configures whichever agents you use
 (pi, gentle-shell, Claude Code), the hub — point it at an existing one or
 run `kankaku hub install` to run one locally — and the project roots you
-want tracked. Once it's done, `kankaku` opens the dashboard.
+want tracked. Once it's done, `kankaku` opens the dashboard. Claude Code
+needs no checkout or `claude --plugin-dir` flag — `kankaku-tui` bundles
+the plugin and setup wires it into `~/.claude/settings.json` for you.
 
 ## Packages
 

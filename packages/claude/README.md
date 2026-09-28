@@ -33,8 +33,27 @@ manual and best-effort automatic hub sync through kankaku's public hub adapters 
 
 ## Install
 
-**From a local path (development).** Clone this repository, then point
-Claude Code at it directly:
+**Recommended: `kankaku-tui`'s setup wizard.** This package lives inside
+`kankaku-tui`'s own dependency tree, so installing and running its setup
+wizard configures Claude Code for you — statusline and hooks together, in
+one step, with no checkout and no `--plugin-dir`:
+
+```bash
+npm i -g kankaku-tui
+kankaku setup
+```
+
+Checking Claude Code in the wizard (or confirming it in `kankaku setup
+--yes`) writes `statusLine` and `hooks` into `~/.claude/settings.json`,
+resolved from this package's own bundled files, merged with — never
+clobbering — whatever else is already there. See `kankaku-tui`'s own
+README ("Claude Code") for the full behaviour, the
+`--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR` override, and why you
+should drop `--plugin-dir` (below) once this has run.
+
+**Manual/dev: `--plugin-dir` (also required for the `/kankaku:*` slash
+commands).** Clone this repository, then point Claude Code at it
+directly:
 
 ```bash
 claude --plugin-dir /path/to/kankaku-claude
@@ -43,7 +62,16 @@ claude --plugin-dir /path/to/kankaku-claude
 If your Claude Code version does not recognize `--plugin-dir`, or plugin
 loading has changed since this was written, check your installed version's
 own plugin documentation (`claude --help`, or `/plugin` inside a session) for
-the current local-install flow.
+the current local-install flow. `--plugin-dir` is also the only way to get
+the `/kankaku:*` slash commands (`/kankaku:report`, `/kankaku:setup`, …),
+since a Claude Code plugin loaded only through settings.json hooks — the
+recommended path above — never registers commands.
+
+**Do not combine the two.** If `kankaku setup` has already configured this
+machine's `~/.claude/settings.json` hooks, loading the plugin again with
+`--plugin-dir` runs the same hooks twice per event and double-writes
+worklog records. Use `--plugin-dir` only on a machine `kankaku setup` has
+not touched, or drop it once setup has run.
 
 **From a marketplace.** Once this plugin is published to a marketplace:
 
@@ -61,7 +89,8 @@ there never blocks the plugin from loading.
 Claude Code plugins cannot set `statusLine` for themselves — there is no
 programmatic way for a plugin to add a `statusLine` entry to your settings.
 The statusline is also the *only* documented source of per-prompt cost
-(`cost.total_cost_usd`); hooks never receive it. So, once installed, run:
+(`cost.total_cost_usd`); hooks never receive it. `kankaku setup` (above)
+writes it for you automatically; without `kankaku-tui`, run:
 
 ```
 /kankaku:setup
