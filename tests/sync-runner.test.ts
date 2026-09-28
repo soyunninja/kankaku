@@ -712,3 +712,31 @@ test("a sink that throws on the first run against a NEW hub never persists the o
   assert.equal(written.syncedThrough, undefined);
   assert.equal(written.target, "http://127.0.0.1:8090");
 });
+
+test("the automatic path never short-circuits on a state written for ANOTHER hub, even when the log version is unchanged", async () => {
+  const orchestrator = makeRecord({ id: "task-1", startedAt: iso(0), settledAt: iso(10) });
+  const log = fakeLog([orchestrator], "v1");
+  const { sink, calls } = fakeSink({ "task-1": { kind: "created", unassigned: false } });
+  // Same log version, no error: exactly the shape that skips for the SAME hub.
+  const stateStore = fakeStateStore({ target: "https://old-hub.example", syncedThrough: iso(500), hashes: { "task-1": "old" }, logVersion: "v1", lastRunAt: 1_000_000 });
+  const clock = makeClock(2_000_000);
+
+  const summary = await runSync({ log, sink, stateStore: stateStore as never, clock, target: TARGET, minAutoIntervalMs: 0 }, { trigger: "session_start" });
+
+  assert.equal(calls.length, 1, "the new hub must receive a real run, not the old hub's skip");
+  assert.equal(summary.uploaded, 1);
+  assert.equal(stateStore._state()!.target, TARGET);
+});
+
+test("a locked run reports no watermark when the state on disk belongs to ANOTHER hub", async () => {
+  const { sink, calls } = fakeSink({});
+  const stateStore = fakeStateStore({ target: "https://old-hub.example", syncedThrough: iso(500), hashes: {} });
+  stateStore._setLocked(true);
+  const clock = makeClock();
+
+  const summary = await runSync({ log: fakeLog([]), sink, stateStore: stateStore as never, clock, target: TARGET });
+
+  assert.equal(summary.locked, true);
+  assert.equal(calls.length, 0);
+  assert.equal(summary.syncedThrough, undefined, "the old hub's watermark says nothing about this hub");
+});

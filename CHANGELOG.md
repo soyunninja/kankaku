@@ -12,9 +12,12 @@ follow semver. Dates are the day the version was cut.
   on the successful path, but when the very first run against the new hub
   failed (a throwing sink, an unreachable hub) the error path still
   persisted the old hub's watermark and hashes under the new URL, so the
-  next run skipped every task as "unchanged" again. Every path in
-  `adapters/sync-runner.ts` (summary, lock, error, success) now applies the
-  same gate. Stale comments in `domain/sync-plan.ts` and `AGENTS.md` that
+  next run skipped every task as "unchanged" again, and the automatic
+  (`session_start`/`agent_settled`/`session_shutdown`) short-circuit still
+  trusted the old hub's `logVersion`, so the new hub's very first run was
+  skipped until the next record was appended. Every path in
+  `adapters/sync-runner.ts` (automatic short-circuit and throttle, lock,
+  error, success) now applies the same gate. Stale comments in `domain/sync-plan.ts` and `AGENTS.md` that
   described `hashes` as pruned to the window and `staleOutsideWindow` as
   "changed" tasks are corrected: hashes are kept for as long as the task
   exists, and the count is tasks this hub has never received.

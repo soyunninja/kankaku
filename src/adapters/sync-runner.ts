@@ -108,7 +108,11 @@ export async function runSync(deps: SyncRunnerDeps, options: { full?: boolean; t
   const startedAt = deps.clock.now();
 
   if (options.trigger !== undefined) {
-    const peek = deps.stateStore.read();
+    // Gated like every other read below: a state written for another hub
+    // says nothing about THIS hub, so neither its `logVersion` (which
+    // would otherwise skip the new hub's very first run until the next
+    // record is appended) nor its `lastRunAt` throttle may apply.
+    const peek = stateForTarget(deps, deps.stateStore.read());
     const currentVersion = deps.log.version?.();
     const versionUnchanged = currentVersion !== undefined && peek?.logVersion === currentVersion;
     if (versionUnchanged && peek?.lastError === undefined) {

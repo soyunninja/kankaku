@@ -223,8 +223,8 @@ export function planSync(tasks: TaskView[], state: SyncState | undefined, option
  * for "unchanged but I forgot"), so that window-based pruning made every
  * task older than the window look permanently changed, forever, the moment
  * its hash was first pruned: `/kankaku sync status` would report a
- * never-shrinking "changed outside the window" count that training taught
- * users to ignore (the bug this rewrite fixes).
+ * never-shrinking "changed outside the window" count that trained users
+ * to ignore it (the bug this rewrite fixes).
  *
  * Never pruning by window instead means `hashes` grows with the total
  * number of distinct tasks a directory has ever synced, not with time — an
