@@ -1,6 +1,6 @@
 {
   "name": "kankaku-tui",
-  "version": "0.12.0",
+  "version": "0.12.1",
   "description": "Terminal app that shows today's kankaku work across every project on disk",
   "license": "MIT",
   "type": "module",
@@ -25,8 +25,8 @@
   },
   "dependencies": {
     "ink": "^7.1.1",
-    "kankaku": "^0.12.0",
-    "kankaku-claude": "^0.12.0",
+    "kankaku": "^0.12.1",
+    "kankaku-claude": "^0.12.1",
     "kankaku-hub": "^0.2.0",
     "react": "^19.3.0"
   },

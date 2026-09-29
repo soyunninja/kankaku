@@ -31,7 +31,7 @@ kankaku is a pi package. Pick one source:
 
 ```
 pi install npm:kankaku                                    # from npm
-pi install git:github.com/soyunninja/kankaku              # from git (add @v0.1.0 to pin)
+pi install git:github.com/soyunninja/kankaku              # from git (add @v0.12.1 or later to pin)
 pi install /absolute/path/to/kankaku/packages/kankaku     # local checkout, no copy
 ```
 

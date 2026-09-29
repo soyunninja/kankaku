@@ -3,6 +3,19 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## 0.12.1 — 2026-09-29
+
+### Fixed
+
+- **Installing from git loaded no extension.** `pi install
+  git:github.com/soyunninja/kankaku` clones the repository and reads the
+  `pi` manifest at its root, and since the repository became a monorepo
+  (v0.9.0) that root declared nothing: the install succeeded and pi then
+  failed to load the package. The root now declares this package's
+  extension. Git installs need `@v0.12.1` or later; the tags `v0.9.0` to
+  `v0.12.0` cannot be loaded from git. Installing from npm
+  (`pi install npm:kankaku`) was never affected.
+
 ## 0.12.0 — 2026-09-29
 
 No changes in this package; released in lockstep with kankaku-claude and
