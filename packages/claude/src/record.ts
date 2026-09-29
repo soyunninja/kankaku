@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorkRecord, WorkRecordCore } from "kankaku/domain";
 import type { SessionState } from "./session-state.ts";
+import type { RecordAssignment } from "./work-target.ts";
 
 /** `version` from a `package.json`, or `undefined` when unreadable — never guessed. */
 export function readPackageVersion(file: string): string | undefined {
@@ -21,8 +22,10 @@ const PLUGIN_VERSION = readPackageVersion(
 
 /**
  * Attaches the orchestrator metadata a replayed {@link WorkRecordCore}
- * needs to become a persistable {@link WorkRecord}. Phase 1: no
- * `client`/`clientId` (hub sync is phase 2). `model` is the statusline
+ * needs to become a persistable {@link WorkRecord}. `assignment` carries the
+ * resolved hub target (`clientId`, `clientName`, `projectId`, `projectName`)
+ * and the legacy `client` label, stamped exactly as the pi extension does;
+ * omitted, the record is unassigned. `model` is the statusline
  * model id (from `src/cost-store.ts#readCost`, since T7 no longer a field
  * of `SessionState`) — passed in explicitly rather than read here, so the
  * caller decides which cost snapshot's model applies.
@@ -38,7 +41,9 @@ export function buildClaudeRecord(
   state: SessionState,
   sessionId: string,
   model: string | undefined,
+  assignment: RecordAssignment = {},
 ): WorkRecord {
+  const { target, legacyClient } = assignment;
   return {
     ...core,
     role: "orchestrator",
@@ -51,5 +56,14 @@ export function buildClaudeRecord(
     plugin: "kankaku-claude",
     ...(PLUGIN_VERSION !== undefined ? { pluginVersion: PLUGIN_VERSION } : {}),
     ...(model ? { model: `anthropic/${model}` } : {}),
+    ...(legacyClient !== undefined ? { client: legacyClient } : {}),
+    ...(target !== undefined
+      ? {
+          clientId: target.clientId,
+          clientName: target.clientName,
+          ...(target.projectId !== undefined ? { projectId: target.projectId } : {}),
+          ...(target.projectName !== undefined ? { projectName: target.projectName } : {}),
+        }
+      : {}),
   };
 }

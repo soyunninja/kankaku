@@ -8,6 +8,7 @@ import { readCost, deleteCost, sweepStaleCostFiles } from "./cost-store.ts";
 import type { Event } from "./events.ts";
 import type { WorkLog } from "kankaku/ports";
 import type { SyncTrigger } from "kankaku/hub";
+import type { ClaudeWorkTarget, ClaudeWorkTargetInput, RecordAssignment } from "./work-target.ts";
 
 export interface HandleHookDeps {
   env: NodeJS.ProcessEnv;
@@ -21,6 +22,12 @@ export interface HandleHookDeps {
   stderr: (message: string) => void;
   /** Optional heavy-hook seam for tests. */
   autoSync?: (trigger: SyncTrigger) => Promise<void>;
+  /**
+   * Work-target seam for tests. Production resolves through
+   * `resolveClaudeWorkTarget` (cache file only, no network), and only where
+   * a record is built: never on the light hook path.
+   */
+  resolveTarget?: (input: ClaudeWorkTargetInput) => ClaudeWorkTarget;
 }
 
 const STOP_COST_WAIT_POLL_MS = 100;
@@ -161,7 +168,8 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
 
   const core = replayPrompt(last, { cost: costDelta });
   if (core) {
-    const record = buildClaudeRecord(core, state, sessionId, cost?.model);
+    const assignment = await assignmentResolver(paths, deps);
+    const record = buildClaudeRecord(core, state, sessionId, cost?.model, assignment(state.cwd));
     const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
     log.append(record);
   }
@@ -189,6 +197,7 @@ async function handleSessionStart(
       isAlive: deps.isAlive,
       now: deps.now(),
       env: deps.env,
+      resolveAssignment: await assignmentResolver(paths, deps),
     });
     if (recovered.length > 0) {
       const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
@@ -232,7 +241,8 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
       const core = replayPrompt(last, { settledAt: ts });
       if (core) {
         const model = readCost(deps.env, sessionId)?.model;
-        const record = buildClaudeRecord(core, state, sessionId, model);
+        const assignment = await assignmentResolver(paths, deps);
+        const record = buildClaudeRecord(core, state, sessionId, model, assignment(state.cwd));
         const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
         log.append(record);
       }
@@ -243,6 +253,41 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
   } finally {
     deleteSessionFiles(paths);
     deleteCost(deps.env, sessionId);
+  }
+}
+
+/**
+ * Loads the work-target resolver (a heavy module) and returns a per-cwd
+ * lookup that never throws: any failure means "no assignment", exactly the
+ * unassigned behaviour. Heavy hooks only.
+ */
+async function assignmentResolver(
+  paths: ResolvedPaths,
+  deps: HandleHookDeps,
+): Promise<(cwd: string) => RecordAssignment> {
+  try {
+    const { resolveClaudeWorkTarget } = await import("./work-target.ts");
+    const { homedir } = await import("node:os");
+    const resolve = deps.resolveTarget ?? resolveClaudeWorkTarget;
+    return (cwd) => {
+      try {
+        const { target, legacyClient } = resolve({
+          cwd,
+          kankakuDir: paths.kankakuDir,
+          homeDir: deps.env.HOME || homedir(),
+          env: deps.env,
+        });
+        return {
+          ...(target !== undefined ? { target } : {}),
+          ...(legacyClient !== undefined ? { legacyClient } : {}),
+        };
+      } catch (error) {
+        deps.stderr(`kankaku: work target: ${error instanceof Error ? error.message : String(error)}`);
+        return {};
+      }
+    };
+  } catch {
+    return () => ({});
   }
 }
 

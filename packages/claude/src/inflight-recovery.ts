@@ -7,6 +7,7 @@ import { readEventLog } from "./event-log.ts";
 import { splitPrompts, replayPrompt } from "./replay.ts";
 import { buildClaudeRecord } from "./record.ts";
 import { readCost, deleteCost, type CostEnv } from "./cost-store.ts";
+import type { RecordAssignment } from "./work-target.ts";
 
 export interface RecoverStaleSessionsInput {
   claudeDir: string;
@@ -15,6 +16,8 @@ export interface RecoverStaleSessionsInput {
   /** Fallback close time, used only when a prompt has no usable event timestamp. */
   now: number;
   env: CostEnv;
+  /** Target and legacy label for a recovered session, looked up by that session's own cwd. Omitted: unassigned. */
+  resolveAssignment?: (cwd: string) => RecordAssignment;
 }
 
 /**
@@ -61,7 +64,7 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
         const core = replayPrompt(last, { settledAt });
         if (core) {
           const model = readCost(input.env, sessionId)?.model;
-          records.push(buildClaudeRecord(core, state, sessionId, model));
+          records.push(buildClaudeRecord(core, state, sessionId, model, input.resolveAssignment?.(state.cwd)));
         }
       }
     }
