@@ -310,8 +310,8 @@ export function TasksScreen({ load, roots, version, columns, rows, focused = tru
 
   useInput(
     (input, key) => {
-      setNote(undefined);
       if (askingRef.current) return;
+      setNote(undefined);
       const openPickerState = pickerRef.current;
       if (openPickerState !== undefined) {
         handlePickerKey(openPickerState, key);

@@ -457,3 +457,14 @@ test("the picker fits a stacked 90-column terminal too", async () => {
   assert.ok(lines.every((line) => line.length <= 90));
   assert.match(lines[lines.length - 1] ?? "", /esc close/);
 });
+
+test("a key pressed while the hub is being asked keeps the progress message on the footer", async () => {
+  let release: (value: ReassignPrepared) => void = () => undefined;
+  const actions = fake({ prepare: () => new Promise<ReassignPrepared>((resolve) => (release = resolve)) });
+  const { stdin, lastFrame } = mount({ actions });
+  await press(stdin, "a", "r", "t");
+  assert.match(footer(lastFrame), /asking the hub/);
+  release({ ok: true, catalog, rows: new Map([["t1", hubRow("t1")]]) });
+  await tick();
+  assert.match(frameOf(lastFrame), /Reassign · Client/);
+});
