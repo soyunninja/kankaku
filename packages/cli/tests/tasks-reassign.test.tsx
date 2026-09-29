@@ -13,7 +13,7 @@ const DOWN = "\u001B[B";
 const PAGE_DOWN = "\u001B[6~";
 
 function tick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 40));
+  return new Promise((resolve) => setTimeout(resolve, 80));
 }
 
 function row(id: string, overrides: Partial<TaskRow> = {}): TaskRow {
