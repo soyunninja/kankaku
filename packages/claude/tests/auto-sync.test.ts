@@ -4,8 +4,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { autoSync } from "../src/auto-sync.ts";
-import { JsonlWorkLog } from "kankaku/hub";
-import { emptyUsage, WORK_RECORD_SCHEMA } from "kankaku/domain";
+import { JsonlWorkLog } from "kankaku-pi/hub";
+import { emptyUsage, WORK_RECORD_SCHEMA } from "kankaku-pi/domain";
 
 test("auto sync disabled or unconfigured/invalid never fetches", async () => {
   const dir = mkdtempSync(join(tmpdir(), "kankaku-auto-sync-"));

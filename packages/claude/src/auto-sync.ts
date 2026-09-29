@@ -1,4 +1,4 @@
-import type { SyncTrigger } from "kankaku/hub";
+import type { SyncTrigger } from "kankaku-pi/hub";
 import type { SyncCliDeps } from "./sync-cli.ts";
 
 export interface AutoSyncDeps extends SyncCliDeps {
@@ -9,7 +9,7 @@ export interface AutoSyncDeps extends SyncCliDeps {
 export async function autoSync(trigger: SyncTrigger, deps: AutoSyncDeps): Promise<void> {
   if (deps.env.KANKAKU_SYNC_AUTO === "0") return;
   try {
-    const { resolveHubCredentials } = await import("kankaku/hub");
+    const { resolveHubCredentials } = await import("kankaku-pi/hub");
     const { homedir } = await import("node:os");
     const hub = resolveHubCredentials({ env: deps.env, homeDir: deps.homeDir ?? (() => deps.env.HOME || homedir()) });
     if (!hub.credentials || hub.invalidReason) return;

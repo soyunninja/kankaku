@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { isWorkRecord } from "kankaku/domain";
+import { isWorkRecord } from "kankaku-pi/domain";
 import { splitPrompts, replayPrompt, type PromptEvents } from "../src/replay.ts";
 import type { Event } from "../src/events.ts";
 

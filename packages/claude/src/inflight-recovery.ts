@@ -1,6 +1,6 @@
 import { unlinkSync } from "node:fs";
 import { basename } from "node:path";
-import type { WorkRecord } from "kankaku/domain";
+import type { WorkRecord } from "kankaku-pi/domain";
 import { listStateFiles, resolveTargetFile } from "./paths.ts";
 import { readState } from "./session-state.ts";
 import { readEventLog } from "./event-log.ts";

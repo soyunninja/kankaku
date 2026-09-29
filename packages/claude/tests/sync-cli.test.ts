@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { JsonlWorkLog, SyncStateStore } from "kankaku/hub";
-import { emptyUsage, WORK_RECORD_SCHEMA } from "kankaku/domain";
-import type { WorkRecord } from "kankaku/domain";
+import { JsonlWorkLog, SyncStateStore } from "kankaku-pi/hub";
+import { emptyUsage, WORK_RECORD_SCHEMA } from "kankaku-pi/domain";
+import type { WorkRecord } from "kankaku-pi/domain";
 import { runSyncCli } from "../src/sync-cli.ts";
 
 function fixture() {

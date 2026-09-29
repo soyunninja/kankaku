@@ -1,5 +1,5 @@
 import { basename, join } from "node:path";
-import { JsonlWorkLog } from "kankaku/hub";
+import { JsonlWorkLog } from "kankaku-pi/hub";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";
 import { readState } from "./session-state.ts";
 import { readCost } from "./cost-store.ts";

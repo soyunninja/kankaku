@@ -40,27 +40,27 @@ no identity and are labelled by whichever tool syncs them first.
   a `.ts` file once it sits under a `node_modules` directory
   (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so every published
   hook/statusline/CLI command runs the built `dist/*.js` file, never the
-  `.ts` source. Installed via `kankaku-tui` (below) this needs no action
+  `.ts` source. Installed via `kankaku` (below) this needs no action
   from you; a manual `--plugin-dir` checkout must run `npm install && npm
   run build` once before Claude Code can load it (see "Manual/dev"
   below).
 
 ## Install
 
-**Recommended: `kankaku-tui`'s setup wizard.** This package lives inside
-`kankaku-tui`'s own dependency tree, so installing and running its setup
+**Recommended: `kankaku`'s setup wizard.** This package lives inside
+`kankaku`'s own dependency tree, so installing and running its setup
 wizard configures Claude Code for you — statusline and hooks together, in
 one step, with no checkout and no `--plugin-dir`:
 
 ```bash
-npm i -g kankaku-tui
+npm i -g kankaku
 kankaku setup
 ```
 
 Checking Claude Code in the wizard (or confirming it in `kankaku setup
 --yes`) writes `statusLine` and `hooks` into `~/.claude/settings.json`,
 resolved from this package's own bundled files, merged with — never
-clobbering — whatever else is already there. See `kankaku-tui`'s own
+clobbering — whatever else is already there. See `kankaku`'s own
 README ("Claude Code") for the full behaviour, the
 `--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR` override, and why you
 should drop `--plugin-dir` (below) once this has run.
@@ -113,7 +113,7 @@ Claude Code plugins cannot set `statusLine` for themselves — there is no
 programmatic way for a plugin to add a `statusLine` entry to your settings.
 The statusline is also the *only* documented source of per-prompt cost
 (`cost.total_cost_usd`); hooks never receive it. `kankaku setup` (above)
-writes it for you automatically; without `kankaku-tui`, run:
+writes it for you automatically; without `kankaku`, run:
 
 ```
 /kankaku:setup

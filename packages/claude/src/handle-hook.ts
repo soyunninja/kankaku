@@ -6,8 +6,8 @@ import { resolveClaudePid, type PsInfo } from "./claude-pid.ts";
 import { splitPrompts, type PromptEvents } from "./prompts.ts";
 import { readCost, deleteCost, sweepStaleCostFiles } from "./cost-store.ts";
 import type { Event } from "./events.ts";
-import type { WorkLog } from "kankaku/ports";
-import type { SyncTrigger } from "kankaku/hub";
+import type { WorkLog } from "kankaku-pi/ports";
+import type { SyncTrigger } from "kankaku-pi/hub";
 import type { ClaudeWorkTarget, ClaudeWorkTargetInput, RecordAssignment } from "./work-target.ts";
 
 export interface HandleHookDeps {
@@ -36,7 +36,7 @@ const STOP_COST_WAIT_MAX_MS = 1500;
 /**
  * Dispatches one Claude Code hook invocation. Light events (everything but
  * Stop/SessionStart/SessionEnd) only append one event line plus a tiny
- * state update, and never import `kankaku` at runtime — the heavier replay/
+ * state update, and never import `kankaku-pi` at runtime — the heavier replay/
  * storage layer is loaded with dynamic `import()` only inside the three
  * branches that actually settle or recover a record.
  */
@@ -139,7 +139,7 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
 async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleHookDeps): Promise<void> {
   const { replayPrompt } = await import("./replay.ts");
   const { buildClaudeRecord } = await import("./record.ts");
-  const { JsonlWorkLog } = await import("kankaku/hub");
+  const { JsonlWorkLog } = await import("kankaku-pi/hub");
 
   const events = readEventLog(paths.eventsFile);
   const beforeStopTs = events.length >= 2 ? events[events.length - 2]!.ts : events[events.length - 1]?.ts ?? deps.now();
@@ -190,7 +190,7 @@ async function handleSessionStart(
 ): Promise<void> {
   if (source !== "compact") {
     const { recoverStaleSessions } = await import("./inflight-recovery.ts");
-    const { JsonlWorkLog } = await import("kankaku/hub");
+    const { JsonlWorkLog } = await import("kankaku-pi/hub");
     const recovered = recoverStaleSessions({
       claudeDir: paths.claudeDir,
       currentSessionId: sessionId,
@@ -233,7 +233,7 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
   if (state?.promptOpen) {
     const { replayPrompt } = await import("./replay.ts");
     const { buildClaudeRecord } = await import("./record.ts");
-    const { JsonlWorkLog } = await import("kankaku/hub");
+    const { JsonlWorkLog } = await import("kankaku-pi/hub");
     const events = readEventLog(paths.eventsFile);
     const prompts = splitPrompts(events);
     const last = prompts[prompts.length - 1];

@@ -3,8 +3,8 @@ import { readFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { isWorkRecord, emptyUsage, buildTasks, buildTaskEntryCreatePayload, WORK_RECORD_SCHEMA } from "kankaku/domain";
-import type { WorkRecordCore } from "kankaku/domain";
+import { isWorkRecord, emptyUsage, buildTasks, buildTaskEntryCreatePayload, WORK_RECORD_SCHEMA } from "kankaku-pi/domain";
+import type { WorkRecordCore } from "kankaku-pi/domain";
 import { buildClaudeRecord, readPackageVersion } from "../src/record.ts";
 import type { SessionState } from "../src/session-state.ts";
 

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Client, Project, WorkRecord } from "kankaku/domain";
+import type { Client, Project, WorkRecord } from "kankaku-pi/domain";
 import { handleHook, type HandleHookDeps } from "../src/handle-hook.ts";
 import { recoverStaleSessions } from "../src/inflight-recovery.ts";
 import { writeState } from "../src/session-state.ts";

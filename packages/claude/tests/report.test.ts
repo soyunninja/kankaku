@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { emptyUsage, WORK_RECORD_SCHEMA } from "kankaku/domain";
-import type { WorkRecord, WorkStatus, UsageTotals } from "kankaku/domain";
+import { emptyUsage, WORK_RECORD_SCHEMA } from "kankaku-pi/domain";
+import type { WorkRecord, WorkStatus, UsageTotals } from "kankaku-pi/domain";
 import { formatReport, formatDuration } from "../src/report.ts";
 
 let nextId = 0;

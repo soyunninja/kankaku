@@ -21,7 +21,7 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
  * project-relative path would litter whatever project happens to be open
  * (the defect this module fixes — see `odd/tasks/hook-tracking.md` T7).
  * Imports only node builtins so light hooks that read/write cost stay off
- * the `kankaku` import path.
+ * the `kankaku-pi` import path.
  */
 export function costDir(env: CostEnv): string {
   const home = env.HOME || homedir();

@@ -4,8 +4,8 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { isWorkRecord } from "kankaku/domain";
-import type { WorkRecord } from "kankaku/domain";
+import { isWorkRecord } from "kankaku-pi/domain";
+import type { WorkRecord } from "kankaku-pi/domain";
 import { handleHook, type HandleHookDeps } from "../src/handle-hook.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));

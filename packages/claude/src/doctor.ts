@@ -1,7 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { JsonlWorkLog, SyncStateStore, computeSyncStatus, resolveHubCredentials } from "kankaku/hub";
+import { JsonlWorkLog, SyncStateStore, computeSyncStatus, resolveHubCredentials } from "kankaku-pi/hub";
 import type { CliDeps } from "./cli-core.ts";
 import { costDir } from "./cost-store.ts";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";

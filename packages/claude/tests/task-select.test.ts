@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { HubTask } from "kankaku/domain";
+import type { HubTask } from "kankaku-pi/domain";
 import { listOpenTasks, isOpenTask, selectTask } from "../src/task-select.ts";
 
 const T = (id: string, title: string, projectId = "p1", status: HubTask["status"] = "open", externalRef?: string): HubTask =>

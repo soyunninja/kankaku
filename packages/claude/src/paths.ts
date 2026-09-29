@@ -16,7 +16,7 @@ export interface ResolvedPaths {
 }
 
 /**
- * Same rule as kankaku's `resolveKankakuDir` (kankaku/hub): an absolute
+ * Same rule as kankaku's `resolveKankakuDir` (kankaku-pi/hub): an absolute
  * `KANKAKU_DIR` is used as-is, a relative one is joined against the session's
  * cwd. Inlined rather than imported so the light hooks (one per tool call)
  * never load the hub barrel for a two-line helper.

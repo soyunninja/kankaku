@@ -19,7 +19,7 @@ extension has one. Instead:
   `<KANKAKU_DIR>/claude/<session_id>.events.jsonl` (`src/events.ts`,
   `src/event-log.ts`). `src/prompts.ts#splitPrompts` groups that stream into
   one group per user prompt. `src/replay.ts#replayPrompt` is pure: it feeds
-  one prompt's events into a fresh `WorkTracker` (from `kankaku/domain`)
+  one prompt's events into a fresh `WorkTracker` (from `kankaku-pi/domain`)
   whose `Clock` returns the event's own recorded `ts`, and returns the
   resulting `WorkRecordCore`. No wall-clock time and no live process state
   is read during replay.
@@ -31,9 +31,9 @@ extension has one. Instead:
 - **Light hooks vs. heavy hooks.** `PreToolUse`, `PostToolUse`,
   `PermissionRequest`, `SubagentStart`, `SubagentStop` and `UserPromptSubmit`
   only append one event line and touch a couple of state fields; they must
-  never import `kankaku` (see "Rules" below). `Stop`, `SessionStart` and
+  never import `kankaku-pi` (see "Rules" below). `Stop`, `SessionStart` and
   `SessionEnd` are the only handlers that load `replay.ts`, `record.ts` and
-  `kankaku/hub` — always through a dynamic `import()`, never a top-level one
+  `kankaku-pi/hub` — always through a dynamic `import()`, never a top-level one
   — because only they need to replay a prompt or write to `worklog.jsonl`.
 - **Cost lives under HOME, never a project (T7).** Claude Code hooks never
   receive token counts or cost. The statusline command (`src/statusline.ts`,
@@ -45,7 +45,7 @@ extension has one. Instead:
   Claude Code session on the machine, plugin loaded or not; a
   project-relative cost file would litter whatever project happened to be
   open. `src/cost-store.ts` imports only node builtins, so it stays off the
-  light-hook `kankaku` import ban below. `UserPromptSubmit` reads the cost
+  light-hook `kankaku-pi` import ban below. `UserPromptSubmit` reads the cost
   file for the baseline (`promptOpen.costAtStart`); `Stop` polls it (bounded)
   for a fresh-enough write and computes the delta; `SessionEnd` deletes it;
   `SessionStart` (non-`compact`) sweeps cost files older than 7 days
@@ -74,7 +74,7 @@ extension has one. Instead:
   payload carries Claude Code's version.
 - `src/work-target.ts` — `resolveClaudeWorkTarget` (project `config.json` ids
   > cached catalog `repo_paths`, through the library's `resolveWorkTarget`),
-  `RecordAssignment` and `formatTargetLine`. Imports `kankaku`, so heavy
+  `RecordAssignment` and `formatTargetLine`. Imports `kankaku-pi`, so heavy
   paths only.
 - `src/session-target-store.ts` — `readSessionTarget`/`writeSessionTarget`,
   the session-only task link `<KANKAKU_DIR>/claude/<session>.target.json`
@@ -93,7 +93,7 @@ extension has one. Instead:
   atomic per-session state file (no `cost` field since T7).
 - `src/cost-store.ts` — `readCost`/`writeCost`/`deleteCost`/
   `sweepStaleCostFiles`, the per-session cost file under
-  `~/.kankaku/claude/cost/`. Node builtins only, no `kankaku` import.
+  `~/.kankaku/claude/cost/`. Node builtins only, no `kankaku-pi` import.
 - `src/event-log.ts` — `appendEvent`/`readEventLog`/`dropSettledPrompts`.
 - `src/claude-pid.ts` — `resolveClaudePid` (ancestor walk via an injected
   `ps` runner) and `isAlive` (`false` for any non-positive or non-integer
@@ -106,7 +106,7 @@ extension has one. Instead:
 - `src/statusline-core.ts` / `src/statusline.ts` — the pure statusline
   renderer and its stdin-to-stdout entry point.
 - `src/report.ts` — `formatReport`, a minimal day-grouped report built on
-  `buildTasks` from `kankaku/domain`.
+  `buildTasks` from `kankaku-pi/domain`.
 - `src/cli-core.ts` / `src/cli.ts` — `runCli(argv, deps)` (`report`,
   `status`, `setup`) and its thin `process.argv`/`process.exit` wrapper.
 - `hooks/hooks.json` — registers the compiled `dist/hook.js` for all 9
@@ -117,10 +117,10 @@ extension has one. Instead:
 
 ## Rules (do not break)
 
-- **The light hook path must never import `kankaku`.** `PreToolUse`,
+- **The light hook path must never import `kankaku-pi`.** `PreToolUse`,
   `PostToolUse`, `PermissionRequest`, `SubagentStart`, `SubagentStop` and
-  `UserPromptSubmit` run once per tool call; loading `kankaku/domain` or
-  `kankaku/hub` on that path would slow down every tool call in every
+  `UserPromptSubmit` run once per tool call; loading `kankaku-pi/domain` or
+  `kankaku-pi/hub` on that path would slow down every tool call in every
   session. This is enforced by a test: `tests/handle-hook.test.ts` walks
   every module statically reachable from `src/hook.ts` through relative
   imports and rejects any top-level runtime `from "kankaku` line. `Stop`,
@@ -132,7 +132,7 @@ extension has one. Instead:
   calls `process.exit(0)` in a `finally`. `handleHook` itself never throws
   for malformed input — it logs to `deps.stderr` and returns.
 - **`worklog.jsonl` is append-only.** Every write goes through
-  `JsonlWorkLog(kankakuDir).append(record)` (from `kankaku/hub`). It is never
+  `JsonlWorkLog(kankakuDir).append(record)` (from `kankaku-pi/hub`). It is never
   rewritten or truncated; only the plugin's own per-session
   `*.events.jsonl` files are ever rewritten (via `dropSettledPrompts`, tmp +
   rename), to drop a settled prompt's events.
@@ -182,21 +182,21 @@ extension has one. Instead:
 - Tests use `node:test` and `node:assert/strict`, temp directories under
   `os.tmpdir()`, fake clocks and injected `ps`/`isAlive`/fs dependencies; no
   real Claude Code process is ever launched from a test.
-- `kankaku` is a runtime dependency (the published `kankaku/domain`,
-  `kankaku/ports` and `kankaku/hub` entrypoints); do not import from its
+- `kankaku-pi` is a runtime dependency (the published `kankaku-pi/domain`,
+  `kankaku-pi/ports` and `kankaku-pi/hub` entrypoints); do not import from its
   internal `src/` paths.
 - Code, comments, docs and commit messages are in English, neutral register.
 
 ## Build step
 
 This package ships a compiled `dist/` (`npm run build`, `tsc -p
-tsconfig.build.json`, mirroring `packages/kankaku`/`packages/tui`'s own
+tsconfig.build.json`, mirroring `packages/pi`/`packages/cli`'s own
 `tsconfig.build.json` pattern): every hook/statusline/CLI command Claude
 Code or `kankaku setup` actually runs points at `dist/*.js`, never
 `src/*.ts`. This is required, not cosmetic — Node refuses to type-strip a
 `.ts` file once it sits under a `node_modules` directory
 (`ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`), so a `src/`-only publish
-cannot run at all once installed as a dependency (e.g. via `kankaku-tui`).
+cannot run at all once installed as a dependency (e.g. via `kankaku`).
 `package.json`'s `files` therefore ships `dist/`, not `src/` or
 `tsconfig.json`; `npm run check` (below) and `prepublishOnly` both build
 first. Tests still run directly against `src/*.ts` (`node --test

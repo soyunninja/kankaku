@@ -1,7 +1,7 @@
-import { WorkTracker } from "kankaku/domain";
-import type { WorkRecordCore } from "kankaku/domain";
-import type { SubagentProfile } from "kankaku/domain";
-import type { Clock } from "kankaku/ports";
+import { WorkTracker } from "kankaku-pi/domain";
+import type { WorkRecordCore } from "kankaku-pi/domain";
+import type { SubagentProfile } from "kankaku-pi/domain";
+import type { Clock } from "kankaku-pi/ports";
 import type { Event } from "./events.ts";
 
 /** Tool names whose span counts as waiting rather than working. */

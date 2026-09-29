@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Client, HubTask, Project } from "kankaku/domain";
+import type { Client, HubTask, Project } from "kankaku-pi/domain";
 import type { CliDeps } from "../src/cli-core.ts";
 import { runTaskCli } from "../src/task-cli.ts";
 import { readSessionTarget, writeSessionTarget } from "../src/session-target-store.ts";

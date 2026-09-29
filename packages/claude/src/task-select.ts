@@ -1,10 +1,10 @@
-import type { HubTask } from "kankaku/domain";
+import type { HubTask } from "kankaku-pi/domain";
 
 /**
  * Pure task selection for `/kankaku:task`. Mirrors pi's picker
  * (`adapters/target-picker.ts#pickHubTask`): a task is pickable when its
  * status is not `done` (the hub's statuses are `open | doing | done`, see
- * `HubTask` in `kankaku/domain`) and it belongs to the resolved project.
+ * `HubTask` in `kankaku-pi/domain`) and it belongs to the resolved project.
  */
 export function isOpenTask(task: HubTask): boolean {
   return task.status !== "done";

@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { WorkRecord, WorkRecordCore } from "kankaku/domain";
+import type { WorkRecord, WorkRecordCore } from "kankaku-pi/domain";
 import type { SessionState } from "./session-state.ts";
 import type { RecordAssignment } from "./work-target.ts";
 

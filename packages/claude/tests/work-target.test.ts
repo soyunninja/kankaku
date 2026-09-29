@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildTasks, resolveTaskAssignment, buildTaskEntryCreatePayload, emptyUsage, WORK_RECORD_SCHEMA } from "kankaku/domain";
-import type { Client, Project, WorkRecordCore } from "kankaku/domain";
+import { buildTasks, resolveTaskAssignment, buildTaskEntryCreatePayload, emptyUsage, WORK_RECORD_SCHEMA } from "kankaku-pi/domain";
+import type { Client, Project, WorkRecordCore } from "kankaku-pi/domain";
 import { buildClaudeRecord } from "../src/record.ts";
 import { formatTargetLine, resolveClaudeWorkTarget } from "../src/work-target.ts";
 

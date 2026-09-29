@@ -9,23 +9,23 @@
   ],
   "pi": {
     "extensions": [
-      "./packages/kankaku/src/extension.ts"
+      "./packages/pi/src/extension.ts"
     ]
   },
   "engines": {
     "node": ">=24"
   },
   "workspaces": [
-    "packages/kankaku",
+    "packages/pi",
     "packages/claude",
-    "packages/tui"
+    "packages/cli"
   ],
   "scripts": {
-    "build": "npm run build -w kankaku && npm run build -w kankaku-claude && npm run build -w kankaku-tui",
+    "build": "npm run build -w kankaku-pi && npm run build -w kankaku-claude && npm run build -w kankaku",
     "typecheck": "npm run typecheck --workspaces",
     "test": "npm test --workspaces",
-    "check": "npm run build -w kankaku && npm run check -w kankaku && npm run check -w kankaku-claude && npm run check -w kankaku-tui",
+    "check": "npm run build -w kankaku-pi && npm run check -w kankaku-pi && npm run check -w kankaku-claude && npm run check -w kankaku",
     "release:version": "npm version $npm_config_v --workspaces --no-git-tag-version",
-    "publish:all": "npm publish -w kankaku && npm publish -w kankaku-claude && npm publish -w kankaku-tui"
+    "publish:all": "npm publish -w kankaku-pi && npm publish -w kankaku-claude && npm publish -w kankaku"
   }
 }

@@ -6,11 +6,11 @@ import {
   CachedCatalog, JsonlWorkLog, PocketBaseClient, PocketBaseSink, SyncStateStore,
   computeSyncStatus, createPocketBaseCatalogFetcher, resolveHubCredentials,
   runSync, safeHomeDir,
-} from "kankaku/hub";
-import type { SyncTrigger } from "kankaku/hub";
+} from "kankaku-pi/hub";
+import type { SyncTrigger } from "kankaku-pi/hub";
 import { resolveKankakuDir } from "./paths.ts";
 import type { CliResult } from "./cli-core.ts";
-import type { WorkSink } from "kankaku/ports";
+import type { WorkSink } from "kankaku-pi/ports";
 
 export interface SyncCliDeps {
   env: NodeJS.ProcessEnv;

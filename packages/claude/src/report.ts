@@ -1,5 +1,5 @@
-import { buildTasks } from "kankaku/domain";
-import type { TaskView, WorkRecord, WorkStatus } from "kankaku/domain";
+import { buildTasks } from "kankaku-pi/domain";
+import type { TaskView, WorkRecord, WorkStatus } from "kankaku-pi/domain";
 
 export interface FormatReportOptions {
   /** Epoch ms "now" the window is measured back from. */

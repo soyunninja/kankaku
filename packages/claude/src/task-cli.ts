@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { CachedCatalog, PocketBaseClient, createPocketBaseCatalogFetcher, resolveHubCredentials } from "kankaku/hub";
-import type { HubTask } from "kankaku/domain";
+import { CachedCatalog, PocketBaseClient, createPocketBaseCatalogFetcher, resolveHubCredentials } from "kankaku-pi/hub";
+import type { HubTask } from "kankaku-pi/domain";
 import type { CliDeps, CliResult } from "./cli-core.ts";
 import { findSession } from "./find-session.ts";
 import { resolveKankakuDir, resolveTargetFile } from "./paths.ts";

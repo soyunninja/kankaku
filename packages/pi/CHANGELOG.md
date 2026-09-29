@@ -1,0 +1,296 @@
+# Changelog
+
+All notable changes to kankaku-pi (formerly kankaku). The format follows Keep a Changelog; versions
+follow semver. Dates are the day the version was cut.
+
+## Unreleased
+
+### Changed
+
+- The package is renamed from `kankaku` to `kankaku-pi` (directory
+  `packages/kankaku` → `packages/pi`). The published library entry points
+  are renamed accordingly: `kankaku/domain`, `kankaku/ports` and
+  `kankaku/hub` become `kankaku-pi/domain`, `kankaku-pi/ports` and
+  `kankaku-pi/hub`. The `kankaku` npm name now belongs to the CLI
+  (formerly `kankaku-tui`). No behaviour change.
+
+## 0.12.1 — 2026-09-29
+
+### Fixed
+
+- **Installing from git loaded no extension.** `pi install
+  git:github.com/soyunninja/kankaku` clones the repository and reads the
+  `pi` manifest at its root, and since the repository became a monorepo
+  (v0.9.0) that root declared nothing: the install succeeded and pi then
+  failed to load the package. The root now declares this package's
+  extension. Git installs need `@v0.12.1` or later; the tags `v0.9.0` to
+  `v0.12.0` cannot be loaded from git. Installing from npm
+  (`pi install npm:kankaku`) was never affected.
+
+## 0.12.0 — 2026-09-29
+
+No changes in this package; released in lockstep with kankaku-claude and
+kankaku-tui 0.12.0.
+
+## 0.11.0 — 2026-09-29
+
+No changes in this package; released in lockstep with kankaku-claude and
+kankaku-tui 0.11.0.
+
+## 0.10.2 — 2026-09-29
+
+No changes in this package; released in lockstep with kankaku-claude and
+kankaku-tui 0.10.2.
+
+## 0.10.1 — 2026-09-29
+
+No changes in this package; released in lockstep with kankaku-claude and
+kankaku-tui 0.10.1.
+
+## 0.10.0 — 2026-09-28
+
+No changes in this package; released in lockstep with kankaku-claude and
+kankaku-tui 0.10.0.
+
+## 0.9.0 — 2026-09-28
+
+### Changed
+
+- Moved into the kankaku monorepo (`github.com/soyunninja/kankaku`,
+  `packages/kankaku`); versions are now lockstep with the other client
+  packages (`kankaku-claude`, `kankaku-tui`). No behaviour change.
+
+## 0.8.2 — 2026-09-28
+
+### Fixed
+
+- **A failed first sync against a new hub no longer carries the old hub's
+  state over.** 0.8.1 ignored a `sync-state.json` written for another hub
+  on the successful path, but when the very first run against the new hub
+  failed (a throwing sink, an unreachable hub) the error path still
+  persisted the old hub's watermark and hashes under the new URL, so the
+  next run skipped every task as "unchanged" again, and the automatic
+  (`session_start`/`agent_settled`/`session_shutdown`) short-circuit still
+  trusted the old hub's `logVersion`, so the new hub's very first run was
+  skipped until the next record was appended. Every path in
+  `adapters/sync-runner.ts` (automatic short-circuit and throttle, lock,
+  error, success) now applies the same gate. Stale comments in `domain/sync-plan.ts` and `AGENTS.md` that
+  described `hashes` as pruned to the window and `staleOutsideWindow` as
+  "changed" tasks are corrected: hashes are kept for as long as the task
+  exists, and the count is tasks this hub has never received.
+
+## 0.8.1 — 2026-09-28
+
+### Fixed
+
+- **Switching hubs starts from an empty sync state.** `sync-state.json`
+  records the hub URL it was synced against, and a state from another hub
+  already forced a full sync, but its content hashes were still consulted,
+  so every task the old hub knew looked "unchanged" and the new hub
+  received nothing (`uploaded 0, skipped N`). The runner also carried the
+  old hub's watermark and hashes into the new state. Both now ignore a
+  state whose `target` is not the configured hub (`domain/sync-plan.ts`,
+  `adapters/sync-runner.ts`).
+
+## 0.8.0 — 2026-09-27
+
+### Added
+
+- **`kankaku/hub` now publishes report formatting, the five report views,
+  the hub action line-builders, the export writer and the project config
+  helpers** (`report.ts`, `report-views.ts`, `hub-actions.ts`,
+  `export-writer.ts`, `project-config.ts`), so a future standalone TUI can
+  reuse them without importing anything that touches `@earendil-works/*`.
+  No behaviour change.
+
+### Changed
+
+- **The agent/plugin identity on a synced hub row now travels with the
+  record that measured it, not with whichever process later syncs it.**
+  `WorkRecord` gains optional `agent`/`agentVersion`/`plugin`/
+  `pluginVersion` fields, stamped by every record this package writes
+  (`agent: "pi"`, `plugin: "kankaku"`). A `task_entries` create now prefers
+  the orchestrator record's own identity over the syncing process's, and an
+  update omits `agent`/`agent_version`/`plugin`/`plugin_version` entirely
+  for a legacy record with no such identity — so a standalone `kankaku` TUI
+  (or a different agent) syncing a worklog it did not write can no longer
+  overwrite a row's original identity with its own. Additive; no schema
+  bump.
+
+## 0.7.1 — 2026-09-25
+
+### Changed
+
+- **The `/kankaku` panel is framed**: a rounded border in the theme's
+  `border` colour carries the panel title (now `>_ kankaku`, with the
+  prompt glyph in front), with one column of inner
+  padding, so the overlay reads as one card like pi's own bordered
+  components. Mouse hit-testing in fullscreen accounts for the frame.
+
+### Fixed
+
+- **`Esc` (and now `←`) go back in the `/kankaku` panel regardless of
+  pi-tui's list cancel handling**: the panel shell now owns Escape and
+  left arrow itself and pops the current screen directly, instead of
+  forwarding the key and relying on `SettingsList`/`SelectList` calling
+  `onCancel` on its own — a path that does not reliably fire in the real
+  TUI. A submenu or text field that is still open (the target screen's
+  client/project/task submenus, its legacy-label input, or an action's
+  result view) still receives Escape/← first and closes itself before the
+  shell takes over.
+- **An action's result view (sync now, sync all, backfill, catalog
+  refresh, export, pin, remember) closed and immediately reopened on
+  `Enter`/`Esc`, re-running the action each time** — only `q` got out. The
+  result view closed its submenu with `navigateTo` pointing at its own
+  row, which pi-tui's `SettingsList` treats as "select and activate that
+  row", so the row's submenu opened again. It now closes plainly; the list
+  restores the cursor to that row on its own.
+
+## 0.7.0 — 2026-09-25
+
+### Added
+
+- **The `/kankaku` overlay panel**: `/kankaku` with no arguments, in the
+  TUI, now opens a settings-like panel (pi-tui's own `SettingsList`/
+  `SelectList` widgets, the same keys pi's `/settings` uses) with sections
+  for Target, Report, Sync (hub only), Export, Doctor and About — every
+  existing view and action reachable from one place, keyboard-driven
+  always and mouse-clickable in pi's fullscreen mode. Every subcommand
+  below stays unchanged and is what headless (print/RPC) mode still uses.
+  See README "The `/kankaku` command". Internally, the report views
+  (`adapters/report-views.ts`), the doctor line-building
+  (`kankaku-command.ts#buildDoctorLines`), and the hub-facing
+  sync/backfill/catalog line-building (`adapters/hub-actions.ts`, new)
+  were each extracted into one shared function so the panel and the
+  `/kankaku` subcommands can never drift from each other.
+
+## 0.6.5 — 2026-09-25
+
+### Added
+
+- **Link a session to an existing hub task** (`/kankaku task pick`/`clear`):
+  the picker lists the effective project's open/doing `tasks` rows, the
+  link is session-only (never persisted to `config.json`, never prompted at
+  `session_start`, dropped by any target change), and `task_entries.task`
+  is sent on create only — reassigning the link in the hub's web app is
+  never undone by a later sync, exactly like `client`/`project`. kankaku
+  still never creates a task from pi. See README "Linking to a hub task".
+- **Prompt-cache hit ratio in the local report**: `/kankaku`, `/kankaku
+  tasks`, `clients` and `projects` lines now end with `cache hit NN%`,
+  computed as `cacheRead / (input + cacheRead + cacheWrite)` from the
+  already-recorded token counts (`domain/work-record.ts#cacheHitRatio`);
+  omitted, never shown as `0%`, when no tokens were recorded. No record
+  schema or sync change.
+
+## 0.6.0 — 2026-09-24
+
+### Added
+
+- **Compiled, pi-free library entry points** (`kankaku/domain`,
+  `kankaku/ports`, `kankaku/hub`) so a plain Node consumer — no pi, no
+  TypeScript loader — can import the pure domain, the port interfaces, and
+  the hub adapters (PocketBase client/catalog/sink, `runSync`, the JSONL
+  work log, the cached catalog, hub credentials). Built by `npm run build`
+  (`tsc -p tsconfig.build.json`) to `dist/`, resolved through
+  `package.json`'s `exports` map, and required to stay pi-free by
+  `tests/public-exports.test.ts` against the compiled output. `npm run
+  check` now builds first. `./src/extension.ts` (pi's own load path) is
+  unchanged. See README "Using kankaku as a library".
+
+## 0.5.1 — 2026-09-23
+
+### Changed
+
+- **The hub catalog now refreshes on every session start**, not just when
+  its 6-hour cache is stale, so a client or project created in the hub
+  minutes ago shows up right away instead of waiting for the TTL. Silent
+  target resolution (project config / `repo_paths`) still returns without
+  waiting for that refresh; only when the picker is actually shown does
+  kankaku wait for it, bounded by a new 1.5s deadline
+  (`pickerRefreshDeadlineMs`), falling back to the cached snapshot — without
+  aborting the refresh — if the hub does not answer in time or the refresh
+  fails. `/kankaku target pick` follows the same rule. The no-cache-at-all
+  path and `/kankaku catalog refresh` are unchanged.
+
+## 0.5.0 — 2026-09-23
+
+The first release that talks to a hub, and the one that makes subagent time
+trustworthy across every mechanism kankaku recognises.
+
+### Added
+
+- **Hub (PocketBase) integration.** kankaku can bill a record to a hub client,
+  project and task instead of a free-text label: a session picker
+  (`/kankaku target`), a cached catalog, and a sync client that uploads
+  consolidated task rows (`/kankaku sync`, `sync all`, `backfill`), with
+  automatic sync on `session_start`, `agent_settled` and now `session_shutdown`.
+  Assignment fields are create-only, so reassigning a row in the hub is never
+  undone by a later sync. Configuration through `KANKAKU_PB_URL`,
+  `KANKAKU_PB_EMAIL`, `KANKAKU_PB_PASSWORD`, `KANKAKU_SYNC_AUTO`,
+  `KANKAKU_SYNC_MIN_INTERVAL_MINUTES` and `KANKAKU_SYNC_PROMPT`.
+- **Measurement quality on every task row.** `agent`, `agent_version`,
+  `plugin`, `plugin_version`, `waiting_quality`, `cost_quality` and
+  `subagent_linkage` travel with each row so the hub can say how much to
+  trust a number. `thinking_level` (the model's reasoning effort) is recorded
+  per record and sent along.
+- **Generic subagent detection.** A machine-wide process registry
+  (`~/.kankaku/run/`) and an OS ancestry snapshot let kankaku find a
+  subagent's orchestrator by proven process identity, never by pid alone.
+  Built-in profiles for gentle-pi (confirmed child marker, usage
+  forwarding), pi's bundled subagent example (ancestry only) and
+  pi-subagents (`PI_SUBAGENT_DEPTH`); any other mechanism can be declared
+  with `KANKAKU_SUBAGENT_TOOLS` and `KANKAKU_SUBAGENT_CHILD_ENV`.
+- **Four-state role model.** Besides orchestrator and subagent (joined or
+  orphan), a record can be *uncertain*: a live tracked ancestor was found but
+  no recognised marker. Uncertain records never become tasks and never sync
+  as orchestrators. `KANKAKU_ROLE=orchestrator|subagent` is an explicit,
+  non-inherited escape hatch that never beats a confirmed marker.
+- **`/kankaku doctor`.** Reports the process's role and how it was decided,
+  the tracked ancestor, active subagent profiles and their matches, sync
+  state, hub configuration problems and stale sync tasks.
+- **Cross-worktree reunification.** A verified subagent running in another
+  checkout writes its records straight into its orchestrator's `.kankaku`
+  directory, so parent and child meet before any aggregation runs.
+- **Session directory.** A non-default pi session directory is recorded so a
+  session can be resumed exactly from the hub.
+- Records for runs an extension starts without a user prompt
+  (`trigger: "extension"`), so gentle-pi wake-ups are no longer invisible.
+
+### Changed
+
+- Automatic sync is throttled only for `agent_settled`; `session_start` and
+  `session_shutdown` always catch up when the log changed. The shutdown sync
+  is awaited with a 3 s bound so quitting pi never hangs on an unreachable
+  hub.
+- Every file kankaku writes under `~/.kankaku` is owner-only (directories
+  `0700`, files `0600`); `~/.kankaku` itself is never chmod'd.
+- Sync-state hashes are kept for as long as a task exists, so "changed but
+  outside the sync window" is reported once, not forever.
+- Project is a hint, not a filter, when joining subagents to orchestrators.
+
+### Fixed
+
+- A run that starts before the previous one settles gets its own record; a
+  set-aside record is written exactly once at shutdown; duplicate ids are
+  deduplicated at the log boundary.
+- Forwarded subagent usage is added exactly once, in the task view, and never
+  when a joined child confirmed by the same profile already carries it.
+- A configured child marker never demotes an interactive session; ambient
+  variable names (`PI_`, `TERM`, `LC_`, `NODE_`, `NPM_`, `KANKAKU_` prefixes
+  and known pi/shell names) are rejected as markers.
+- Process identity is frozen for the life of the OS process, so `/new`,
+  `/resume`, `/fork` and `/reload` never re-derive a different role.
+- Stale writability-probe files and dead registry entries are swept
+  opportunistically; a live-but-unverifiable registry entry is never removed
+  by another process.
+
+### Notes
+
+- `WORK_RECORD_SCHEMA` is unchanged: every new persisted field is optional.
+- The hub that receives these rows lives in the `kankaku-hub` repository;
+  its dashboard shows sessions, tasks, clients and, optionally, Engram
+  session narratives.
+
+## 0.4.6 — 2026-09-19
+
+Last release before the hub integration. See the git history for details.

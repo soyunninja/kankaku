@@ -2,11 +2,11 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import {
   CachedCatalog, readProjectClient, readProjectTargetIds, resolveHubCredentials,
-} from "kankaku/hub";
+} from "kankaku-pi/hub";
 import {
   formatWorkTargetLabel, isValidClient, resolveClient, resolveWorkTarget, resolveWorkTargetSource,
-} from "kankaku/domain";
-import type { WorkTarget } from "kankaku/domain";
+} from "kankaku-pi/domain";
+import type { WorkTarget } from "kankaku-pi/domain";
 import type { PsInfo } from "./claude-pid.ts";
 import { findSession } from "./find-session.ts";
 import { resolveKankakuDir, resolveTargetFile } from "./paths.ts";
