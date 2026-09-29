@@ -133,7 +133,8 @@ test("a headless Stop keeps the settled prompt pending instead of writing the re
     await headlessPrompt(env, 1000, assistant("m1", 2, 3, HEADLESS));
 
     assert.equal(worklog(env).length, 0);
-    assert.deepEqual(env.sleeps, []);
+    // No 100 ms statusline polls: only the bounded 25 ms transcript polls run.
+    assert.ok(env.sleeps.length > 0 && env.sleeps.every((ms) => ms === 25));
     assert.equal(env.syncs.includes("agent_settled"), false);
     const state = readState(paths(env).stateFile);
     assert.equal(state?.promptOpen, null);

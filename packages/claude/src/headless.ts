@@ -2,7 +2,7 @@ import type { WorkRecord } from "kankaku-pi/domain";
 import { settleCost } from "./cost-chain.ts";
 import { buildClaudeRecord } from "./record.ts";
 import type { PendingPrompt, SessionState } from "./session-state.ts";
-import type { TranscriptCostState } from "./transcript.ts";
+import type { TokenUsage, TranscriptCostState } from "./transcript.ts";
 import type { RecordAssignment } from "./work-target.ts";
 
 /**
@@ -39,6 +39,31 @@ export function allocateCost(totalUsd: number, weights: number[]): number[] {
   return shares.map((share) => Number(share) / MICRO);
 }
 
+/**
+ * Adds tokens read after a prompt settled to the LAST pending prompt: the
+ * transcript is written asynchronously, so late lines belong to the prompt
+ * that just settled. No pending prompt or no tokens: unchanged.
+ */
+export function withLateTokens(pending: PendingPrompt[], tokens: TokenUsage | undefined): PendingPrompt[] {
+  if (!tokens || pending.length === 0) return pending;
+  const last = pending[pending.length - 1]!;
+  const usage = last.core.usage;
+  const merged: PendingPrompt = {
+    ...last,
+    core: {
+      ...last.core,
+      usage: {
+        ...usage,
+        input: usage.input + tokens.input,
+        output: usage.output + tokens.output,
+        cacheRead: usage.cacheRead + tokens.cacheRead,
+        cacheWrite: usage.cacheWrite + tokens.cacheWrite,
+      },
+    },
+  };
+  return [...pending.slice(0, -1), merged];
+}
+
 function totalTokens(prompt: PendingPrompt): number {
   const { input, output, cacheRead, cacheWrite } = prompt.core.usage;
   return [input, output, cacheRead, cacheWrite].reduce((sum, n) => sum + (Number.isFinite(n) ? n : 0), 0);
@@ -52,6 +77,8 @@ export interface HeadlessRecordsInput {
   costState?: TranscriptCostState;
   assignment?: RecordAssignment;
   agentVersion?: string;
+  /** Model id from the transcript (headless runs have no statusline model). */
+  model?: string;
 }
 
 /**
@@ -74,7 +101,7 @@ export function buildHeadlessRecords(input: HeadlessRecordsInput): WorkRecord[] 
   return pending.map((prompt, index) => {
     const cost = costs?.[index];
     const core = cost === undefined ? prompt.core : { ...prompt.core, usage: { ...prompt.core.usage, cost }, costObserved: true as const };
-    return buildClaudeRecord(core, state, sessionId, undefined, input.assignment, {
+    return buildClaudeRecord(core, state, sessionId, input.model, input.assignment, {
       ...(input.agentVersion !== undefined ? { agentVersion: input.agentVersion } : {}),
       ...(cost !== undefined && allocated ? { costAllocated: true as const } : {}),
     });

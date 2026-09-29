@@ -7,7 +7,7 @@ import { readEventLog } from "./event-log.ts";
 import { splitPrompts, replayPrompt } from "./replay.ts";
 import { buildClaudeRecord, stampTokens } from "./record.ts";
 import { settleTranscripts } from "./transcript-settle.ts";
-import { buildHeadlessRecords } from "./headless.ts";
+import { buildHeadlessRecords, withLateTokens } from "./headless.ts";
 import { readCost, deleteCost, type CostEnv } from "./cost-store.ts";
 import { settleCost } from "./cost-chain.ts";
 import type { RecordAssignment } from "./work-target.ts";
@@ -65,6 +65,9 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
       const version = transcript?.transcript.agentVersion ?? state.transcript?.agentVersion;
       const headless = held.length > 0 || transcript?.transcript.entrypoint === "sdk-cli";
       const costNow = readCost(input.env, sessionId);
+      const model = costNow?.model ?? transcript?.transcript.model ?? state.transcript?.model;
+      let attached = false;
+      const headlessModel = transcript?.transcript.model ?? state.transcript?.model;
       const assignment = input.resolveAssignment?.(state.cwd, sessionId);
 
       if (openPrompt) {
@@ -81,9 +84,10 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
           const core = replayPrompt(last, { settledAt, cost });
           if (core && headless) {
             held.push({ core: stampTokens(core, transcript?.tokens), costAtStart: openPrompt.costAtStart });
+            attached = true;
           } else if (core) {
             records.push(
-              buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, costNow?.model, assignment, {
+              buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, model, assignment, {
                 ...(version !== undefined ? { agentVersion: version } : {}),
               }),
             );
@@ -93,9 +97,11 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
 
       records.push(
         ...buildHeadlessRecords({
-          pending: held,
+          // The file is final: lines written after the last prompt settled belong to the last pending one.
+          pending: attached ? held : withLateTokens(held, transcript?.tokens),
           state,
           sessionId,
+          ...(headlessModel !== undefined ? { model: headlessModel } : {}),
           ...(transcript?.costState !== undefined ? { costState: transcript.costState } : {}),
           ...(assignment !== undefined ? { assignment } : {}),
           ...(version !== undefined ? { agentVersion: version } : {}),

@@ -2,7 +2,7 @@ import { unlinkSync } from "node:fs";
 import { resolvePaths, type ResolvedPaths } from "./paths.ts";
 import { appendEvent, readEventLog, dropSettledPrompts } from "./event-log.ts";
 import { readState, writeState, updateState, type SessionState } from "./session-state.ts";
-import { settleTranscripts, trackTranscriptAtSubmit, type SettledTranscripts } from "./transcript-settle.ts";
+import { settleTranscripts, trackTranscriptAtSubmit, waitForTranscript, type SettledTranscripts } from "./transcript-settle.ts";
 import { resolveClaudePid, type PsInfo } from "./claude-pid.ts";
 import { splitPrompts, type PromptEvents } from "./prompts.ts";
 import { readCost, deleteCost, sweepStaleCostFiles } from "./cost-store.ts";
@@ -155,25 +155,27 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   const events = readEventLog(paths.eventsFile);
   const beforeStopTs = events.length >= 2 ? events[events.length - 2]!.ts : events[events.length - 1]?.ts ?? deps.now();
 
-  // Read what the transcript gained before waiting for the cost: only a
-  // prompt that is open has anything to settle, and the wait is pointless
-  // for a session that has no statusline.
+  // A headless session (`claude -p`) has no statusline: its cost comes from the transcript at SessionEnd,
+  // so the statusline wait is pointless. The entry point is known after the first settle; before that, peek.
   const opened = readState(paths.stateFile);
-  const transcript = opened?.promptOpen ? settleSafely(opened, deps) : undefined;
-
-  // A headless session (`claude -p`) has no statusline: its cost comes from the transcript at SessionEnd.
-  const headless = transcript?.transcript.entrypoint === HEADLESS_ENTRYPOINT;
+  const entrypoint = opened?.transcript?.entrypoint ?? (opened?.promptOpen ? settleSafely(opened, deps)?.transcript.entrypoint : undefined);
+  const skipCostWait = entrypoint === HEADLESS_ENTRYPOINT;
 
   const deadline = deps.now() + STOP_COST_WAIT_MAX_MS;
   let cost = readCost(deps.env, sessionId);
-  while (!headless && (!cost || cost.updatedAt < beforeStopTs) && deps.now() < deadline) {
+  while (!skipCostWait && (!cost || cost.updatedAt < beforeStopTs) && deps.now() < deadline) {
     await deps.sleep(STOP_COST_WAIT_POLL_MS);
     cost = readCost(deps.env, sessionId);
   }
 
+  // Claude Code writes the transcript asynchronously: give the last assistant lines a bounded moment to land.
+  if (opened?.promptOpen) await waitForTranscript(opened.transcript, deps).catch(() => {});
+  const state = readState(paths.stateFile);
+  const transcript = state?.promptOpen ? settleSafely(state, deps) : undefined;
+  const headless = transcript?.transcript.entrypoint === HEADLESS_ENTRYPOINT;
+
   const prompts = splitPrompts(events);
   const last: PromptEvents | undefined = prompts[prompts.length - 1];
-  const state = readState(paths.stateFile);
   if (!last || !state) {
     if (!state) deps.stderr(`kankaku: no session state at Stop for ${sessionId}`);
     return;
@@ -202,7 +204,7 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   if (core) {
     const assignment = await assignmentResolver(paths, deps);
     const version = agentVersionOf(transcript, state);
-    const record = buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, cost?.model, assignment(state.cwd, sessionId), {
+    const record = buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, cost?.model ?? modelOf(transcript, state), assignment(state.cwd, sessionId), {
       ...(version !== undefined ? { agentVersion: version } : {}),
     });
     const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
@@ -284,7 +286,8 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
     const transcript = settleSafely(state, deps);
     const version = agentVersionOf(transcript, state);
     const headless = (state.pending?.length ?? 0) > 0 || transcript?.transcript.entrypoint === HEADLESS_ENTRYPOINT;
-    const pending = [...(state.pending ?? [])];
+    let pending = [...(state.pending ?? [])];
+    let attached = false;
 
     if (state.promptOpen) {
       const events = readEventLog(paths.eventsFile);
@@ -295,8 +298,9 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
         const core = replayPrompt(last, { settledAt: ts, cost: settled.cost });
         if (core && headless) {
           pending.push({ core: stampTokens(core, transcript?.tokens), costAtStart: state.promptOpen.costAtStart });
+          attached = true;
         } else if (core) {
-          const record = buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, costNow?.model, assignment(state.cwd, sessionId), {
+          const record = buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, costNow?.model ?? modelOf(transcript, state), assignment(state.cwd, sessionId), {
             ...(version !== undefined ? { agentVersion: version } : {}),
           });
           log.append(record);
@@ -305,9 +309,13 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
     }
 
     if (headless && pending.length > 0) {
-      const { buildHeadlessRecords } = await import("./headless.ts");
+      const { buildHeadlessRecords, withLateTokens } = await import("./headless.ts");
+      // Lines written after the prompt settled belong to the prompt that just settled: the last one.
+      if (!attached) pending = withLateTokens(pending, transcript?.tokens);
+      const model = modelOf(transcript, state);
       const records = buildHeadlessRecords({
         pending,
+        ...(model !== undefined ? { model } : {}),
         state,
         sessionId,
         ...(transcript?.costState !== undefined ? { costState: transcript.costState } : {}),
@@ -412,6 +420,10 @@ function settleSafely(state: SessionState, deps: HandleHookDeps): SettledTranscr
     deps.stderr(`kankaku: transcript: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
   }
+}
+
+function modelOf(settled: SettledTranscripts | undefined, state: SessionState): string | undefined {
+  return settled?.transcript.model ?? state.transcript?.model;
 }
 
 function agentVersionOf(settled: SettledTranscripts | undefined, state: SessionState): string | undefined {

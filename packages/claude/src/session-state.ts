@@ -22,6 +22,8 @@ export interface TranscriptState {
   agentVersion?: string;
   /** `cli` (interactive) or `sdk-cli` (headless `claude -p`), from the transcript, once seen. */
   entrypoint?: string;
+  /** `message.model` of the last assistant line read; the record's model when the statusline gave none. */
+  model?: string;
 }
 
 /** A settled prompt of a headless session, held until `SessionEnd` (or recovery) knows the session cost. */
@@ -108,6 +110,7 @@ function isTranscriptState(value: unknown): value is TranscriptState {
   if (typeof o.path !== "string" || typeof o.offsets !== "object" || o.offsets === null) return false;
   if (o.agentVersion !== undefined && typeof o.agentVersion !== "string") return false;
   if (o.entrypoint !== undefined && typeof o.entrypoint !== "string") return false;
+  if (o.model !== undefined && typeof o.model !== "string") return false;
   return Object.values(o.offsets).every((position) => {
     if (typeof position !== "object" || position === null) return false;
     const p = position as Record<string, unknown>;

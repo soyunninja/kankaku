@@ -2,6 +2,7 @@ import type { TranscriptState } from "./session-state.ts";
 import {
   MAX_SETTLE_BYTES,
   listSubagentTranscripts,
+  readTranscriptHead,
   readTranscriptSince,
   statTranscriptSize,
   type TokenUsage,
@@ -36,7 +37,49 @@ export function trackTranscriptAtSubmit(existing: TranscriptState | undefined, p
     offsets,
     ...(existing?.agentVersion !== undefined ? { agentVersion: existing.agentVersion } : {}),
     ...(existing?.entrypoint !== undefined ? { entrypoint: existing.entrypoint } : {}),
+    ...(existing?.model !== undefined ? { model: existing.model } : {}),
   };
+}
+
+/** Poll every 25 ms, for at most 300 ms (see {@link waitForTranscript}). */
+export const TRANSCRIPT_POLL_MS = 25;
+export const TRANSCRIPT_WAIT_MAX_MS = 300;
+
+/**
+ * Claude Code writes the transcript asynchronously: the last assistant lines
+ * reach the disk shortly AFTER the Stop hook has started. Before a settle
+ * reads, poll the main transcript until its new bytes hold at least one
+ * complete assistant line AND its size did not change across two consecutive
+ * polls, every {@link TRANSCRIPT_POLL_MS}, for at most
+ * {@link TRANSCRIPT_WAIT_MAX_MS}; then the caller reads whatever is there.
+ * Clock and sleep are injected. Never throws.
+ */
+export async function waitForTranscript(
+  transcript: TranscriptState | undefined,
+  clock: { now: () => number; sleep: (ms: number) => Promise<void> },
+): Promise<void> {
+  if (!transcript) return;
+  const start = clock.now();
+  const position = transcript.offsets[transcript.path] ?? { bytes: 0 };
+  let previousSize: number | undefined;
+  for (;;) {
+    let ready = false;
+    try {
+      const size = statTranscriptSize(transcript.path);
+      const read = readTranscriptSince(transcript.path, position);
+      const sawLine =
+        read.lastMessageId !== undefined &&
+        (read.lastMessageId !== position.lastMessageId || read.usage.input + read.usage.output + read.usage.cacheRead + read.usage.cacheWrite > 0);
+      ready = sawLine && size !== undefined && size === previousSize;
+      previousSize = size;
+    } catch {
+      return;
+    }
+    if (ready) return;
+    const remaining = TRANSCRIPT_WAIT_MAX_MS - (clock.now() - start);
+    if (remaining <= 0) return;
+    await clock.sleep(Math.min(TRANSCRIPT_POLL_MS, remaining));
+  }
 }
 
 export interface SettledTranscripts {
@@ -68,6 +111,8 @@ export function settleTranscripts(
   let truncated = false;
   let version: string | undefined;
   let entrypoint: string | undefined;
+  let mainModel: string | undefined;
+  let subagentModel: string | undefined;
   let costState: TranscriptCostState | undefined;
 
   const files = [transcript.path, ...listSubagentTranscripts(transcript.path)];
@@ -88,11 +133,22 @@ export function settleTranscripts(
     total.cacheWrite += result.usage.cacheWrite;
     if (version === undefined) version = result.version;
     if (entrypoint === undefined) entrypoint = result.entrypoint;
-    if (file === transcript.path) costState = result.costState;
+    if (file === transcript.path) {
+      costState = result.costState;
+      mainModel = result.model;
+    } else if (result.model !== undefined) {
+      subagentModel = result.model;
+    }
   }
 
+  if ((version ?? transcript.agentVersion) === undefined || (entrypoint ?? transcript.entrypoint) === undefined) {
+    const head = readTranscriptHead(transcript.path);
+    version ??= head.version;
+    entrypoint ??= head.entrypoint;
+  }
   const agentVersion = version ?? transcript.agentVersion;
   const knownEntrypoint = entrypoint ?? transcript.entrypoint;
+  const model = mainModel ?? transcript.model ?? subagentModel;
   return {
     tokens: truncated ? undefined : total,
     transcript: {
@@ -100,6 +156,7 @@ export function settleTranscripts(
       offsets,
       ...(agentVersion !== undefined ? { agentVersion } : {}),
       ...(knownEntrypoint !== undefined ? { entrypoint: knownEntrypoint } : {}),
+      ...(model !== undefined ? { model } : {}),
     },
     ...(costState !== undefined ? { costState } : {}),
     truncated,

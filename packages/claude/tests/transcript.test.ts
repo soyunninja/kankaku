@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, writeFileSync, appendFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { parseTranscriptChunk, readTranscriptSince, listSubagentTranscripts } from "../src/transcript.ts";
+import { parseTranscriptChunk, readTranscriptSince, readTranscriptHead, listSubagentTranscripts } from "../src/transcript.ts";
 
 // Synthetic lines that copy only the SHAPES of a Claude Code transcript.
 function assistant(id: string, usage: Record<string, unknown>, extra: Record<string, unknown> = {}): string {
@@ -402,6 +402,39 @@ test("conservation: reading a growing subagent-like transcript in any slices sum
       }
       assert.deepEqual(sum, expected, `cut pattern with seed ${seed}`);
     }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("parseTranscriptChunk reports the model of the last assistant line", () => {
+  const withModel = (id: string, model: unknown) =>
+    JSON.stringify({ type: "assistant", message: { id, model, usage: usage(1, 1, 1, 1) } });
+  assert.equal(parseTranscriptChunk(lines(withModel("a", "model-a"), withModel("b", "model-b")), {}).model, "model-b");
+  assert.equal(parseTranscriptChunk(lines(withModel("a", "model-a"), withModel("b", 7)), {}).model, "model-a");
+  assert.equal(parseTranscriptChunk(lines(assistant("a", usage(1, 1, 1, 1))), {}).model, "model-x");
+  assert.equal(parseTranscriptChunk(lines(JSON.stringify({ type: "user" })), {}).model, undefined);
+});
+
+test("a finite cost-state total is usable whatever modelUsage holds, unless it flags an unknown model cost", () => {
+  const cost = (extra: Record<string, unknown>) => JSON.stringify({ type: "cost-state", totalCostUSD: 0.5, ...extra });
+  for (const extra of [{ modelUsage: {} }, {}, { modelUsage: { m: { costUSD: 1 } }, hasUnknownModelCost: false }]) {
+    assert.deepEqual(parseTranscriptChunk(lines(cost(extra)), {}).costState, { totalUsd: 0.5, hasUnknownModelCost: false });
+  }
+  assert.equal(parseTranscriptChunk(lines(cost({ modelUsage: {}, hasUnknownModelCost: true })), {}).costState?.hasUnknownModelCost, true);
+});
+
+test("readTranscriptHead reads the version and entry point from the first complete lines only", () => {
+  const dir = tmp();
+  try {
+    const file = join(dir, "s.jsonl");
+    writeFileSync(file, lines(JSON.stringify({ type: "user", version: "2.5.0", entrypoint: "sdk-cli" }), assistant("m1", usage(1, 1, 1, 1))));
+    assert.deepEqual(readTranscriptHead(file), { version: "2.5.0", entrypoint: "sdk-cli" });
+
+    // A first line that is still being written carries nothing yet.
+    writeFileSync(file, JSON.stringify({ type: "user", version: "2.5.0", entrypoint: "cli" }));
+    assert.deepEqual(readTranscriptHead(file), {});
+    assert.deepEqual(readTranscriptHead(join(dir, "missing.jsonl")), {});
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -164,3 +164,117 @@ test("settleTranscripts returns the main transcript's last cost-state", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ---- waitForTranscript ----
+
+import { waitForTranscript } from "../src/transcript-settle.ts";
+
+function clockFor(onSleep?: (now: number) => void) {
+  let now = 0;
+  const sleeps: number[] = [];
+  return {
+    now: () => now,
+    sleep: async (ms: number) => {
+      sleeps.push(ms);
+      now += ms;
+      onSleep?.(now);
+    },
+    sleeps,
+    total: () => sleeps.reduce((a, b) => a + b, 0),
+  };
+}
+
+test("waitForTranscript returns after two stable polls when the assistant line is already there", async () => {
+  const { dir, main } = setup();
+  try {
+    writeFileSync(main, "");
+    const tracked = trackTranscriptAtSubmit(undefined, main)!;
+    appendFileSync(main, assistant("m1", 1));
+    const clock = clockFor();
+    await waitForTranscript(tracked, clock);
+    assert.deepEqual(clock.sleeps, [25]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("waitForTranscript waits for a line that arrives late and then for the size to settle", async () => {
+  const { dir, main } = setup();
+  try {
+    writeFileSync(main, "");
+    const tracked = trackTranscriptAtSubmit(undefined, main)!;
+    let wrote = false;
+    const clock = clockFor((now) => {
+      if (now >= 50 && !wrote) {
+        wrote = true;
+        appendFileSync(main, assistant("m1", 1));
+      }
+    });
+    await waitForTranscript(tracked, clock);
+    assert.equal(wrote, true);
+    assert.ok(clock.total() >= 75 && clock.total() < 300, `waited ${clock.total()} ms`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("waitForTranscript gives up after 300 ms when nothing arrives", async () => {
+  const { dir, main } = setup();
+  try {
+    writeFileSync(main, "");
+    const clock = clockFor();
+    await waitForTranscript(trackTranscriptAtSubmit(undefined, main)!, clock);
+    assert.equal(clock.total(), 300);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("waitForTranscript gives up after 300 ms when the file keeps growing, and without a transcript does nothing", async () => {
+  const { dir, main } = setup();
+  try {
+    writeFileSync(main, "");
+    let n = 0;
+    const clock = clockFor(() => appendFileSync(main, assistant(`g${n++}`, 1)));
+    await waitForTranscript(trackTranscriptAtSubmit(undefined, main)!, clock);
+    assert.equal(clock.total(), 300);
+
+    const idle = clockFor();
+    await waitForTranscript(undefined, idle);
+    assert.deepEqual(idle.sleeps, []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("settleTranscripts reports the model of the last assistant line, main first, and keeps the stored one", () => {
+  const { dir, main, sub } = setup();
+  try {
+    const line = (id: string, model: string) => `${JSON.stringify({ type: "assistant", message: { id, model, usage: { input_tokens: 1 } } })}\n`;
+    writeFileSync(main, line("m1", "main-model"));
+    writeFileSync(join(sub, "a.jsonl"), line("s1", "sub-model"));
+    const first = settleTranscripts({ path: main, offsets: {} })!;
+    assert.equal(first.transcript.model, "main-model");
+    const second = settleTranscripts(first.transcript)!;
+    assert.equal(second.transcript.model, "main-model");
+    writeFileSync(main, "");
+    rmSync(main);
+    const onlySub = settleTranscripts({ path: main, offsets: {} })!;
+    assert.equal(onlySub.transcript.model, "sub-model");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("settleTranscripts learns the entry point and version from the head of the file when the new bytes carry none", () => {
+  const { dir, main } = setup();
+  try {
+    writeFileSync(main, `${JSON.stringify({ type: "user", version: "2.5.0", entrypoint: "sdk-cli" })}\n`);
+    const tracked = trackTranscriptAtSubmit(undefined, main)!; // positioned after that line
+    const result = settleTranscripts(tracked)!;
+    assert.equal(result.transcript.entrypoint, "sdk-cli");
+    assert.equal(result.transcript.agentVersion, "2.5.0");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

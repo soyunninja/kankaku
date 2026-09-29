@@ -338,6 +338,21 @@ How it is read:
   record is settled, so tokens spent after `Stop` and before the next
   settle (a background subagent that keeps running) land in the next record
   of the session, the same rule as cost.
+- **The transcript is written asynchronously.** Measured on real runs, the
+  last assistant lines reach the disk shortly AFTER the `Stop` hook has
+  started (none at 0 ms, present at 50 ms). Before reading at settle,
+  `Stop` therefore polls the transcript every 25 ms, for at most 300 ms,
+  until its new bytes hold a complete assistant line and its size did not
+  change across two polls; then it reads whatever is there (after the
+  statusline cost wait, so it usually adds little). Usage that still arrives
+  later is counted by the next settle. A headless session reads once more at
+  `SessionEnd` (or in recovery, which does not wait: the file is final) and
+  adds what it finds to the last pending prompt, since late lines belong to
+  the prompt that just settled.
+- **The model.** When the statusline gave no model (headless runs, or no
+  statusline), the record's `model` is `anthropic/<message.model>` of the
+  last assistant line, the same `anthropic/` prefix the statusline model gets.
+  The statusline model wins when there is one.
 - **A bound per settle.** At most 16 MiB of transcript is read per settle,
   across all files. If a settle finds more new content than that, it is
   skipped without counting and the record simply has no tokens; the hook
@@ -367,7 +382,13 @@ sessions:
    `costObserved`. If `SessionEnd` never runs, crash recovery writes the
    pending records the next time another session starts, reading the
    transcript then. Either way each prompt is written exactly once.
-3. With no `cost-state`, or one flagged `hasUnknownModelCost` (the total is
+3. A `cost-state` with a finite `totalCostUSD` is usable whatever its
+   `modelUsage` holds (an empty one included); only
+   `hasUnknownModelCost: true` disqualifies it. The cost also needs a start
+   baseline: a session Claude Code reports as newly started (`SessionStart`
+   source `startup`) begins at 0; without one the cost stays unobserved,
+   like the statusline cost.
+4. With no `cost-state`, or one flagged `hasUnknownModelCost` (the total is
    then not reliable), the records are written without cost.
 
 **Attribution.** A session with one prompt gets the whole cost. When a

@@ -50,6 +50,8 @@ export interface ParsedChunk {
   lastMessageUsage?: TokenUsage;
   version?: string;
   entrypoint?: string;
+  /** `message.model` of the last assistant line. */
+  model?: string;
   costState?: TranscriptCostState;
 }
 
@@ -107,6 +109,7 @@ export function parseTranscriptChunk(
   let lastMessageId = previous.lastMessageId;
   let version: string | undefined;
   let entrypoint: string | undefined;
+  let model: string | undefined;
   let costState: TranscriptCostState | undefined;
 
   let index = 0;
@@ -129,6 +132,7 @@ export function parseTranscriptChunk(
 
     if (parsed.type === "assistant") {
       const message = parsed.message;
+      if (isObject(message) && typeof message.model === "string" && message.model !== "") model = message.model;
       if (!isObject(message) || typeof message.id !== "string" || message.id === "") continue;
       lastMessageId = message.id;
       if (isObject(message.usage)) finals.set(message.id, parseUsage(message.usage));
@@ -180,6 +184,7 @@ export function parseTranscriptChunk(
     ...(lastMessageUsage !== undefined ? { lastMessageUsage } : {}),
     ...(version !== undefined ? { version } : {}),
     ...(entrypoint !== undefined ? { entrypoint } : {}),
+    ...(model !== undefined ? { model } : {}),
     ...(costState !== undefined ? { costState } : {}),
   };
 }
@@ -254,6 +259,40 @@ export function readTranscriptSince(
     };
   } catch {
     return unchanged;
+  } finally {
+    try {
+      closeSync(fd);
+    } catch {
+      // nothing to do
+    }
+  }
+}
+
+/** How much of the start of a transcript is looked at for the version and entry point (64 KiB). */
+const HEAD_BYTES = 64 * 1024;
+
+/**
+ * The version and entry point from the first complete lines of a transcript.
+ * A settle needs them even when no new line carries them yet (the transcript
+ * is written asynchronously and the read position is already past the first
+ * lines). Bounded; empty on any problem.
+ */
+export function readTranscriptHead(file: string): { version?: string; entrypoint?: string } {
+  let fd: number;
+  try {
+    fd = openSync(file, "r");
+  } catch {
+    return {};
+  }
+  try {
+    const buffer = Buffer.alloc(HEAD_BYTES);
+    const n = readSync(fd, buffer, 0, HEAD_BYTES, 0);
+    const lastNewline = buffer.subarray(0, n).lastIndexOf(0x0a);
+    if (lastNewline < 0) return {};
+    const { version, entrypoint } = parseTranscriptChunk(buffer.subarray(0, lastNewline + 1).toString("utf8"), {});
+    return { ...(version !== undefined ? { version } : {}), ...(entrypoint !== undefined ? { entrypoint } : {}) };
+  } catch {
+    return {};
   } finally {
     try {
       closeSync(fd);

@@ -203,6 +203,17 @@ extension has one. Instead:
   record; a settle reads at most `MAX_SETTLE_BYTES` (16 MiB) across all files
   and, beyond it, skips to the end and stamps no tokens. Any failure in this
   path is swallowed: the record is written as it would be without it.
+  Claude Code writes the transcript ASYNCHRONOUSLY: at Stop the last
+  assistant lines are often not on disk yet (measured: none at 0 ms, there at
+  50 ms). `Stop` (interactive and headless) calls `waitForTranscript` after
+  the statusline wait (25 ms polls, 300 ms max, injected clock and sleep);
+  usage arriving later is counted by the next settle. A headless
+  `SessionEnd` and recovery re-read and add the tokens to the LAST pending
+  prompt (`withLateTokens`) before building records, and recovery never
+  waits. The entry point and version fall back to `readTranscriptHead`
+  because the read position is already past the first lines. The record's
+  `model` is the statusline model, else `anthropic/` + the transcript's
+  `message.model`.
   A message's lines are adjacent and grow, so a message counts by its LAST
   line; a position stores `lastMessageId` and `lastMessageUsage` so a message
   split across two reads adds only its growth (a legacy position without the

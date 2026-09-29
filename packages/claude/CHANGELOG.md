@@ -20,6 +20,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   statusline cost. With several prompts the cost is shared in proportion to
   their tokens and each record carries `costAllocated`, kept local and never
   sent to the hub.
+- **Late transcript writes are covered.** Claude Code writes the transcript
+  asynchronously, after `Stop` has started. `Stop` waits up to 300 ms
+  (polling every 25 ms) for the last assistant lines, a headless
+  `SessionEnd` or recovery reads once more and adds late usage to the last
+  pending prompt, and the entry point and version are also read from the
+  start of the file when no new line carries them.
+- **`model` from the transcript** (`anthropic/<message.model>`) when the
+  statusline gave none.
 - Any surprise in the (undocumented) transcript format leaves the record as it
   was before: written, without tokens, version or cost, and no hook fails.
 
