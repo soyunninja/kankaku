@@ -106,10 +106,10 @@ function footer(lastFrame: () => string | undefined): string {
   return lines[lines.length - 1] ?? "";
 }
 
-test("'a' asks the hub for the selected task's row and opens the picker on the client step", async () => {
+test("'m' asks the hub for the selected task's row and opens the picker on the client step", async () => {
   const actions = fake();
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a");
+  await press(stdin, "m");
   assert.deepEqual(actions.prepared, [["t1"]]);
   const frame = frameOf(lastFrame);
   assert.match(frame, /Reassign · Client/);
@@ -123,7 +123,7 @@ test("while the hub is queried the footer shows a progress message, then the pic
   let release: (value: ReassignPrepared) => void = () => undefined;
   const actions = fake({ prepare: () => new Promise<ReassignPrepared>((resolve) => (release = resolve)) });
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a");
+  await press(stdin, "m");
   assert.match(footer(lastFrame), /asking the hub/);
   assert.doesNotMatch(frameOf(lastFrame), /Reassign · Client/);
   release({ ok: true, catalog, rows: new Map([["t1", hubRow("t1")]]) });
@@ -134,7 +134,7 @@ test("while the hub is queried the footer shows a progress message, then the pic
 test("walks client, project and task, reviews with names, applies and shows the result", async () => {
   const actions = fake();
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a", ENTER); // client Acme
+  await press(stdin, "m", ENTER); // client Acme
   assert.match(frameOf(lastFrame), /Reassign · Project/);
   assert.match(frameOf(lastFrame), /Acme — choose a project/);
   await press(stdin, ENTER); // project Website
@@ -170,7 +170,7 @@ test("the applying step shows while the requests are in flight and ignores keys"
   let finish: (outcomes: RowOutcome[]) => void = () => undefined;
   const actions = fake({ apply: () => new Promise<RowOutcome[]>((resolve) => (finish = resolve)) });
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a", ENTER, ENTER, ENTER, ENTER);
+  await press(stdin, "m", ENTER, ENTER, ENTER, ENTER);
   assert.match(frameOf(lastFrame), /Reassign · Applying/);
   await press(stdin, ESC, ENTER);
   assert.match(frameOf(lastFrame), /Reassign · Applying/);
@@ -182,7 +182,7 @@ test("the applying step shows while the requests are in flight and ignores keys"
 test("'no project' skips the task step and reviews a client-only assignment", async () => {
   const actions = fake();
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a", ENTER, DOWN, ENTER); // Acme, then 'no project'
+  await press(stdin, "m", ENTER, DOWN, ENTER); // Acme, then 'no project'
   const frame = frameOf(lastFrame);
   assert.match(frame, /Reassign · Review/);
   assert.match(frame, /Move 1 task to Acme/);
@@ -191,7 +191,7 @@ test("'no project' skips the task step and reviews a client-only assignment", as
 test("esc goes back one step at a time and closes at the first", async () => {
   const modal: boolean[] = [];
   const { stdin, lastFrame } = mount({ actions: fake(), onModalChange: (open) => modal.push(open) });
-  await press(stdin, "a", ENTER, ENTER); // at task
+  await press(stdin, "m", ENTER, ENTER); // at task
   assert.match(frameOf(lastFrame), /Reassign · Task/);
   await press(stdin, ESC);
   assert.match(frameOf(lastFrame), /Reassign · Project/);
@@ -205,14 +205,14 @@ test("esc goes back one step at a time and closes at the first", async () => {
 
 test("back from review returns to the task step with the previous choice selected", async () => {
   const { stdin, lastFrame } = mount({ actions: fake() });
-  await press(stdin, "a", ENTER, ENTER, ENTER); // review
+  await press(stdin, "m", ENTER, ENTER, ENTER); // review
   await press(stdin, ESC);
   const frame = frameOf(lastFrame);
   assert.match(frame, /Reassign · Task/);
   assert.match(frame, /› Fix login/);
 });
 
-test("existing keys are inert while the picker is open: r, t, esc-to-clear-filter and the table selection", async () => {
+test("existing keys are inert while the picker is open: r, a, t, esc-to-clear-filter and the table selection", async () => {
   let loads = 0;
   let cleared = 0;
   const actions = fake();
@@ -225,11 +225,11 @@ test("existing keys are inert while the picker is open: r, t, esc-to-clear-filte
     },
     onClearFilter: () => (cleared += 1),
   });
-  await press(stdin, "a");
+  await press(stdin, "m");
   assert.equal(loads, 1);
-  await press(stdin, "r", "t", "a", "A");
-  assert.equal(loads, 1, "r and t must not reload while the picker is open");
-  assert.equal(actions.prepared.length, 1, "a and A must not open a second picker");
+  await press(stdin, "r", "a", "t", "m", "M");
+  assert.equal(loads, 1, "r and a must not reload while the picker is open");
+  assert.equal(actions.prepared.length, 1, "m and M must not open a second picker");
   await press(stdin, DOWN);
   assert.match(frameOf(lastFrame), /› unassigned/, "the arrow moves the picker selection");
   await press(stdin, ESC);
@@ -256,12 +256,12 @@ test("with the picker closed the screen's own keys keep working: r reloads, arro
   assert.equal(cleared, 1);
 });
 
-test("'A' offers only the unassigned rows of the view and reports what it will not touch", async () => {
+test("'M' offers only the unassigned rows of the view and reports what it will not touch", async () => {
   const actions = fake({
     rows: [hubRow("t1"), hubRow("t2", { clientId: "c-acme" }), hubRow("t4")],
   });
   const { stdin, lastFrame } = mount({ actions, rows: [row("t1"), row("t2"), row("t3"), row("t4")] });
-  await press(stdin, "A");
+  await press(stdin, "M");
   assert.deepEqual(actions.prepared, [["t1", "t2", "t3", "t4"]]);
   assert.match(frameOf(lastFrame), /Reassign 2 unassigned tasks/);
   await press(stdin, ENTER, DOWN, ENTER); // Acme, no project
@@ -274,7 +274,7 @@ test("'A' offers only the unassigned rows of the view and reports what it will n
   assert.match(frameOf(lastFrame), /2 reassigned/);
 });
 
-test("'A' respects the project filter: only the filtered rows are asked about", async () => {
+test("'M' respects the project filter: only the filtered rows are asked about", async () => {
   const actions = fake();
   const rows = [row("t1", { project: "one" }), row("t2", { project: "two" })];
   const { stdin } = mount({ actions, rows });
@@ -282,22 +282,22 @@ test("'A' respects the project filter: only the filtered rows are asked about", 
   void stdin;
   const filtered = fake();
   const view = render(<TasksScreen load={() => ({ rows })} roots={["/work"]} version="0.1.0" columns={120} rows={24} projectFilter="two" reassign={filtered} />);
-  await press(view.stdin, "A");
+  await press(view.stdin, "M");
   assert.deepEqual(filtered.prepared, [["t2"]]);
 });
 
-test("'A' with nothing unassigned on the hub shows a footer message and opens nothing", async () => {
+test("'M' with nothing unassigned on the hub shows a footer message and opens nothing", async () => {
   const actions = fake({ rows: [hubRow("t1", { clientId: "c-acme" })] });
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "A");
+  await press(stdin, "M");
   assert.match(footer(lastFrame), /no unassigned tasks on the hub in this view/);
   assert.doesNotMatch(frameOf(lastFrame), /Reassign · /);
 });
 
-test("'a' on a task that is not on the hub yet says to sync first and opens nothing", async () => {
+test("'m' on a task that is not on the hub yet says to sync first and opens nothing", async () => {
   const actions = fake({ rows: [] });
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a");
+  await press(stdin, "m");
   assert.match(footer(lastFrame), /not on the hub yet — sync first/);
   assert.doesNotMatch(frameOf(lastFrame), /Reassign · /);
 });
@@ -305,7 +305,7 @@ test("'a' on a task that is not on the hub yet says to sync first and opens noth
 test("the footer message clears on the next key press", async () => {
   const actions = fake({ rows: [] });
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a");
+  await press(stdin, "m");
   assert.match(footer(lastFrame), /sync first/);
   await press(stdin, "r");
   assert.match(footer(lastFrame), /select/);
@@ -318,7 +318,7 @@ test("with no hub configured the reason shows in the footer and nothing opens", 
   };
   const modal: boolean[] = [];
   const { stdin, lastFrame } = mount({ actions: noHub, onModalChange: (open) => modal.push(open) });
-  await press(stdin, "a");
+  await press(stdin, "m");
   assert.match(footer(lastFrame), /hub credentials are not configured/);
   assert.doesNotMatch(frameOf(lastFrame), /Reassign · /);
   assert.equal(modal[modal.length - 1] ?? false, false);
@@ -326,14 +326,14 @@ test("with no hub configured the reason shows in the footer and nothing opens", 
 
 test("a screen rendered without reassignment actions says the hub is not available", async () => {
   const { stdin, lastFrame } = mount({ actions: undefined });
-  await press(stdin, "a");
+  await press(stdin, "m");
   assert.match(footer(lastFrame), /reassignment is not available/);
 });
 
 test("rejected credentials show as a footer message", async () => {
   const actions = fake({ prepare: async () => ({ ok: false, message: "the hub rejected the credentials" }) });
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a");
+  await press(stdin, "m");
   assert.match(footer(lastFrame), /the hub rejected the credentials/);
 });
 
@@ -346,7 +346,7 @@ test("a row that fails is reported and does not hide the others", async () => {
     ],
   });
   const { stdin, lastFrame } = mount({ actions, rows: [row("t1"), row("t2")] });
-  await press(stdin, "A", ENTER, DOWN, ENTER, ENTER); // Acme, no project, apply
+  await press(stdin, "M", ENTER, DOWN, ENTER, ENTER); // Acme, no project, apply
   const frame = frameOf(lastFrame);
   assert.match(frame, /1 reassigned · 1 failed/);
   assert.match(frame, /reassigned · prompt of t1/);
@@ -356,7 +356,7 @@ test("a row that fails is reported and does not hide the others", async () => {
 test("after a result the list shows the hub's assignment next to the local one, only for rows asked about", async () => {
   const actions = fake();
   const { stdin, lastFrame } = mount({ actions, rows: [row("t1", { clientName: "Local Client" }), row("t2")] });
-  await press(stdin, "a", ENTER, ENTER, ENTER, ENTER, ENTER);
+  await press(stdin, "m", ENTER, ENTER, ENTER, ENTER, ENTER);
   let frame = frameOf(lastFrame);
   assert.match(frame, /client +Local Client/);
   assert.match(frame, /hub +Acme · Website › Fix login/);
@@ -368,14 +368,14 @@ test("after a result the list shows the hub's assignment next to the local one, 
 test("a task whose hub row was only asked about shows the hub's current assignment", async () => {
   const actions = fake({ rows: [hubRow("t1", { clientId: "c-acme", projectId: "p-web" })] });
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a", ESC);
+  await press(stdin, "m", ESC);
   assert.match(frameOf(lastFrame), /hub +Acme · Website/);
 });
 
-test("the sidebar focus rule holds: with the main zone unfocused, a and A do nothing", async () => {
+test("the sidebar focus rule holds: with the main zone unfocused, m and M do nothing", async () => {
   const actions = fake();
   const { stdin } = mount({ actions, focused: false });
-  await press(stdin, "a", "A");
+  await press(stdin, "m", "M");
   assert.equal(actions.prepared.length, 0);
 });
 
@@ -392,7 +392,7 @@ function manyClients(count: number): ReassignCatalog {
 test("a long client list scrolls inside the panel and the frame never grows past the terminal rows", async () => {
   const actions = fake({ catalog: manyClients(60) });
   const { stdin, lastFrame } = mount({ actions, screenRows: 24 });
-  await press(stdin, "a");
+  await press(stdin, "m");
   let lines = frameOf(lastFrame).split("\n");
   assert.equal(lines.length, 24, "the frame has exactly the terminal's rows");
   assert.match(lines[0] ?? "", /^>_ kankaku/);
@@ -416,7 +416,7 @@ test("a long review list scrolls too and keeps the frame at the terminal rows", 
   const many = Array.from({ length: 50 }, (_, index) => `t${index}`);
   const actions = fake({ rows: many.map((id) => hubRow(id)) });
   const { stdin, lastFrame } = mount({ actions, rows: many.map((id) => row(id)), screenRows: 24 });
-  await press(stdin, "A", ENTER, DOWN, ENTER);
+  await press(stdin, "M", ENTER, DOWN, ENTER);
   assert.match(frameOf(lastFrame), /Move 50 tasks to Acme/);
   let lines = frameOf(lastFrame).split("\n");
   assert.equal(lines.length, 24);
@@ -430,7 +430,7 @@ test("a long review list scrolls too and keeps the frame at the terminal rows", 
 test("the picker keeps the frame at the terminal rows on a small terminal", async () => {
   const actions = fake({ catalog: manyClients(10) });
   const { stdin, lastFrame } = mount({ actions, screenRows: 12 });
-  await press(stdin, "a");
+  await press(stdin, "m");
   const lines = frameOf(lastFrame).split("\n");
   assert.equal(lines.length, 12);
   assert.match(lines[0] ?? "", /^>_ kankaku/);
@@ -439,8 +439,9 @@ test("the picker keeps the frame at the terminal rows on a small terminal", asyn
 test("the footer lists the reassignment keys on one line, and 'esc clear filter' only while a filter is set", () => {
   const plain = mount({ actions: fake() });
   const line = footer(plain.lastFrame);
-  assert.match(line, /a reassign\s+A bulk\s+t today\/all/);
+  assert.match(line, /a today\/all\s+m move\s+M move all/);
   assert.doesNotMatch(line, /clear filter/);
+  assert.doesNotMatch(line, /\bt /);
   assert.match(line, /q quit\s+← menu/);
 
   const filtered = render(<TasksScreen load={() => ({ rows: [row("t1")] })} roots={["/work"]} version="0.1.0" columns={120} rows={24} projectFilter="kankaku" reassign={fake()} />);
@@ -450,7 +451,7 @@ test("the footer lists the reassignment keys on one line, and 'esc clear filter'
 test("the picker fits a stacked 90-column terminal too", async () => {
   const actions = fake({ catalog: manyClients(30) });
   const { stdin, lastFrame } = render(<TasksScreen load={() => ({ rows: [row("t1")] })} roots={["/work"]} version="0.1.0" columns={90} rows={24} reassign={actions} />);
-  await press(stdin, "a");
+  await press(stdin, "m");
   const lines = frameOf(lastFrame).split("\n");
   assert.equal(lines.length, 24);
   assert.match(frameOf(lastFrame), /Reassign · Client/);
@@ -462,9 +463,44 @@ test("a key pressed while the hub is being asked keeps the progress message on t
   let release: (value: ReassignPrepared) => void = () => undefined;
   const actions = fake({ prepare: () => new Promise<ReassignPrepared>((resolve) => (release = resolve)) });
   const { stdin, lastFrame } = mount({ actions });
-  await press(stdin, "a", "r", "t");
+  await press(stdin, "m", "r", "t");
   assert.match(footer(lastFrame), /asking the hub/);
   release({ ok: true, catalog, rows: new Map([["t1", hubRow("t1")]]) });
   await tick();
+  assert.match(frameOf(lastFrame), /Reassign · Client/);
+});
+
+test("'t' does nothing on the Tasks screen", async () => {
+  let loads = 0;
+  const actions = fake();
+  const { stdin, lastFrame } = mount({
+    actions,
+    load: () => {
+      loads += 1;
+      return { rows: [row("t1")] };
+    },
+  });
+  await press(stdin, "t");
+  assert.equal(loads, 1);
+  assert.equal(actions.prepared.length, 0);
+  assert.doesNotMatch(frameOf(lastFrame), /Reassign · /);
+});
+
+test("'a' still toggles today/all while 'm' opens the picker", async () => {
+  const scopes: boolean[] = [];
+  const actions = fake();
+  const { stdin, lastFrame } = mount({
+    actions,
+    load: (options?: { all: boolean }) => {
+      scopes.push(options?.all ?? false);
+      return { rows: [row("t1")] };
+    },
+  } as never);
+  await press(stdin, "a");
+  assert.deepEqual(scopes, [false, true]);
+  assert.equal(actions.prepared.length, 0);
+  assert.doesNotMatch(frameOf(lastFrame), /Reassign · /);
+  await press(stdin, "m");
+  assert.equal(actions.prepared.length, 1);
   assert.match(frameOf(lastFrame), /Reassign · Client/);
 });

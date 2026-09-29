@@ -88,7 +88,7 @@ export function describeAssignment(assignment: Pick<HubRowSnapshot, "clientId" |
   return `${clientText} · ${projectText} › ${task?.title ?? "unknown task"}`;
 }
 
-/** The targets whose hub row exists and sits on the catalog's unassigned client: what `A` may touch. */
+/** The targets whose hub row exists and sits on the catalog's unassigned client: what `M` may touch. */
 export function eligibleForBulk(targets: ReassignTarget[], rows: ReadonlyMap<string, HubRowSnapshot>, catalog: ReassignCatalog): ReassignTarget[] {
   const unassigned = unassignedClient(catalog.clients);
   if (unassigned === undefined) return [];

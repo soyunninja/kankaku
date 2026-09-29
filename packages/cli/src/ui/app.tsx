@@ -39,7 +39,7 @@ export interface AppProps {
   wizard?: { facts: WizardFacts; actions: WizardActions };
   /** Opens the app straight into the wizard (`kankaku setup` on a TTY, or the first-run hint) instead of the Dashboard. */
   startInWizard?: boolean;
-  /** The hub side of the Tasks screen's `a`/`A` reassignment; omitted when no hub is wired (the keys then say so). */
+  /** The hub side of the Tasks screen's `m`/`M` reassignment; omitted when no hub is wired (the keys then say so). */
   reassign?: ReassignActions;
 }
 

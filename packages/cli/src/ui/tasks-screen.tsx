@@ -28,7 +28,7 @@ export interface TasksScreenProps {
   projectFilter?: string;
   /** `esc`: drop `projectFilter`. Omitted when the caller does not wire navigation. */
   onClearFilter?: () => void;
-  /** The hub side of `a`/`A` (reassignment). Omitted in a standalone render: the keys then say reassignment is not available. */
+  /** The hub side of `m`/`M` (reassignment). Omitted in a standalone render: the keys then say reassignment is not available. */
   reassign?: ReassignActions;
   /** Called with `true` while the hub is queried or the picker is open, `false` otherwise, so the app shell keeps its own `esc`/`←`/`Tab`/`1`-`4` keys out of the way. */
   onModalChange?: (open: boolean) => void;
@@ -143,9 +143,9 @@ function DetailPanel({ row, hub, width, height }: { row: TaskRow | undefined; hu
 
 const KEY_HINTS = [
   { key: "↑↓", label: "select" },
-  { key: "a", label: "reassign" },
-  { key: "A", label: "bulk" },
-  { key: "t", label: "today/all" },
+  { key: "a", label: "today/all" },
+  { key: "m", label: "move" },
+  { key: "M", label: "move all" },
   { key: "r", label: "refresh" },
   { key: "1-4", label: "screens" },
   { key: "q", label: "quit" },
@@ -171,11 +171,11 @@ function toTarget(row: TaskRow): ReassignTarget {
 /**
  * The Tasks screen: a table of tasks (via `domain/tasks-model.ts`, never
  * reimplemented here) with a `[ Task ]` detail panel for the selected row.
- * `t` toggles today/all, `r` reloads, `↑↓` move the selection. When
+ * `a` toggles today/all, `r` reloads, `↑↓` move the selection. When
  * `projectFilter` is set (via Today's `enter`), the table is restricted to
  * that project and `esc` clears it through `onClearFilter`.
  *
- * `a` reassigns the selected task on the hub and `A` every task of the
+ * `m` moves (reassigns) the selected task on the hub and `M` every task of the
  * current view that is unassigned there: the screen asks the hub for the
  * rows involved (`reassign.prepare`, a progress message in the footer
  * meanwhile), then opens the picker (`domain/reassign-picker.ts`) as a
@@ -319,11 +319,11 @@ export function TasksScreen({ load, roots, version, columns, rows, focused = tru
       }
 
       const lastIndex = Math.max(visibleRows.length - 1, 0);
-      if (input === "a") {
+      if (input === "m") {
         startReassign("single");
-      } else if (input === "A") {
+      } else if (input === "M") {
         startReassign("bulk");
-      } else if (input === "t") {
+      } else if (input === "a") {
         const nextAll = !allRef.current;
         allRef.current = nextAll;
         setAll(nextAll);

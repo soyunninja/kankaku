@@ -7,8 +7,8 @@ versions follow semver. Dates are the day the version was cut.
 
 ### Added
 
-- The Tasks screen can reassign hub rows. `a` reassigns the selected task
-  and `A` every task of the current view that is unassigned on the hub,
+- The Tasks screen can reassign hub rows. `m` moves (reassigns) the selected
+  task and `M` every task of the current view that is unassigned on the hub,
   through a picker (client, project, task, review, result) shown over the
   content zone. Each changed row gets one `PATCH` of `{ client, project,
   task }` and nothing else; the selection is validated against the catalog
@@ -22,9 +22,7 @@ versions follow semver. Dates are the day the version was cut.
 
 ### Changed
 
-- The Tasks screen's today/all toggle moves from `a` to `t`, since `a` now
-  reassigns.
-- The Tasks footer hints list `a`, `A` and `t`; `esc clear filter` is shown
+- The Tasks footer hints list `m` and `M`; `esc clear filter` is shown
   only while a project filter is set, to keep the footer on one line.
 
 ## 1.1.0 — 2026-09-29

@@ -325,7 +325,7 @@ lives, the four core flows, how to run and release, and the gotchas.
   `task_entries` row) is **create-only**: `domain/hub-entry.ts`'s
   `buildTaskEntryUpdatePayload` must never include those fields, so a
   re-sync can never undo a reassignment made directly in the hub's web app
-  or from the `kankaku` CLI's Tasks screen (`a`/`A`, the only kankaku path
+  or from the `kankaku` CLI's Tasks screen (`m`/`M`, the only kankaku path
   that changes an existing row's assignment, explicit and user-driven; it
   PATCHes `{ client, project, task }` and nothing else, from the CLI
   package, never from this one). Only `buildTaskEntryCreatePayload` sends

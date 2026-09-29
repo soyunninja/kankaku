@@ -305,7 +305,7 @@ test("while the reassignment picker is open, esc, left, tab and 1-4 stay inside 
   await nextTick();
   stdin.write("\r"); // focus main
   await nextTick();
-  stdin.write("a"); // picker
+  stdin.write("m"); // picker
   await nextTick();
   assert.match(lastFrame() ?? "", /Reassign · Client/);
 
@@ -341,7 +341,7 @@ test("after the picker closes, 1-4 switch screens again and a reopened Tasks scr
   await nextTick();
   stdin.write("\r");
   await nextTick();
-  stdin.write("a");
+  stdin.write("m");
   await nextTick();
   stdin.write("\u001B");
   await nextTick();
@@ -356,7 +356,7 @@ test("q still quits while the picker is open", async () => {
   await nextTick();
   stdin.write("\r");
   await nextTick();
-  stdin.write("a");
+  stdin.write("m");
   await nextTick();
   assert.match(lastFrame() ?? "", /Reassign · Client/);
   stdin.write("q");

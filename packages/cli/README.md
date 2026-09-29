@@ -445,8 +445,8 @@ the hub has no credentials — in which case `c`/`s`/`S` do nothing.
 - **Tasks** — a table (time, project, work, cost, prompt) with a
   highlighted row on the left, and a `[ Task ]` detail panel on the right
   showing the selected row's full prompt, client, project, hub task,
-  wall/work/wait time, cost, cache hit and subagent count. `a` and `A`
-  reassign hub rows (see "Reassigning from the Tasks screen" below).
+  wall/work/wait time, cost, cache hit and subagent count. `m` and `M`
+  move (reassign) hub rows (see "Reassigning from the Tasks screen" below).
 - **Catalog** — `[ Clients ]` on the left; the selected client's
   `[ Projects ]`, with open/doing hub task counts, on the right. The
   Clients panel header shows the cache's age and a `(stale)` flag.
@@ -459,15 +459,15 @@ the hub has no credentials — in which case `c`/`s`/`S` do nothing.
 Sync never changes the assignment of a row that is already on the hub
 (it stays create-only, so a reassignment made anywhere is never undone by
 a later sync). The Tasks screen is the explicit way to change it from
-kankaku: with the content zone focused, `a` reassigns the selected task
-and `A` reassigns every task of the current view (the project filter and
+kankaku: with the content zone focused, `m` moves (reassigns) the selected task
+and `M` reassigns every task of the current view (the project filter and
 the today/all scope) whose hub row is on the unassigned client.
 
 Before anything opens, kankaku asks the hub for the rows involved (the
 footer shows `asking the hub…`) and refreshes the catalog. If the hub is
 not configured, rejects the credentials or cannot be reached, the footer
-says so and nothing opens; so does `a` on a task that is not on the hub
-yet (`not on the hub yet — sync first`) and `A` when no task of the view
+says so and nothing opens; so does `m` on a task that is not on the hub
+yet (`not on the hub yet — sync first`) and `M` when no task of the view
 is unassigned there.
 
 The picker is a panel over the content zone with its own footer hints:
@@ -500,9 +500,9 @@ What it does and does not do:
   active, the task not done. The picker cannot build an inconsistent
   choice, and the planner rejects one anyway (the hub itself only checks
   that each id exists).
-- `A` only ever touches rows that are on the unassigned client on the
+- `M` only ever touches rows that are on the unassigned client on the
   hub; a row that already has a real assignment is never changed by it.
-  Use `a` on that task to move it deliberately.
+  Use `m` on that task to move it deliberately.
 - The local worklog is never rewritten; the Tasks screen keeps showing
   the local assignment. After a reassignment the hub's assignment is shown
   next to it for the rows asked about in this session.
@@ -547,9 +547,9 @@ jump to the first/last row.
   (filtered to it), `r` refresh; the Quick actions panel additionally
   takes `c` (refresh catalog), `s` (sync all projects) and `S` (full sync
   all) — one at a time, ignored while another is running.
-- **Tasks** — `t` toggle today/all (it was `a` before 1.2.0),
+- **Tasks** — `a` toggle today/all,
   `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the selection, `r` refresh,
-  `a` reassign the selected task on the hub, `A` reassign every task of
+  `m` move (reassign) the selected task on the hub, `M` move every task of
   the view that is unassigned on the hub (both open the picker, see above),
   `esc` clears a project filter set from Dashboard.
 - **Catalog** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the client
@@ -563,6 +563,6 @@ The TUI never writes to disk on its own — Dashboard, Tasks and read-only
 Catalog views write nothing at all; Catalog's `refresh`, Sync's
 `s`/`f`/`S` and Dashboard's Quick actions `c`/`s`/`S` write only through
 kankaku's own adapters (`CachedCatalog`, `SyncStateStore`, the hub
-itself), exactly as kankaku's own sync paths do. Tasks' `a`/`A` write
+itself), exactly as kankaku's own sync paths do. Tasks' `m`/`M` write
 nothing to disk either (apart from the catalog cache refresh): they change
 the hub's rows only, after the picker's Review step.

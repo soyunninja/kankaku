@@ -1055,7 +1055,7 @@ is create-only for the exact same reason: reassigning which task a row
 belongs to in the web app is never undone by a later sync. Sync itself
 never changes an assignment, so to have kankaku change one, do it
 explicitly: in the web app, or from the `kankaku` CLI's Tasks screen
-(`a` for the selected task, `A` for every unassigned one in the view), not
+(`m` for the selected task, `M` for every unassigned one in the view), not
 by re-syncing.
 
 **Historical ("Sin determinar") records.** A record with no `clientId`, or
