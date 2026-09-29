@@ -3,6 +3,15 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Changed
+
+- Bundles the next `kankaku-claude`, which adds `/kankaku:task` to link a
+  Claude Code session to a hub task. `kankaku setup` installs the new command
+  file with no change in this package's own code; `kankaku doctor` reports
+  `commands missing: task` until setup runs again.
+
 ## 0.11.0 — 2026-09-29
 
 ### Changed

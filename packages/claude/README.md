@@ -142,6 +142,8 @@ anything behind in whatever project happens to be open.
   session id, whether its process is still alive, whether a prompt is open,
   and the last cost the statusline reported, preceded by the resolved work
   target (wraps `node dist/cli.js status`).
+- `/kankaku:task` — links this session to a hub task (wraps
+  `node dist/cli.js task`); see "Linking a task" below.
 - `/kankaku:setup` — prints the `statusLine` snippet described above (wraps
   `node dist/cli.js setup`).
 - `/kankaku:sync` — manually syncs recent local work records to the hub
@@ -222,7 +224,36 @@ crash recovery), never on the per-tool-call hooks. `/kankaku:status` and
 `/kankaku:doctor` print `target: <client> · <project> (source: ...)`, or
 `target: none (<reason>)`.
 
-There is nothing to pick inside Claude Code yet. Assignment is create-only
+### Linking a task
+
+`/kankaku:task` links the session to one hub task of the project resolved
+for the folder, so the records written from then on carry that task:
+
+- `/kankaku:task` lists the project's open tasks (status `open` or `doing`),
+  numbered, and marks the linked one; Claude then asks which one you want.
+- `/kankaku:task <number>` picks from the last list shown in this session,
+  `/kankaku:task <id>` by hub id, and `/kankaku:task <text>` by a unique
+  case-insensitive part of the title (several matches are listed and nothing
+  changes). A purely numeric argument is always a list number.
+- `/kankaku:task clear` removes the link.
+
+The link is session-only, like `/kankaku task pick` in pi: it is stored in
+`<KANKAKU_DIR>/claude/<session>.target.json`, never in `config.json`, and is
+removed when the session ends. The list refreshes the catalog first (bounded
+to 3 seconds) and falls back to the cache, saying how old it is; the hooks
+still only read the cache. A record keeps the link only while the task still
+belongs to the resolved project in the catalog; otherwise it is dropped and
+`/kankaku:status` and `/kankaku:doctor` print
+`task: none (linked task "<title>" is not in project <name>)`. Both print
+`task: <title>` or `task: none` otherwise.
+
+The CLI finds its session from its own process: it walks up to the Claude
+Code process and takes the session state of this project whose `pid` matches
+(most recent activity first). Without a session it prints
+`no active Claude Code session found for this folder`. Set
+`KANKAKU_CLAUDE_SESSION=<session id>` to name the session explicitly (tests,
+scripting); it wins over the process lookup. Overriding the client or project
+from Claude Code is not supported yet. Assignment is create-only
 on the hub: a row already uploaded as unassigned stays that way until it is
 reassigned in the web app; a later sync does not move it.
 

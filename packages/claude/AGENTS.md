@@ -76,6 +76,17 @@ extension has one. Instead:
   > cached catalog `repo_paths`, through the library's `resolveWorkTarget`),
   `RecordAssignment` and `formatTargetLine`. Imports `kankaku`, so heavy
   paths only.
+- `src/session-target-store.ts` — `readSessionTarget`/`writeSessionTarget`,
+  the session-only task link `<KANKAKU_DIR>/claude/<session>.target.json`
+  (`hubTaskId`, `hubTaskTitle`, `projectId`, `pickedAt`, `lastList`), tmp+rename
+  writes, malformed reads treated as absent. Node builtins only.
+- `src/find-session.ts` — `findSession`: `KANKAKU_CLAUDE_SESSION` wins, else
+  the CLI pid is walked to the Claude process (`resolveClaudePid`) and matched
+  to the state file `pid`, most recent activity first.
+- `src/task-select.ts` — pure list/pick logic (open = status not `done`,
+  the project's tasks only, a numeric argument is always a list number).
+- `src/task-cli.ts` — `runTaskCli`, the `task` subcommand (list, pick, clear);
+  the only CLI path that fetches, bounded by `catalogTimeoutMs` (3 s).
 - `src/paths.ts` — `resolvePaths`/`resolveKankakuDir`/`listStateFiles`: where
   everything lives under `<KANKAKU_DIR>/claude/`.
 - `src/session-state.ts` — `readState`/`writeState`/`updateState`, the
@@ -100,8 +111,8 @@ extension has one. Instead:
   `status`, `setup`) and its thin `process.argv`/`process.exit` wrapper.
 - `hooks/hooks.json` — registers the compiled `dist/hook.js` for all 9
   hook events (see "Build step" below).
-- `commands/*.md` — the `/kankaku:report`, `/kankaku:status` and
-  `/kankaku:setup` slash commands, each running the CLI via the `!` shell
+- `commands/*.md` — the `/kankaku:report`, `/kankaku:status`,
+  `/kankaku:task` and `/kankaku:setup` (and sync/doctor) slash commands, each running the CLI via the `!` shell
   prefix.
 
 ## Rules (do not break)

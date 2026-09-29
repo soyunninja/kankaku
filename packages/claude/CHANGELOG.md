@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **`/kankaku:task` links the session to a hub task.** It lists the open
+  tasks of the project resolved for the folder, and picks one by number, hub
+  id or title text (`clear` removes the link). The link is session-only, kept
+  in `<KANKAKU_DIR>/claude/<session>.target.json`, and the records written at
+  Stop, SessionEnd and crash recovery carry `hubTaskId` and `hubTaskTitle`
+  while the task still belongs to the resolved project. `/kankaku:status` and
+  `/kankaku:doctor` print the `task:` line. The CLI finds its session from its
+  own process; `KANKAKU_CLAUDE_SESSION` names it explicitly.
+
 ## 0.11.0 — 2026-09-29
 
 ### Added
