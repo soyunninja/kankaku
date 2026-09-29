@@ -14,6 +14,8 @@ import { discoverProjects } from "./adapters/project-discovery.ts";
 import { readProjectRecords } from "./adapters/worklog-reader.ts";
 import { computeProjectSyncStatus, createCatalog, refreshCatalog as refreshCatalogAdapter, resolveHub, syncProject } from "./adapters/hub.ts";
 import { readOwnVersion } from "./adapters/app-info.ts";
+import { readCarriedVersions } from "./adapters/package-versions.ts";
+import { formatVersionLines } from "./domain/version-info.ts";
 import { buildCatalogModel } from "./domain/catalog-model.ts";
 import { buildTodayRows, formatTodayLines } from "./domain/today-model.ts";
 import type { TodayModel } from "./domain/today-model.ts";
@@ -77,10 +79,12 @@ export interface CliDeps {
   prompter?: Prompter;
   /** Overrides for `hub-manager/install.ts`'s injectable dependencies (`runner`, `startDetached`, `randomBytes`, `locatePackage`, `platform`, `arch`); tests inject fakes here so `kankaku hub *` never spawns a real PocketBase or touches the real package. Defaults to the real adapters at the real entry point. */
   hubManager?: Partial<HubManagerDeps>;
+  /** Resolves `<package>/package.json` for `kankaku --version`; defaults to `require.resolve`. Tests inject one to simulate a missing package. */
+  resolvePackage?: (specifier: string) => string;
 }
 
 const USAGE =
-  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run] [--from-checkout <dir>] [--claude-plugin-dir <dir>]|doctor|hub install [--port N] [--owner-email E] [--owner-password P]|hub use|hub start|hub stop|hub status|hub upgrade|hub logs [-n N]] [--roots a,b] [--theme name]\n";
+  "usage: kankaku [--version|-v|version|today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run] [--from-checkout <dir>] [--claude-plugin-dir <dir>]|doctor|hub install [--port N] [--owner-email E] [--owner-password P]|hub use|hub start|hub stop|hub status|hub upgrade|hub logs [-n N]] [--roots a,b] [--theme name]\n";
 
 /** Load today's model for `roots`: discover projects, read their worklogs, build rows. */
 export function loadToday(roots: string[]): TodayModel {
@@ -844,6 +848,11 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
     // set up — open straight into the wizard instead of an empty Dashboard.
     const startInWizard = !existsSync(tuiConfigPath(deps.homeDir));
     deps.renderApp(roots, theme, { startInWizard });
+    return;
+  }
+
+  if (command === "--version" || command === "-v" || command === "version") {
+    deps.stdout(formatVersionLines(readOwnVersion(), readCarriedVersions(deps.resolvePackage)).join("\n"));
     return;
   }
 
