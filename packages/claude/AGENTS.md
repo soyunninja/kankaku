@@ -72,6 +72,10 @@ extension has one. Instead:
   `WorkRecordCore`. Identity is stamped on every record so another syncer
   (the TUI) cannot relabel it; `agentVersion` stays unset because no hook
   payload carries Claude Code's version.
+- `src/work-target.ts` — `resolveClaudeWorkTarget` (project `config.json` ids
+  > cached catalog `repo_paths`, through the library's `resolveWorkTarget`),
+  `RecordAssignment` and `formatTargetLine`. Imports `kankaku`, so heavy
+  paths only.
 - `src/paths.ts` — `resolvePaths`/`resolveKankakuDir`/`listStateFiles`: where
   everything lives under `<KANKAKU_DIR>/claude/`.
 - `src/session-state.ts` — `readState`/`writeState`/`updateState`, the
@@ -138,6 +142,21 @@ extension has one. Instead:
   what `isAlive` reports — belt and suspenders against the exact T7 defect
   above, so a future placeholder-shaped state file can never look alive
   again through either path.
+
+- **Target resolution happens only where a record is built.** `Stop`,
+  `SessionEnd` and `recoverStaleSessions` (and the `status`/`doctor` CLI)
+  call `resolveClaudeWorkTarget`; `PreToolUse`, `PostToolUse`,
+  `PermissionRequest`, `SubagentStart/Stop` and `UserPromptSubmit` never do
+  (a test counts calls). It reads the cache file `~/.kankaku/catalog.json`
+  only: never fetch, refresh or wait on the network from a hook, and never
+  throw. A missing or unusable cache means no target (today's unassigned
+  behaviour). Stamping mirrors pi-tracker: `clientId`, `clientName`,
+  `projectId`, `projectName`, and the legacy `client` label = client code
+  when valid against `CLIENT_PATTERN`; without a target it falls back to
+  `KANKAKU_CLIENT` > `config.json` client. The plugin writes no separate
+  subagent records, so none carries its own target (the task view inherits
+  the orchestrator's). Assignment is create-only on the hub; never rewrite
+  records already on disk.
 
 ## Conventions (mirrored from kankaku)
 

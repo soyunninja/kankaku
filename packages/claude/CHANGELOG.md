@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **Records resolve their client and project automatically.** Records
+  written at Stop, SessionEnd and crash recovery now carry `clientId`,
+  `clientName`, `projectId` and `projectName` (and the legacy `client`
+  label) when the project `config.json` ids or the cached catalog's
+  `repo_paths` match the session's working directory, so the hub no longer
+  files them under the unassigned client. The catalog is read from
+  `~/.kankaku/catalog.json` only: no network, no delay, and no target when
+  the cache is missing. Records already on disk are not rewritten, and rows
+  already uploaded as unassigned stay so until reassigned in the web app.
+- `/kankaku:status` and `/kankaku:doctor` print the resolved target and its
+  source, or `target: none (<reason>)`.
+
 ## 0.10.2 — 2026-09-29
 
 ### Fixed

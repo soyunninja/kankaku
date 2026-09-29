@@ -140,7 +140,8 @@ anything behind in whatever project happens to be open.
   `node dist/cli.js report`).
 - `/kankaku:status` — the sessions kankaku-claude currently has state for:
   session id, whether its process is still alive, whether a prompt is open,
-  and the last cost the statusline reported (wraps `node dist/cli.js status`).
+  and the last cost the statusline reported, preceded by the resolved work
+  target (wraps `node dist/cli.js status`).
 - `/kankaku:setup` — prints the `statusLine` snippet described above (wraps
   `node dist/cli.js setup`).
 - `/kankaku:sync` — manually syncs recent local work records to the hub
@@ -194,6 +195,36 @@ never prevent local worklog writes or session cleanup. Prompt privacy, machine,
 window, and record settings above apply to both manual and automatic sync.
 Automatic runs use kankaku's change detection and per-prompt throttle; session
 boundaries are not throttled. Set `KANKAKU_SYNC_AUTO=0` to opt out.
+
+### Client and project assignment
+
+Each record is stamped with a hub client and project when one resolves, so
+the hub files the task under the right client instead of "Sin determinar".
+Sources, in order:
+
+1. the project's `<KANKAKU_DIR>/config.json` ids (`clientId`, optional
+   `projectId`);
+2. the cached catalog's `repo_paths`: the active project whose path equals
+   the session's working directory, or contains it.
+
+Inactive clients and projects, and the "unassigned" client, are never used.
+The catalog is read from the cache file `~/.kankaku/catalog.json` only; a
+hook never fetches it and never waits on the network. Every real sync
+refreshes that cache, and `kankaku catalog refresh` refreshes it on demand.
+Without a readable cache (or without hub credentials, which name the hub the
+cache belongs to) no target resolves and records stay unassigned, exactly as
+before. The legacy `client` label is the client's code when it is a valid
+label; without a hub target it comes from `KANKAKU_CLIENT`, then the
+`client` in `config.json`.
+
+The target is resolved when a record is written (`Stop`, `SessionEnd`,
+crash recovery), never on the per-tool-call hooks. `/kankaku:status` and
+`/kankaku:doctor` print `target: <client> · <project> (source: ...)`, or
+`target: none (<reason>)`.
+
+There is nothing to pick inside Claude Code yet. Assignment is create-only
+on the hub: a row already uploaded as unassigned stays that way until it is
+reassigned in the web app; a later sync does not move it.
 
 ## Where the files live
 
