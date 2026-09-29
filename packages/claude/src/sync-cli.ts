@@ -21,7 +21,7 @@ export interface SyncCliDeps {
   fetch?: typeof fetch;
 }
 
-const usage = "usage: node src/cli.ts sync [all|status]\n";
+const usage = "usage: node dist/cli.js sync [all|status]\n";
 
 function windowHours(env: NodeJS.ProcessEnv): number {
   const value = Number(env.KANKAKU_SYNC_WINDOW_HOURS);

@@ -10,8 +10,8 @@ const INTERACTIVE_TOOLS = ["AskUserQuestion"];
 /**
  * The plugin's own subagent profile: Claude Code's `Agent`/`Task` tool
  * calls open a subagent span, read from `subagent_type`. No join key is
- * offered (`SubagentStart`/`SubagentStop` are recorded but not linked — see
- * odd/tasks/hook-tracking.md "Replay (pure)").
+ * offered (`SubagentStart`/`SubagentStop` are recorded but not linked, so a
+ * subagent span is closed by the replay itself).
  */
 const CLAUDE_CODE_SUBAGENT_PROFILE: SubagentProfile = {
   id: "claude-code",

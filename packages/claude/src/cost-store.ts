@@ -19,7 +19,8 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
  * Cost lives under the HOME directory, never a project: the statusline
  * command is wired globally and runs in every session on the machine, so a
  * project-relative path would litter whatever project happens to be open
- * (the defect this module fixes — see `odd/tasks/hook-tracking.md` T7).
+ * (the defect this module fixes: cost files were written into whichever
+ * project happened to be open).
  * Imports only node builtins so light hooks that read/write cost stay off
  * the `kankaku-pi` import path.
  */

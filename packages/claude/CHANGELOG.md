@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its entry points are imported as `kankaku-pi/domain`, `kankaku-pi/ports`
   and `kankaku-pi/hub`. The package keeps its own name, `kankaku-claude`
   (directory unchanged). No behaviour change.
+- `kankaku-claude sync` usage text names `dist/cli.js`, and comments no
+  longer point at files that are not in the repository.
 
 ## 0.12.1 — 2026-09-29
 

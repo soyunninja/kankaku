@@ -31,7 +31,7 @@ const PLUGIN_VERSION = readPackageVersion(
  * caller decides which cost snapshot's model applies.
  *
  * Also stamps who MEASURED the record (`agent`, `plugin`, `pluginVersion`),
- * so a worklog later synced by another tool (the kankaku TUI) keeps the
+ * so a worklog later synced by another tool (the `kankaku` CLI) keeps the
  * right identity. `agentVersion` is omitted: Claude Code passes its version
  * to no hook payload, and spawning `claude --version` from a hook is not
  * acceptable.
