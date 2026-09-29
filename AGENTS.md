@@ -39,6 +39,12 @@ their own repositories.
   git:github.com/soyunninja/kankaku` clones the repository and reads the
   manifest at ITS root, not the package's. Keep both manifests in step
   (`packages/pi/tests/monorepo-pi-manifest.test.ts` enforces it).
+- **`packages/cli/vendor/` is generated.** The `kankaku` tarball carries
+  the pi extension under `vendor/kankaku-pi/` (a copy of `packages/pi`'s
+  `src/`, `package.json` and `LICENSE`), and the `pi` manifest in
+  `packages/cli/package.json` points there. `scripts/vendor-pi.mjs` writes
+  it on `prepack`; never edit it and never commit it (it is ignored). The
+  `kankaku-pi` tarball still ships the same extension on its own.
 - **One lockfile**, at the root. Never add a `package-lock.json` inside a
   package.
 - **Strict TDD and the per-package verification commands are unchanged**;

@@ -45,7 +45,11 @@ trusted, which a subagent child may not inherit.
 To try it without installing: `pi -e /absolute/path/to/kankaku/packages/pi`.
 
 `pi install npm:kankaku` (the previous name, which now also brings the
-`kankaku` CLI) is kept working for existing installs.
+`kankaku` CLI) is kept working for existing installs: the `kankaku`
+package carries this extension inside its tarball. Do not list both
+`npm:kankaku` and `npm:kankaku-pi` in the same settings file, or the
+extension loads twice and every measurement doubles; `kankaku doctor`
+reports it and `kankaku setup` keeps one.
 
 ## Quick start
 

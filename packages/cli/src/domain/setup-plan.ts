@@ -6,6 +6,7 @@
  */
 
 import { ourStatusLineCommandMatch } from "./claude-integration.ts";
+import { KANKAKU_PI_SPEC, loadedKankakuSources, pickKankakuSourceToKeep } from "./kankaku-package.ts";
 
 export type AgentId = "pi" | "gentle-shell" | "claude-code" | "codex" | "opencode";
 
@@ -29,6 +30,12 @@ export interface AgentStatus {
    * for every other agent.
    */
   detailNote?: string;
+  /**
+   * Only for a pi-family agent whose settings list kankaku through more than
+   * one source (it would load the extension, and record every prompt, more
+   * than once): those distinct sources, in file order. `undefined` otherwise.
+   */
+  loadedSources?: string[];
 }
 
 /** A pi-family settings file (`pi`, `gentle-shell`): `{ packages: string[], ... }`. */
@@ -75,24 +82,21 @@ export interface AgentDetectionFacts {
   opencode: ConfigFileFacts | undefined;
 }
 
-/**
- * A `packages` entry counts as kankaku when it is the bare npm spec
- * (`npm:kankaku`), a versioned npm spec (`npm:kankaku@x.y.z`), or a path
- * (relative or absolute, npm's `file:`-less local-package shorthand) whose
- * last segment is exactly `kankaku` — e.g. `../../workspace/kankaku` — or
- * that ends in `packages/pi`, the pi package's directory in a checkout of
- * the monorepo (`packages/kankaku` before the rename, covered above).
- */
-export function isKankakuPackage(entry: string): boolean {
-  if (entry === "npm:kankaku" || entry.startsWith("npm:kankaku@")) return true;
-  const segments = entry.split("/").filter((segment) => segment.length > 0);
-  const last = segments[segments.length - 1];
-  return last === "kankaku" || (last === "pi" && segments[segments.length - 2] === "packages");
-}
-
 function settingsPackagesStatus(id: AgentId, facts: SettingsPackagesFacts | undefined): AgentStatus {
   if (!facts) return { id, present: false, configured: false, adapterAvailable: true, detail: "not found" };
-  return { id, present: true, configured: facts.packages.some(isKankakuPackage), adapterAvailable: true, detail: facts.settingsPath };
+  const loaded = loadedKankakuSources(facts.packages);
+  if (loaded.length > 1) {
+    return {
+      id,
+      present: true,
+      configured: false,
+      adapterAvailable: true,
+      detail: facts.settingsPath,
+      detailNote: `loaded ${loaded.length} times: ${loaded.join(", ")}`,
+      loadedSources: loaded,
+    };
+  }
+  return { id, present: true, configured: loaded.length === 1, adapterAvailable: true, detail: facts.settingsPath };
 }
 
 /**
@@ -203,7 +207,10 @@ const AGENT_TITLES: Record<AgentId, string> = {
 
 function todoAction(agent: AgentStatus): string {
   if (agent.id === "claude-code") return `write the kankaku statusLine, hooks and commands to ${agent.detail}${agent.detailNote ? ` (${agent.detailNote})` : ""}`;
-  return `add "npm:kankaku" to packages in ${agent.detail}`;
+  if (agent.loadedSources !== undefined) {
+    return `${agent.detailNote}; keep only "${pickKankakuSourceToKeep(agent.loadedSources)}" in packages in ${agent.detail}`;
+  }
+  return `add "${KANKAKU_PI_SPEC}" to packages in ${agent.detail}`;
 }
 
 function agentStep(agent: AgentStatus): SetupStep {

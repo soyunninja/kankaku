@@ -9,7 +9,7 @@ function makeDir(): string {
   return mkdtempSync(join(tmpdir(), "kankaku-cli-setup-pi-"));
 }
 
-test("addKankakuPackage: appends 'npm:kankaku' to packages, preserving every other key and its order", () => {
+test("addKankakuPackage: appends 'npm:kankaku-pi' to packages, preserving every other key and its order", () => {
   const dir = makeDir();
   try {
     const settingsPath = join(dir, "settings.json");
@@ -21,7 +21,7 @@ test("addKankakuPackage: appends 'npm:kankaku' to packages, preserving every oth
 
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
     assert.deepEqual(Object.keys(written), ["defaultModel", "packages", "theme"]);
-    assert.deepEqual(written.packages, ["npm:pi-mcp-adapter", "npm:pi-lens", "npm:kankaku"]);
+    assert.deepEqual(written.packages, ["npm:pi-mcp-adapter", "npm:pi-lens", "npm:kankaku-pi"]);
     assert.equal(written.defaultModel, "gpt-6");
     assert.equal(written.theme, "Gentleman-Sexy");
   } finally {
@@ -111,7 +111,7 @@ test("addKankakuPackage: creates the settings file's directory when missing, tre
     const result = addKankakuPackage(settingsPath);
     assert.equal(result.changed, true);
     const written = JSON.parse(readFileSync(settingsPath, "utf8"));
-    assert.deepEqual(written.packages, ["npm:kankaku"]);
+    assert.deepEqual(written.packages, ["npm:kankaku-pi"]);
     assert.equal(existsSync(`${settingsPath}.bak`), false);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -181,6 +181,75 @@ test("removeKankakuPackage: backs up the original file to <file>.bak before remo
     writeFileSync(`${settingsPath}.bak`, "sentinel");
     removeKankakuPackage(settingsPath);
     assert.equal(readFileSync(`${settingsPath}.bak`, "utf8"), "sentinel");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("addKankakuPackage: leaves a lone npm:kankaku, kankaku-pi, git or object-form entry exactly as it is", () => {
+  for (const entry of ["npm:kankaku", "npm:kankaku-pi@^1", "git:github.com/soyunninja/kankaku@v1", { source: "npm:kankaku", extensions: ["!x"] }]) {
+    const dir = makeDir();
+    try {
+      const settingsPath = join(dir, "settings.json");
+      writeFileSync(settingsPath, JSON.stringify({ packages: [entry] }, null, 2));
+      const before = readFileSync(settingsPath, "utf8");
+      assert.equal(addKankakuPackage(settingsPath).changed, false);
+      assert.equal(readFileSync(settingsPath, "utf8"), before);
+      assert.equal(existsSync(`${settingsPath}.bak`), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("addKankakuPackage: repairs a doubled install, keeping one source by precedence and touching nothing else", () => {
+  const cases: { packages: unknown[]; kept: unknown[] }[] = [
+    { packages: ["npm:pi-lens", "npm:kankaku", "npm:kankaku-pi", "npm:x"], kept: ["npm:pi-lens", "npm:kankaku-pi", "npm:x"] },
+    { packages: ["npm:kankaku-pi", "/dev/kankaku", "git:github.com/soyunninja/kankaku"], kept: ["/dev/kankaku"] },
+    { packages: ["npm:kankaku", "git:github.com/soyunninja/kankaku"], kept: ["git:github.com/soyunninja/kankaku"] },
+    { packages: [{ source: "npm:kankaku", skills: [] }, { source: "npm:kankaku-pi", extensions: ["!a"] }], kept: [{ source: "npm:kankaku-pi", extensions: ["!a"] }] },
+  ];
+  for (const { packages, kept } of cases) {
+    const dir = makeDir();
+    try {
+      const settingsPath = join(dir, "settings.json");
+      writeFileSync(settingsPath, JSON.stringify({ defaultModel: "m", packages, theme: "t" }, null, 2));
+      assert.equal(addKankakuPackage(settingsPath).changed, true);
+      const written = JSON.parse(readFileSync(settingsPath, "utf8"));
+      assert.deepEqual(written.packages, kept);
+      assert.deepEqual(Object.keys(written), ["defaultModel", "packages", "theme"]);
+      assert.equal(existsSync(`${settingsPath}.bak`), true);
+      assert.equal(addKankakuPackage(settingsPath).changed, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("addKankakuPackage: appends npm:kankaku-pi without destroying object-form entries of other packages", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const other = { source: "npm:pi-lens", skills: [] };
+    writeFileSync(settingsPath, JSON.stringify({ packages: [other] }, null, 2));
+    assert.equal(addKankakuPackage(settingsPath).changed, true);
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")).packages, [other, "npm:kankaku-pi"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("removeKankakuPackage: removes every recognised source, including kankaku-pi, git and object-form entries", () => {
+  const dir = makeDir();
+  try {
+    const settingsPath = join(dir, "settings.json");
+    const other = { source: "npm:pi-lens", skills: [] };
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ packages: ["npm:kankaku-pi", other, { source: "npm:kankaku", extensions: [] }, "git:github.com/soyunninja/kankaku@v1", "/dev/kankaku"] }, null, 2),
+    );
+    assert.equal(removeKankakuPackage(settingsPath).changed, true);
+    assert.deepEqual(JSON.parse(readFileSync(settingsPath, "utf8")).packages, [other]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

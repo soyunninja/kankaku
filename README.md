@@ -29,7 +29,11 @@ the plugin and setup wires it into `~/.claude/settings.json` for you.
 | `packages/pi` | [`kankaku-pi`](https://www.npmjs.com/package/kankaku-pi) | pi extension + the published domain/ports/hub library | [README](packages/pi/README.md) |
 | `packages/claude` | [`kankaku-claude`](https://www.npmjs.com/package/kankaku-claude) | Claude Code plugin (hooks-based measurement) | [README](packages/claude/README.md) |
 
-`kankaku-pi` is the shared library; `kankaku-claude` and `kankaku` both
+`kankaku` also carries the pi extension inside its tarball
+(`packages/cli/vendor/kankaku-pi/`, generated from `packages/pi` by
+`prepack`, never committed), so `pi install npm:kankaku` keeps working;
+`pi install npm:kankaku-pi` is the pi-only install. `kankaku-pi` is the
+shared library; `kankaku-claude` and `kankaku` both
 depend on it. The hub server (`kankaku-hub`,
 [github.com/soyunninja/kankaku_hub](https://github.com/soyunninja/kankaku_hub))
 and the public site

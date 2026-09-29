@@ -68,9 +68,10 @@ test("detectAgents: gentle-shell with a local path package ending in 'kankaku' i
 
 test("detectAgents: a local checkout path ending in 'packages/pi' (the renamed pi package directory) is configured", () => {
   const facts = baseFacts();
-  facts.gentleShell = { settingsPath: "/home/.gentle-shell/agent/settings.json", packages: ["/dev/kankaku/packages/kankaku", "/dev/other/packages/pi"] };
-  const [, gentleShell] = detectAgents(facts);
-  assert.equal(gentleShell!.configured, true);
+  for (const path of ["/dev/kankaku/packages/kankaku", "/dev/other/packages/pi"]) {
+    facts.gentleShell = { settingsPath: "/home/.gentle-shell/agent/settings.json", packages: [path] };
+    assert.equal(detectAgents(facts)[1]!.configured, true, path);
+  }
   facts.gentleShell = { settingsPath: "/home/.gentle-shell/agent/settings.json", packages: ["/dev/other/pi"] };
   assert.equal(detectAgents(facts)[1]!.configured, false);
 });
@@ -398,4 +399,65 @@ test("formatSetupPlanLines: one line per step, including the exact file it would
 
   const tuiLine = lines.find((line) => line.startsWith("TUI config:"))!;
   assert.match(tuiLine, /\/home\/\.kankaku\/tui\.json/);
+});
+
+const PI_FILE = "/home/.pi/agent/settings.json";
+const PLAN_HUB: HubPlanFacts = { credentialsPresent: true, url: "https://hub.example.com", healthOk: true, credentialsPath: "/home/.kankaku/credentials.json" };
+const PLAN_TUI: TuiPlanFacts = { present: true, path: "/home/.kankaku/tui.json" };
+
+function piStatus(packages: string[]): AgentStatus {
+  const facts = baseFacts();
+  facts.pi = { settingsPath: PI_FILE, packages };
+  return detectAgents(facts)[0]!;
+}
+
+test("detectAgents: every recognised kankaku source alone is configured (kankaku-pi, versions, git, local)", () => {
+  for (const source of [
+    "npm:kankaku-pi",
+    "npm:kankaku-pi@^1.0.0",
+    "npm:kankaku",
+    "git:github.com/soyunninja/kankaku",
+    "git:github.com/soyunninja/kankaku@v1.0.0",
+    "https://github.com/soyunninja/kankaku",
+    "/dev/kankaku",
+    "/dev/kankaku/packages/pi",
+  ]) {
+    const status = piStatus(["npm:pi-lens", source]);
+    assert.equal(status.configured, true, source);
+    assert.equal(status.detailNote, undefined, source);
+  }
+  assert.equal(piStatus(["git:github.com/someone/kankaku"]).configured, false);
+});
+
+test("detectAgents: two kankaku sources in one file are not configured and report 'loaded N times: <sources>'", () => {
+  const status = piStatus(["npm:kankaku", "npm:pi-lens", "npm:kankaku-pi"]);
+  assert.equal(status.configured, false);
+  assert.equal(status.present, true);
+  assert.equal(status.detailNote, "loaded 2 times: npm:kankaku, npm:kankaku-pi");
+  const three = piStatus(["npm:kankaku", "npm:kankaku-pi", "/dev/kankaku"]);
+  assert.equal(three.detailNote, "loaded 3 times: npm:kankaku, npm:kankaku-pi, /dev/kankaku");
+});
+
+test("detectAgents: the same package listed twice (a version and a bare spec) is one load, still configured", () => {
+  assert.equal(piStatus(["npm:kankaku-pi", "npm:kankaku-pi@1.0.0"]).configured, true);
+});
+
+test("planSetup: a doubled pi install is a todo step that says how many times it loads and which source it keeps", () => {
+  const steps = planSetup([piStatus(["npm:kankaku", "npm:kankaku-pi"])], PLAN_HUB, PLAN_TUI);
+  const pi = steps[0]!;
+  assert.equal(pi.state, "todo");
+  assert.equal(pi.file, PI_FILE);
+  assert.match(pi.action, /^loaded 2 times: npm:kankaku, npm:kankaku-pi; /);
+  assert.match(pi.action, /keep only "npm:kankaku-pi"/);
+});
+
+test("planSetup: a missing kankaku is a todo that adds npm:kankaku-pi; npm:kankaku alone is done", () => {
+  assert.equal(planSetup([piStatus(["npm:pi-lens"])], PLAN_HUB, PLAN_TUI)[0]!.action, `add "npm:kankaku-pi" to packages in ${PI_FILE}`);
+  assert.equal(planSetup([piStatus(["npm:kankaku"])], PLAN_HUB, PLAN_TUI)[0]!.state, "done");
+});
+
+test("formatDoctorLines: a doubled install shows the loaded-N-times line and a next hint", () => {
+  const lines = formatDoctorLines([piStatus(["npm:kankaku", "npm:kankaku-pi"])], PLAN_HUB, PLAN_TUI);
+  assert.match(lines[0]!, /^pi: todo — loaded 2 times: npm:kankaku, npm:kankaku-pi/);
+  assert.ok(lines.some((line) => line.startsWith("next: loaded 2 times")));
 });

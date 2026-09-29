@@ -274,3 +274,17 @@ test("readAgentFacts: an unresolvable plugin root is reported as pluginError", (
     cleanup(f);
   }
 });
+
+test("readAgentFacts: an object-form pi package contributes its source; entries without one are ignored", () => {
+  const home = makeHome();
+  try {
+    mkdirSync(join(home, ".pi", "agent"), { recursive: true });
+    writeFileSync(
+      join(home, ".pi", "agent", "settings.json"),
+      JSON.stringify({ packages: ["npm:pi-lens", { source: "npm:kankaku-pi", extensions: ["!x"] }, { extensions: [] }, 7] }, null, 2),
+    );
+    assert.deepEqual(readAgentFacts(home).pi?.packages, ["npm:pi-lens", "npm:kankaku-pi"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

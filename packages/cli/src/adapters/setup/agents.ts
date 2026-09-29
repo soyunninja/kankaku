@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentDetectionFacts, ClaudeSettingsFacts, ConfigFileFacts, SettingsPackagesFacts } from "../../domain/setup-plan.ts";
+import { entrySource } from "../../domain/kankaku-package.ts";
 import { buildCommandFileContent, ourCommandFileRoot, ourHookCommandMatch } from "../../domain/claude-integration.ts";
 import type { CommandMatch } from "../../domain/claude-integration.ts";
 import { commandsDirectory, readPluginCommands } from "./claude-commands.ts";
@@ -27,14 +28,11 @@ function readJsonObject(filePath: string): Record<string, unknown> | undefined {
   }
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
-}
-
 function readSettingsPackages(settingsPath: string): SettingsPackagesFacts | undefined {
   const parsed = readJsonObject(settingsPath);
   if (!parsed) return undefined;
-  const packages = isStringArray(parsed["packages"]) ? parsed["packages"] : [];
+  const entries: unknown[] = Array.isArray(parsed["packages"]) ? parsed["packages"] : [];
+  const packages = entries.map(entrySource).filter((source): source is string => source !== undefined);
   return { settingsPath, packages };
 }
 

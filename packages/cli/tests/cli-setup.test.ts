@@ -195,7 +195,7 @@ function scriptedPrompter(answers: { confirm?: boolean[]; text?: string[]; secre
   };
 }
 
-test("setup (interactive): installing in pi when confirmed writes npm:kankaku and backs up the original", async () => {
+test("setup (interactive): installing in pi when confirmed writes npm:kankaku-pi and backs up the original", async () => {
   const home = makeHome();
   try {
     mkdirSync(join(home, ".pi", "agent"), { recursive: true });
@@ -206,7 +206,7 @@ test("setup (interactive): installing in pi when confirmed writes npm:kankaku an
     await runCli(["setup"], baseDeps(home, { prompter }));
 
     const written = JSON.parse(readFileSync(join(home, ".pi", "agent", "settings.json"), "utf8"));
-    assert.deepEqual(written.packages, ["npm:pi-mcp-adapter", "npm:kankaku"]);
+    assert.deepEqual(written.packages, ["npm:pi-mcp-adapter", "npm:kankaku-pi"]);
     assert.equal(existsSync(join(home, ".pi", "agent", "settings.json.bak")), true);
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -670,6 +670,99 @@ test("setup --yes on an up-to-date Claude Code install prints unchanged lines an
     for (const file of PLUGIN_COMMAND_FILES) assert.ok(lines.includes(`unchanged ${join(dir, file)}`), file);
     assert.ok(lines.includes(`unchanged ${settingsPath}`));
     assert.equal(existsSync(`${settingsPath}.bak`), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+function writePiSettings(home: string, agent: ".pi" | ".gentle-shell", packages: unknown[]): string {
+  const file = join(home, agent, "agent", "settings.json");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, JSON.stringify({ theme: "x", packages }, null, 2));
+  return file;
+}
+
+test("pi with only npm:kankaku: doctor and --dry-run say done, setup --yes leaves the file as it is", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    const file = writePiSettings(home, ".pi", [{ source: "npm:kankaku", extensions: ["!x"] }]);
+    const before = readFileSync(file, "utf8");
+    for (const args of [["doctor"], ["setup", "--dry-run"]]) {
+      const lines: string[] = [];
+      await runCli(args, baseDeps(home, { stdout: (text) => lines.push(text) }));
+      assert.match(lines.join("\n"), /^pi: done/m, args.join(" "));
+    }
+    await runCli(["setup", "--yes"], baseDeps(home));
+    assert.equal(readFileSync(file, "utf8"), before);
+    assert.equal(existsSync(`${file}.bak`), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pi with neither source: --dry-run proposes npm:kankaku-pi, setup --yes writes exactly that", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    const file = writePiSettings(home, ".pi", ["npm:pi-lens"]);
+    const plan: string[] = [];
+    await runCli(["setup", "--dry-run"], baseDeps(home, { stdout: (text) => plan.push(text) }));
+    assert.match(plan.join("\n"), /^pi: todo — add "npm:kankaku-pi" to packages/m);
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).packages, ["npm:pi-lens"]);
+
+    await runCli(["setup", "--yes"], baseDeps(home));
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).packages, ["npm:pi-lens", "npm:kankaku-pi"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("pi with both npm:kankaku and npm:kankaku-pi: doctor and --dry-run report the double load, setup --yes keeps npm:kankaku-pi, doctor then says done", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    const file = writePiSettings(home, ".pi", ["npm:kankaku", "npm:pi-lens", "npm:kankaku-pi"]);
+    for (const args of [["doctor"], ["setup", "--dry-run"]]) {
+      const lines: string[] = [];
+      await runCli(args, baseDeps(home, { stdout: (text) => lines.push(text) }));
+      assert.match(lines.join("\n"), /^pi: todo — loaded 2 times: npm:kankaku, npm:kankaku-pi/m, args.join(" "));
+    }
+    assert.equal(existsSync(`${file}.bak`), false);
+
+    await runCli(["setup", "--yes"], baseDeps(home));
+    const written = JSON.parse(readFileSync(file, "utf8"));
+    assert.deepEqual(written.packages, ["npm:pi-lens", "npm:kankaku-pi"]);
+    assert.equal(written.theme, "x");
+    assert.equal(existsSync(`${file}.bak`), true);
+
+    const after: string[] = [];
+    await runCli(["doctor"], baseDeps(home, { stdout: (text) => after.push(text) }));
+    assert.match(after.join("\n"), /^pi: done/m);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("gentle-shell with a local checkout and npm:kankaku: setup --yes keeps the local path", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    const file = writePiSettings(home, ".gentle-shell", ["npm:kankaku", "git:github.com/soyunninja/kankaku@v1", "/dev/kankaku", "npm:kankaku-pi"]);
+    await runCli(["setup", "--yes"], baseDeps(home));
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).packages, ["/dev/kankaku"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("wizard actions: remove-pi removes every recognised kankaku source, in both entry forms", async () => {
+  const home = makeHome();
+  try {
+    const file = writePiSettings(home, ".pi", ["npm:kankaku", { source: "npm:kankaku-pi", extensions: [] }, "npm:pi-lens"]);
+    const result = await buildWizardActions(baseDeps(home), undefined).apply({ kind: "remove-pi", file, label: "remove" }, {} as WizardState);
+    assert.equal(result.outcome, "removed");
+    assert.deepEqual(JSON.parse(readFileSync(file, "utf8")).packages, ["npm:pi-lens"]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

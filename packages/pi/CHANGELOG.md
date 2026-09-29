@@ -7,6 +7,10 @@ follow semver. Dates are the day the version was cut.
 
 ### Changed
 
+- The `kankaku` package (the CLI) now carries a copy of this extension in
+  its tarball, so `pi install npm:kankaku` keeps loading it. This package's
+  code is unchanged. Do not list both `npm:kankaku` and `npm:kankaku-pi`
+  in one pi settings file: the extension would load twice.
 - The package is renamed from `kankaku` to `kankaku-pi` (directory
   `packages/kankaku` → `packages/pi`). The published library entry points
   are renamed accordingly: `kankaku/domain`, `kankaku/ports` and

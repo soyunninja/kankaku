@@ -20,6 +20,46 @@ npm i -g kankaku
 kankaku setup
 ```
 
+`npm i -g kankaku` installs the `kankaku` command, the bundled Claude Code
+plugin (`kankaku-claude`) and the pi extension. The extension is carried
+inside the tarball, under `vendor/kankaku-pi/`, and the package's `pi`
+manifest points at it, so `pi install npm:kankaku` also works and loads
+exactly the extension `kankaku-pi` ships. It is vendored rather than
+declared as a dependency because pi installs npm packages into one shared
+directory with a flat `node_modules`: a dependency of `kankaku` would not
+sit next to it, and pi could not find the extension.
+
+If you only use pi and do not want the dashboard, install the light
+package instead: `pi install npm:kankaku-pi`.
+
+### Do not load the extension twice
+
+The extension is reachable through several sources: `npm:kankaku-pi`,
+`npm:kankaku`, the `git:github.com/soyunninja/kankaku` repository and a
+local checkout. Listing more than one of them in the same pi settings file
+loads the extension more than once and doubles every measurement.
+`kankaku doctor` reports it (`pi: todo — loaded 2 times: npm:kankaku,
+npm:kankaku-pi`), and `kankaku setup` repairs it, keeping exactly one
+source by this precedence: a local path, then `npm:kankaku-pi`, then a
+`git:` source, then `npm:kankaku`. Nothing else in the file is touched and
+the original is saved once as `settings.json.bak`. An install with only
+`npm:kankaku` is configured and is left as it is; new installs write
+`npm:kankaku-pi`. Entries in pi's object form
+(`{ "source": "npm:kankaku-pi", "extensions": [...] }`) count as well.
+Unchecking pi in the wizard removes every kankaku source.
+
+### Migrating from `kankaku-tui`
+
+`kankaku-tui` is retired and its package is deprecated in favour of
+`kankaku`. Both packages provide the `kankaku` command, so uninstall the
+old one first, then install the new one and run setup again:
+
+```
+npm uninstall -g kankaku-tui
+npm i -g kankaku
+kankaku setup
+```
+
 On a real terminal, `kankaku setup` opens as a full-screen wizard — one
 step at a time, in the same header/panel/footer look as the rest of the
 app (there's no sidebar in the wizard itself: the panel's own title
