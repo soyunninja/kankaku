@@ -3,6 +3,15 @@
 All notable changes to kankaku-pi (formerly kankaku). The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- `WorkRecord.costAllocated?: true` documents a record whose cost is a share
+  of a session total (used by kankaku-claude for headless sessions). It is
+  optional, does not change `WORK_RECORD_SCHEMA` and is never sent to the hub
+  or included in the sync content hash.
+
 ## 1.2.0 — 2026-09-29
 
 No changes in this package's code; released in lockstep with kankaku 1.2.0.

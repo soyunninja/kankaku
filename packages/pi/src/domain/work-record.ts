@@ -218,6 +218,15 @@ export interface WorkRecordMetadata {
   plugin?: string;
   /** This integration's own version, from its `package.json`, read once. */
   pluginVersion?: string;
+  /**
+   * `true` when `usage.cost` is this record's proportional share of a session
+   * total rather than a measured difference (a headless Claude Code session
+   * that ran several prompts reports one cost for all of them). Local
+   * bookkeeping only: never sent to the hub and never part of the content
+   * hash. Optional and additive: `WORK_RECORD_SCHEMA` is unchanged, an older
+   * record without it validates, and readers that do not know it ignore it.
+   */
+  costAllocated?: true;
 }
 
 export type WorkRecord = WorkRecordCore & WorkRecordMetadata;
