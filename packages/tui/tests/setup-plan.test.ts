@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { detectAgents, planSetup, formatDoctorLines, formatSetupPlanLines } from "../src/domain/setup-plan.ts";
-import type { AgentDetectionFacts, AgentStatus, HubPlanFacts, TuiPlanFacts } from "../src/domain/setup-plan.ts";
+import type { AgentDetectionFacts, AgentStatus, ClaudeSettingsFacts, HubPlanFacts, TuiPlanFacts } from "../src/domain/setup-plan.ts";
 
 function baseFacts(): AgentDetectionFacts {
   return {
@@ -79,7 +79,6 @@ test("detectAgents: claude-code is configured only when the statusLine, hooks AN
     settingsPath: "/home/.claude/settings.json",
     statusLineCommand: 'node "/home/dev/kankaku-claude/dist/statusline.js"',
     hooksRoot: "/home/dev/kankaku-claude",
-    commandsRoot: "/home/dev/kankaku-claude",
   };
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, true);
@@ -127,30 +126,73 @@ test("detectAgents: claude-code with only the hooks on the legacy src form (stat
   assert.equal(claude!.detailNote, "outdated hooks");
 });
 
-test("detectAgents: claude-code with statusLine and hooks but no generated commands is not configured, detailNote 'commands missing'", () => {
-  const facts = baseFacts();
-  facts.claudeCode = {
+function claudeFacts(drift: Partial<ClaudeSettingsFacts>): ClaudeSettingsFacts {
+  return {
     settingsPath: "/home/.claude/settings.json",
     statusLineCommand: 'node "/home/dev/kankaku-claude/dist/statusline.js"',
     hooksRoot: "/home/dev/kankaku-claude",
-    commandsRoot: undefined,
+    ...drift,
   };
-  const [, , claude] = detectAgents(facts);
-  assert.equal(claude!.configured, false);
-  assert.equal(claude!.detailNote, "commands missing");
+}
+
+function claudeWith(drift: Partial<ClaudeSettingsFacts>) {
+  const facts = baseFacts();
+  facts.claudeCode = claudeFacts(drift);
+  return detectAgents(facts)[2]!;
+}
+
+test("detectAgents: claude-code with missing hook events is not configured and the note names them", () => {
+  const claude = claudeWith({ hooksMissingEvents: ["Stop", "SessionEnd"] });
+  assert.equal(claude.configured, false);
+  assert.equal(claude.detailNote, "hooks missing: Stop, SessionEnd");
 });
 
-test("detectAgents: claude-code whose commands point at another root is not configured, detailNote names that root", () => {
+test("detectAgents: claude-code with outdated hook events is not configured and the note names them", () => {
+  const claude = claudeWith({ hooksOutdatedEvents: ["PreToolUse"] });
+  assert.equal(claude.configured, false);
+  assert.equal(claude.detailNote, "hooks outdated: PreToolUse");
+});
+
+test("detectAgents: claude-code with missing commands is not configured and the note names them", () => {
+  const claude = claudeWith({ commandsMissing: ["sync"] });
+  assert.equal(claude.configured, false);
+  assert.equal(claude.detailNote, "commands missing: sync");
+});
+
+test("detectAgents: claude-code with outdated commands is not configured and the note names them", () => {
+  const claude = claudeWith({ commandsOutdated: ["status"] });
+  assert.equal(claude.configured, false);
+  assert.equal(claude.detailNote, "commands outdated: status");
+});
+
+test("detectAgents: claude-code with stale generated commands is not configured and the note names them", () => {
+  const claude = claudeWith({ commandsStale: ["old"] });
+  assert.equal(claude.configured, false);
+  assert.equal(claude.detailNote, "commands stale: old");
+});
+
+test("detectAgents: claude-code with an outdated statusLine command is not configured", () => {
+  const claude = claudeWith({ statusLineOutdated: true });
+  assert.equal(claude.configured, false);
+  assert.equal(claude.detailNote, "statusLine outdated");
+});
+
+test("detectAgents: several drifts are joined in one note", () => {
+  const claude = claudeWith({ hooksMissingEvents: ["Stop", "SessionEnd"], commandsMissing: ["sync"], commandsOutdated: ["status"] });
+  assert.equal(claude.detailNote, "hooks missing: Stop, SessionEnd; commands missing: sync; commands outdated: status");
+});
+
+test("detectAgents: an unresolvable plugin root is reported instead of claiming configured", () => {
+  const claude = claudeWith({ pluginError: "kankaku-claude package is not installed" });
+  assert.equal(claude.configured, false);
+  assert.equal(claude.detailNote, "plugin unresolved: kankaku-claude package is not installed");
+});
+
+test("formatDoctorLines: the doctor line carries the drift note", () => {
   const facts = baseFacts();
-  facts.claudeCode = {
-    settingsPath: "/home/.claude/settings.json",
-    statusLineCommand: 'node "/home/dev/kankaku-claude/dist/statusline.js"',
-    hooksRoot: "/home/dev/kankaku-claude",
-    commandsRoot: "/old/kankaku-claude",
-  };
-  const [, , claude] = detectAgents(facts);
-  assert.equal(claude!.configured, false);
-  assert.equal(claude!.detailNote, "commands point at /old/kankaku-claude");
+  facts.claudeCode = claudeFacts({ hooksMissingEvents: ["Stop"], commandsMissing: ["sync"] });
+  const lines = formatDoctorLines(detectAgents(facts), { credentialsPresent: true, url: "u", healthOk: true, credentialsPath: "c" }, { present: true, path: "t" });
+  assert.match(lines.join("\n"), /^Claude Code: todo — .*\(hooks missing: Stop; commands missing: sync\)$/m);
 });
 
 test("detectAgents: claude-code with an unrelated statusLine is present but not configured", () => {

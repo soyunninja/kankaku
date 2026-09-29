@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { buildWizardActions, runCli } from "../src/cli.tsx";
@@ -500,7 +500,7 @@ test("doctor: Claude Code is todo with 'commands missing' when statusLine and ho
     rmSync(commandsDirectory(home), { recursive: true, force: true });
     const lines: string[] = [];
     await runCli(["doctor"], baseDeps(home, { stdout: (text) => lines.push(text) }));
-    assert.match(lines.join("\n"), /^Claude Code: todo .*\(commands missing\)/m);
+    assert.match(lines.join("\n"), /^Claude Code: todo .*\(commands missing: /m);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -602,5 +602,75 @@ test("wizard actions: write-claude writes settings and commands; remove-claude r
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(pluginDir, { recursive: true, force: true });
+  }
+});
+
+test("drifted Claude Code install: doctor reports todo with the note, setup --yes repairs it, doctor then reports done; foreign files stay", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    const dir = commandsDirectory(home);
+    const settingsPath = join(home, ".claude", "settings.json");
+
+    // Foreign content that must survive.
+    writeFileSync(join(dir, "custom.md"), "my custom command\n");
+    const settings = JSON.parse(readFileSync(settingsPath, "utf8"));
+    const foreignStop = { hooks: [{ type: "command", command: "node foreign-stop.js" }] };
+    settings.hooks.Notification = [{ hooks: [{ type: "command", command: "node notify.js" }] }];
+    settings.hooks.Stop = [...settings.hooks.Stop, foreignStop];
+    // Drift: remove our Stop and SessionEnd entries.
+    settings.hooks.Stop = [foreignStop];
+    delete settings.hooks.SessionEnd;
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
+    rmSync(join(dir, "sync.md"));
+    writeFileSync(join(dir, "status.md"), readFileSync(join(dir, "status.md"), "utf8") + "appended\n");
+
+    const before: string[] = [];
+    await runCli(["doctor"], baseDeps(home, { stdout: (text) => before.push(text) }));
+    const beforeOut = before.join("\n");
+    assert.match(beforeOut, /^Claude Code: todo/m);
+    assert.match(beforeOut, /hooks missing: (Stop, SessionEnd|SessionEnd, Stop)/);
+    assert.match(beforeOut, /commands missing: sync; commands outdated: status/);
+
+    const setup: string[] = [];
+    await runCli(["setup", "--yes"], baseDeps(home, { stdout: (text) => setup.push(text) }));
+    const setupOut = setup.join("\n");
+    assert.ok(setupOut.split("\n").includes(`wrote ${join(dir, "sync.md")}`));
+    assert.ok(setupOut.split("\n").includes(`wrote ${join(dir, "status.md")}`));
+    assert.ok(setupOut.split("\n").includes(`unchanged ${join(dir, "report.md")}`));
+
+    const after: string[] = [];
+    await runCli(["doctor"], baseDeps(home, { stdout: (text) => after.push(text) }));
+    assert.match(after.join("\n"), /^Claude Code: done/m);
+
+    assert.equal(readFileSync(join(dir, "custom.md"), "utf8"), "my custom command\n");
+    const repaired = JSON.parse(readFileSync(settingsPath, "utf8"));
+    assert.ok(repaired.hooks.Stop.some((entry: unknown) => JSON.stringify(entry) === JSON.stringify(foreignStop)));
+    assert.equal(repaired.hooks.Stop.length, 2);
+    assert.ok(Array.isArray(repaired.hooks.SessionEnd));
+    assert.deepEqual(repaired.hooks.Notification, [{ hooks: [{ type: "command", command: "node notify.js" }] }]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --yes on an up-to-date Claude Code install prints unchanged lines and changes no bytes", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    mkdirSync(join(home, "project"), { recursive: true });
+    const dir = commandsDirectory(home);
+    const settingsPath = join(home, ".claude", "settings.json");
+    const snapshot = () => [settingsPath, ...PLUGIN_COMMAND_FILES.map((file) => join(dir, file))].map((file) => [readFileSync(file, "utf8"), statSync(file).mtimeMs]);
+    const before = snapshot();
+
+    const lines: string[] = [];
+    await runCli(["setup", "--yes"], baseDeps(home, { stdout: (text) => lines.push(text) }));
+
+    assert.deepEqual(snapshot(), before);
+    for (const file of PLUGIN_COMMAND_FILES) assert.ok(lines.includes(`unchanged ${join(dir, file)}`), file);
+    assert.ok(lines.includes(`unchanged ${settingsPath}`));
+    assert.equal(existsSync(`${settingsPath}.bak`), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

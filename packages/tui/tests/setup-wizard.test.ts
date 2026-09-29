@@ -193,7 +193,7 @@ test("next: agents -> hub even when Claude is selected and not yet configured", 
 
 test("next: agents -> hub when Claude is selected and already configured", () => {
   const facts = baseFacts({
-    agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/dist/statusline.js"', hooksRoot: "/x/kankaku-claude", commandsRoot: "/x/kankaku-claude" } },
+    agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/dist/statusline.js"', hooksRoot: "/x/kankaku-claude" } },
   });
   const state = stateAt("agents", {}, facts);
   assert.equal(state.selected["claude-code"], true);
@@ -380,7 +380,7 @@ test("planFromWizard: write-claude when Claude is selected and not configured", 
 
 test("planFromWizard: remove-claude when Claude is unselected but configured", () => {
   const facts = baseFacts({
-    agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/dist/statusline.js"', hooksRoot: "/x/kankaku-claude", commandsRoot: "/x/kankaku-claude" } },
+    agentFacts: { ...baseAgentFacts(), claudeCode: { settingsPath: "/home/.claude/settings.json", statusLineCommand: 'node "/x/kankaku-claude/dist/statusline.js"', hooksRoot: "/x/kankaku-claude" } },
   });
   const state = toggleAgent(createWizardState(facts), "claude-code");
   const plan = planFromWizard(state, facts);

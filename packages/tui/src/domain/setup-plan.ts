@@ -46,12 +46,20 @@ export interface ClaudeSettingsFacts {
   /** True when the matched hook command uses the legacy `/src/hook.ts` checkout form rather than the current `/dist/hook.js` one. Defaults to `false` when omitted. */
   hooksLegacy?: boolean;
   /**
-   * The plugin root our generated `~/.claude/commands/kankaku/*.md` files
-   * point at (see `adapters/setup/agents.ts`), or `undefined` when there
-   * are none. Files pointing at several roots are reported as those roots
-   * joined by `", "`, so they never equal a single root. Omitted = none.
+   * Drift between what is installed and what the plugin at the resolved
+   * root expects, computed by the adapter (`adapters/setup/agents.ts`);
+   * any omitted field means "no drift of that kind". Event names are the
+   * plugin's `hooks/hooks.json` events; command names have no `.md`.
    */
-  commandsRoot?: string | undefined;
+  statusLineOutdated?: boolean;
+  hooksMissingEvents?: string[];
+  hooksOutdatedEvents?: string[];
+  commandsMissing?: string[];
+  commandsOutdated?: string[];
+  /** Generated command files of ours the plugin no longer ships. */
+  commandsStale?: string[];
+  /** Why the plugin root could not be resolved or read; the install cannot be judged configured. */
+  pluginError?: string;
 }
 
 /** An agent kankaku-tui only detects, never configures (Codex, OpenCode). */
@@ -95,6 +103,22 @@ function settingsPackagesStatus(id: AgentId, facts: SettingsPackagesFacts | unde
  * exactly what's missing, mismatched or outdated, reused by `agentStep`'s
  * `todoAction` and, through it, `kankaku doctor`'s output.
  */
+/** The drift notes of `facts`, in a fixed order (`hooks missing: Stop, SessionEnd`, …); empty when the install equals the expected state. */
+function driftParts(facts: ClaudeSettingsFacts): string[] {
+  const parts: string[] = [];
+  if (facts.pluginError !== undefined) parts.push(`plugin unresolved: ${facts.pluginError}`);
+  if (facts.statusLineOutdated === true) parts.push("statusLine outdated");
+  const lists: [string, string[] | undefined][] = [
+    ["hooks missing", facts.hooksMissingEvents],
+    ["hooks outdated", facts.hooksOutdatedEvents],
+    ["commands missing", facts.commandsMissing],
+    ["commands outdated", facts.commandsOutdated],
+    ["commands stale", facts.commandsStale],
+  ];
+  for (const [label, names] of lists) if (names && names.length > 0) parts.push(`${label}: ${names.join(", ")}`);
+  return parts;
+}
+
 function claudeCodeStatus(facts: ClaudeSettingsFacts | undefined): AgentStatus {
   if (!facts) return { id: "claude-code", present: false, configured: false, adapterAvailable: true, detail: "not found" };
 
@@ -104,9 +128,8 @@ function claudeCodeStatus(facts: ClaudeSettingsFacts | undefined): AgentStatus {
   const sameRoot = statusLineRoot !== undefined && hooksRoot !== undefined && statusLineRoot === hooksRoot;
   const statusLineLegacy = statusLineMatch?.legacy === true;
   const hooksLegacy = facts.hooksLegacy === true;
-  const commandsRoot = facts.commandsRoot;
-  const commandsOk = sameRoot && commandsRoot === statusLineRoot;
-  const configured = sameRoot && !statusLineLegacy && !hooksLegacy && commandsOk;
+  const driftNotes = driftParts(facts);
+  const configured = sameRoot && !statusLineLegacy && !hooksLegacy && driftNotes.length === 0;
 
   let detailNote: string | undefined;
   if (!configured) {
@@ -119,8 +142,8 @@ function claudeCodeStatus(facts: ClaudeSettingsFacts | undefined): AgentStatus {
       if (statusLineLegacy) outdated.push("statusLine");
       if (hooksLegacy) outdated.push("hooks");
       if (outdated.length > 0) detailNote = `outdated ${outdated.join(" and ")}`;
-      else detailNote = commandsRoot === undefined ? "commands missing" : `commands point at ${commandsRoot}`;
     }
+    if (driftNotes.length > 0) detailNote = [detailNote, ...driftNotes].filter((part) => part !== undefined).join("; ");
   }
 
   return { id: "claude-code", present: true, configured, adapterAvailable: true, detail: facts.settingsPath, ...(detailNote !== undefined ? { detailNote } : {}) };

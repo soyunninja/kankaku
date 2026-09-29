@@ -43,7 +43,7 @@ function currentHooksObject(existing: Record<string, unknown>): Record<string, H
 }
 
 /** Never throws on a malformed entry (e.g. `null`, or missing/non-array `hooks`) — treated as foreign, never ours. */
-function isOurHookEntry(entry: HookEventEntry): boolean {
+export function isOurHookEntry(entry: HookEventEntry): boolean {
   if (!entry || typeof entry !== "object" || !Array.isArray(entry.hooks)) return false;
   return entry.hooks.some((hook) => hook && typeof hook.command === "string" && ourHookCommandRoot(hook.command) !== undefined);
 }

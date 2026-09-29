@@ -295,8 +295,8 @@ async function runSyncCommand(args: string[], roots: string[], deps: CliDeps): P
  * agent, hub credentials/health, and whether `tui.json` exists. Read-only;
  * the hub health check (bounded to 5s) is the only network call.
  */
-async function gatherSetupFacts(deps: CliDeps): Promise<{ agents: AgentStatus[]; hub: HubPlanFacts; tui: TuiPlanFacts }> {
-  const agents = detectAgents(readAgentFacts(deps.homeDir));
+async function gatherSetupFacts(deps: CliDeps, claudePluginOverride?: string): Promise<{ agents: AgentStatus[]; hub: HubPlanFacts; tui: TuiPlanFacts }> {
+  const agents = detectAgents(readAgentFacts(deps.homeDir, claudePluginOverride));
 
   const hubResolution = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
   const credPath = credentialsPath(deps.homeDir);
@@ -316,8 +316,8 @@ async function gatherSetupFacts(deps: CliDeps): Promise<{ agents: AgentStatus[];
 }
 
 /** `kankaku doctor`: read-only report, `domain/setup-plan.ts#formatDoctorLines` verbatim. Also run as the last step of `kankaku setup`. */
-async function runDoctorCommand(deps: CliDeps): Promise<void> {
-  const { agents, hub, tui } = await gatherSetupFacts(deps);
+async function runDoctorCommand(deps: CliDeps, claudePluginOverride?: string): Promise<void> {
+  const { agents, hub, tui } = await gatherSetupFacts(deps, claudePluginOverride);
   deps.stdout(formatDoctorLines(agents, hub, tui).join("\n"));
 }
 
@@ -328,8 +328,8 @@ async function runDoctorCommand(deps: CliDeps): Promise<void> {
  * with no network call — the hub's health is checked interactively, from
  * the wizard's own Hub step, never upfront.
  */
-function gatherWizardFacts(deps: CliDeps): WizardFacts {
-  const agentFacts = readAgentFacts(deps.homeDir);
+function gatherWizardFacts(deps: CliDeps, claudePluginOverride?: string): WizardFacts {
+  const agentFacts = readAgentFacts(deps.homeDir, claudePluginOverride);
   const hubResolution = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
   const credPath = credentialsPath(deps.homeDir);
 
@@ -650,7 +650,7 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
   const fromCheckout = fromCheckoutFlag(args);
   const claudePluginOverride = resolveClaudePluginOverride(args, deps.env);
 
-  const initial = await gatherSetupFacts(deps);
+  const initial = await gatherSetupFacts(deps, claudePluginOverride);
   const steps = planSetup(initial.agents, initial.hub, initial.tui);
 
   if (dryRun) {
@@ -675,10 +675,12 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
   for (const agent of initial.agents) {
     if (agent.id === "codex" || agent.id === "opencode") continue;
     const step = byId[agent.id]!;
-    if (step.state !== "todo") continue;
+    // A configured Claude Code is still reconciled under --yes: the writers are idempotent, so an up-to-date install only prints `unchanged` lines.
+    const reconcileClaude = agent.id === "claude-code" && step.state === "done" && yes;
+    if (step.state !== "todo" && !reconcileClaude) continue;
 
     if (agent.id === "claude-code") {
-      const doIt = await ask.confirm(`Configure Claude Code (statusLine + hooks + /kankaku:* commands) for kankaku (${step.file})?`, true);
+      const doIt = reconcileClaude || (await ask.confirm(`Configure Claude Code (statusLine + hooks + /kankaku:* commands) for kankaku (${step.file})?`, true));
       if (!doIt) continue;
       try {
         const { root } = locateClaudePlugin(claudePluginOverride);
@@ -745,7 +747,7 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
     }
   }
 
-  await runDoctorCommand(deps);
+  await runDoctorCommand(deps, claudePluginOverride);
 }
 
 /**
@@ -814,7 +816,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<void> {
   }
 
   if (command === "doctor") {
-    await runDoctorCommand(deps);
+    await runDoctorCommand(deps, resolveClaudePluginOverride(rest.slice(1), deps.env));
     return;
   }
 
@@ -992,7 +994,10 @@ if (isMain) {
             catalog={catalogScreenDeps(realDeps)}
             sync={syncScreenDeps(realDeps, roots)}
             dashboardActions={dashboardActionsDeps(realDeps, roots)}
-            wizard={{ facts: gatherWizardFacts(realDeps), actions: buildWizardActions(realDeps, options?.claudePluginDir ?? process.env["KANKAKU_CLAUDE_PLUGIN_DIR"]) }}
+            wizard={{
+              facts: gatherWizardFacts(realDeps, options?.claudePluginDir ?? process.env["KANKAKU_CLAUDE_PLUGIN_DIR"]),
+              actions: buildWizardActions(realDeps, options?.claudePluginDir ?? process.env["KANKAKU_CLAUDE_PLUGIN_DIR"]),
+            }}
             startInWizard={options?.startInWizard}
           />
         </ThemeProvider>,

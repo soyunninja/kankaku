@@ -66,8 +66,13 @@ function isOurs(file: string): boolean {
 
 function writeAtomic(file: string, content: string): void {
   const tmp = `${file}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, content);
-  renameSync(tmp, file);
+  try {
+    writeFileSync(tmp, content);
+    renameSync(tmp, file);
+  } catch (error) {
+    rmSync(tmp, { force: true });
+    throw error;
+  }
 }
 
 /**

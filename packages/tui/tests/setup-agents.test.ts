@@ -4,6 +4,10 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readAgentFacts } from "../src/adapters/setup/agents.ts";
+import { writeClaudeIntegration } from "../src/adapters/setup/claude.ts";
+import { commandsDirectory, readPluginCommands, writeClaudeCommands } from "../src/adapters/setup/claude-commands.ts";
+import { readPluginHooks } from "../src/adapters/setup/claude-plugin.ts";
+import { readFileSync } from "node:fs";
 
 function makeHome(): string {
   return mkdtempSync(join(tmpdir(), "kankaku-tui-setup-home-"));
@@ -113,13 +117,10 @@ test("readAgentFacts: reads Claude Code's statusLine.command", () => {
       JSON.stringify({ statusLine: { type: "command", command: 'node "/x/kankaku-claude/dist/statusline.js"' } }, null, 2),
     );
     const facts = readAgentFacts(home);
-    assert.deepEqual(facts.claudeCode, {
-      settingsPath: join(home, ".claude", "settings.json"),
-      statusLineCommand: 'node "/x/kankaku-claude/dist/statusline.js"',
-      hooksRoot: undefined,
-      hooksLegacy: false,
-      commandsRoot: undefined,
-    });
+    assert.equal(facts.claudeCode?.settingsPath, join(home, ".claude", "settings.json"));
+    assert.equal(facts.claudeCode?.statusLineCommand, 'node "/x/kankaku-claude/dist/statusline.js"');
+    assert.equal(facts.claudeCode?.hooksRoot, undefined);
+    assert.equal(facts.claudeCode?.hooksLegacy, false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -131,7 +132,10 @@ test("readAgentFacts: Claude Code settings.json without a statusLine reads as pr
     mkdirSync(join(home, ".claude"), { recursive: true });
     writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "x" }));
     const facts = readAgentFacts(home);
-    assert.deepEqual(facts.claudeCode, { settingsPath: join(home, ".claude", "settings.json"), statusLineCommand: undefined, hooksRoot: undefined, hooksLegacy: false, commandsRoot: undefined });
+    assert.equal(facts.claudeCode?.settingsPath, join(home, ".claude", "settings.json"));
+    assert.equal(facts.claudeCode?.statusLineCommand, undefined);
+    assert.equal(facts.claudeCode?.hooksRoot, undefined);
+    assert.equal(facts.claudeCode?.hooksLegacy, false);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -153,49 +157,120 @@ test("readAgentFacts: detects Codex and OpenCode config files by existence only"
   }
 });
 
-function writeSettings(home: string): void {
+
+/** A fake plugin root with two events and two commands, fully installed into `home`. */
+function installedFixture(): { home: string; plugin: string; settingsPath: string } {
+  const home = makeHome();
+  const plugin = mkdtempSync(join(tmpdir(), "kankaku-claude-fake-plugin-"));
+  mkdirSync(join(plugin, "hooks"), { recursive: true });
+  mkdirSync(join(plugin, "dist"), { recursive: true });
+  mkdirSync(join(plugin, "commands"), { recursive: true });
+  writeFileSync(join(plugin, "dist", "hook.js"), "// fake\n");
+  writeFileSync(
+    join(plugin, "hooks", "hooks.json"),
+    JSON.stringify({
+      hooks: {
+        SessionStart: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"', timeout: 15 }] }],
+        Stop: [{ hooks: [{ type: "command", command: 'node "${CLAUDE_PLUGIN_ROOT}/dist/hook.js"', timeout: 30 }] }],
+      },
+    }),
+  );
+  writeFileSync(join(plugin, "commands", "report.md"), 'r\n!node "${CLAUDE_PLUGIN_ROOT}/dist/cli.js" report\n');
+  writeFileSync(join(plugin, "commands", "sync.md"), 'r\n!node "${CLAUDE_PLUGIN_ROOT}/dist/cli.js" sync\n');
   mkdirSync(join(home, ".claude"), { recursive: true });
-  writeFileSync(join(home, ".claude", "settings.json"), "{}");
+  const settingsPath = join(home, ".claude", "settings.json");
+  writeClaudeIntegration(settingsPath, plugin, readPluginHooks(plugin));
+  writeClaudeCommands(home, plugin, readPluginCommands(plugin));
+  return { home, plugin, settingsPath };
 }
 
-function writeCommand(home: string, name: string, content: string): void {
-  const dir = join(home, ".claude", "commands", "kankaku");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, name), content);
+function cleanup(f: { home: string; plugin: string }): void {
+  rmSync(f.home, { recursive: true, force: true });
+  rmSync(f.plugin, { recursive: true, force: true });
 }
 
-test("readAgentFacts: reads the root our generated command files point at", () => {
-  const home = makeHome();
+const NO_DRIFT = {
+  hooksMissingEvents: [],
+  hooksOutdatedEvents: [],
+  commandsMissing: [],
+  commandsOutdated: [],
+  commandsStale: [],
+  statusLineOutdated: false,
+};
+
+test("readAgentFacts: a fully installed Claude Code reports no drift against the plugin", () => {
+  const f = installedFixture();
   try {
-    writeSettings(home);
-    writeCommand(home, "report.md", '!node "/x/kankaku-claude/dist/cli.js" report\n');
-    writeCommand(home, "status.md", '!node "/x/kankaku-claude/dist/cli.js" status\n');
-    assert.equal(readAgentFacts(home).claudeCode?.commandsRoot, "/x/kankaku-claude");
+    const facts = readAgentFacts(f.home, f.plugin).claudeCode!;
+    for (const [key, value] of Object.entries(NO_DRIFT)) assert.deepEqual(facts[key as keyof typeof facts], value, key);
+    assert.equal(facts.pluginError, undefined);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    cleanup(f);
   }
 });
 
-test("readAgentFacts: foreign command files and an absent directory read as no commands", () => {
-  const home = makeHome();
+test("readAgentFacts: hook events removed from settings.json are missing", () => {
+  const f = installedFixture();
   try {
-    writeSettings(home);
-    assert.equal(readAgentFacts(home).claudeCode?.commandsRoot, undefined);
-    writeCommand(home, "mine.md", "my own command\n");
-    assert.equal(readAgentFacts(home).claudeCode?.commandsRoot, undefined);
+    const settings = JSON.parse(readFileSync(f.settingsPath, "utf8"));
+    delete settings.hooks.Stop;
+    writeFileSync(f.settingsPath, JSON.stringify(settings));
+    assert.deepEqual(readAgentFacts(f.home, f.plugin).claudeCode?.hooksMissingEvents, ["Stop"]);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    cleanup(f);
   }
 });
 
-test("readAgentFacts: command files pointing at different roots report every root, so they never match a single one", () => {
-  const home = makeHome();
+test("readAgentFacts: a hook whose timeout differs from the plugin's is outdated; foreign entries are ignored", () => {
+  const f = installedFixture();
   try {
-    writeSettings(home);
-    writeCommand(home, "report.md", '!node "/b/kankaku-claude/dist/cli.js" report\n');
-    writeCommand(home, "status.md", '!node "/a/kankaku-claude/dist/cli.js" status\n');
-    assert.equal(readAgentFacts(home).claudeCode?.commandsRoot, "/a/kankaku-claude, /b/kankaku-claude");
+    const settings = JSON.parse(readFileSync(f.settingsPath, "utf8"));
+    settings.hooks.Stop[0].hooks[0].timeout = 5;
+    settings.hooks.SessionStart.push({ hooks: [{ type: "command", command: "node foreign.js" }] });
+    writeFileSync(f.settingsPath, JSON.stringify(settings));
+    const facts = readAgentFacts(f.home, f.plugin).claudeCode!;
+    assert.deepEqual(facts.hooksOutdatedEvents, ["Stop"]);
+    assert.deepEqual(facts.hooksMissingEvents, []);
   } finally {
-    rmSync(home, { recursive: true, force: true });
+    cleanup(f);
+  }
+});
+
+test("readAgentFacts: a deleted command is missing, an edited one outdated, an extra generated one stale; a foreign file is ignored", () => {
+  const f = installedFixture();
+  try {
+    const dir = commandsDirectory(f.home);
+    rmSync(join(dir, "sync.md"));
+    writeFileSync(join(dir, "report.md"), readFileSync(join(dir, "report.md"), "utf8") + "extra\n");
+    writeFileSync(join(dir, "old.md"), `!node "${f.plugin}/dist/cli.js" old\n`);
+    writeFileSync(join(dir, "custom.md"), "mine\n");
+    const facts = readAgentFacts(f.home, f.plugin).claudeCode!;
+    assert.deepEqual(facts.commandsMissing, ["sync"]);
+    assert.deepEqual(facts.commandsOutdated, ["report"]);
+    assert.deepEqual(facts.commandsStale, ["old"]);
+  } finally {
+    cleanup(f);
+  }
+});
+
+test("readAgentFacts: a statusLine pointing at another root is outdated", () => {
+  const f = installedFixture();
+  try {
+    const settings = JSON.parse(readFileSync(f.settingsPath, "utf8"));
+    settings.statusLine.command = 'node "/old/kankaku-claude/dist/statusline.js"';
+    writeFileSync(f.settingsPath, JSON.stringify(settings));
+    assert.equal(readAgentFacts(f.home, f.plugin).claudeCode?.statusLineOutdated, true);
+  } finally {
+    cleanup(f);
+  }
+});
+
+test("readAgentFacts: an unresolvable plugin root is reported as pluginError", () => {
+  const f = installedFixture();
+  try {
+    const facts = readAgentFacts(f.home, join(f.home, "nowhere")).claudeCode!;
+    assert.match(facts.pluginError ?? "", /nowhere/);
+  } finally {
+    cleanup(f);
   }
 });

@@ -15,11 +15,25 @@ versions follow semver. Dates are the day the version was cut.
   (the plugin root filled in for `${CLAUDE_PLUGIN_ROOT}`), reports each
   file as `wrote`/`unchanged`/`removed`, and unchecking Claude Code removes
   them (and the directory once empty). Files it did not generate are never
-  overwritten or removed. Claude Code counts as configured only when the
-  statusLine, hooks and commands share one root; `kankaku doctor` reports
-  `commands missing` / `commands point at <root>` otherwise, and `setup
-  --dry-run` prints the directory and file count. Re-run `kankaku setup`
-  after the install path changes (e.g. switching Node versions).
+  overwritten or removed. `setup --dry-run` prints the directory and
+  file count. Re-run `kankaku setup` after the install path changes (e.g.
+  switching Node versions).
+
+### Fixed
+
+- **Claude Code was judged configured from its root alone.** A deleted or
+  edited command, a missing hook event (`Stop`/`SessionEnd` settle the
+  records) or a hook whose command, matcher or timeout changed left
+  `kankaku doctor` at `done` and `kankaku setup` writing nothing, and the
+  same happened on every upgrade that added a command or hook event. Claude
+  Code is now configured only when the installed statusLine, hook entries
+  and command files equal what the plugin at the resolved root expects, with
+  no stale generated file; otherwise `doctor` reports `todo` naming the
+  drift (`hooks missing: Stop, SessionEnd; commands missing: sync; commands
+  outdated: status`, or `plugin unresolved: …`), and `kankaku setup --yes`
+  reconciles a selected Claude Code every time, printing `wrote`/`unchanged`
+  per file. Foreign hook entries and foreign files in `commands/kankaku/`
+  are left untouched. A failed atomic write no longer leaves a `.tmp` file.
 
 ## 0.10.0 — 2026-09-28
 

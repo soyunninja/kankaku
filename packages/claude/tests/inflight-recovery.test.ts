@@ -249,6 +249,7 @@ test("recoverStaleSessions closes a prompt with no follow-up event at its own st
       env: dirs.env,
     });
 
+    assert.equal(records.length, 1);
     assert.equal(records[0]?.wallMs, 0);
   } finally {
     teardown(dirs);

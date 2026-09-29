@@ -150,3 +150,15 @@ test("removeClaudeCommands: a missing directory is a no-op", () => {
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("writeClaudeCommands: a failed rename leaves no .tmp file behind", () => {
+  const home = makeDir();
+  try {
+    const dir = commandsDirectory(home);
+    mkdirSync(join(dir, "report.md"), { recursive: true }); // a directory at the target: rename onto it fails
+    assert.throws(() => writeClaudeCommands(home, ROOT, [REPORT]));
+    assert.deepEqual(readdirSync(dir), ["report.md"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});

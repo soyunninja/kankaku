@@ -77,8 +77,15 @@ It also installs the `/kankaku:*` slash commands (`/kankaku:report`,
 `~/.claude/commands/kankaku/<name>.md`, generated from the plugin's own
 `commands/*.md` with the plugin's absolute install path filled in. Setup
 lists each file it wrote or left unchanged; `kankaku doctor` reports Claude
-Code as configured only when the statusLine, the hooks and the commands all
-point at the same install. A file in that directory that kankaku did not
+Code as configured only when the installed state equals what the plugin
+expects: the exact statusLine command, every hook event in the plugin's
+`hooks/hooks.json` with the same command, matcher and timeout, and every
+command file byte-identical to the generated one, with no stale generated
+file left. Anything else is `todo`, and the note names what is wrong (for
+example `hooks missing: Stop, SessionEnd; commands missing: sync; commands
+outdated: status`), including after an upgrade that adds a command or hook
+event. `kankaku setup --yes` reconciles a selected Claude Code every time,
+so a damaged or outdated install is repaired. A file in that directory that kankaku did not
 generate is never overwritten or removed, and setup says so. **Re-run
 `kankaku setup` if the install path changes** — for example after switching
 Node versions, which moves the global `node_modules`.
