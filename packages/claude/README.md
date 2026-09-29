@@ -58,8 +58,7 @@ README ("Claude Code") for the full behaviour, the
 `--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR` override, and why you
 should drop `--plugin-dir` (below) once this has run.
 
-**Manual/dev: `--plugin-dir` (also required for the `/kankaku:*` slash
-commands).** Clone this repository, build it once, then point Claude Code
+**Manual/dev: `--plugin-dir`.** Clone this repository, build it once, then point Claude Code
 at it directly:
 
 ```bash
@@ -79,10 +78,10 @@ new commits.
 If your Claude Code version does not recognize `--plugin-dir`, or plugin
 loading has changed since this was written, check your installed version's
 own plugin documentation (`claude --help`, or `/plugin` inside a session) for
-the current local-install flow. `--plugin-dir` is also the only way to get
-the `/kankaku:*` slash commands (`/kankaku:report`, `/kankaku:setup`, …),
-since a Claude Code plugin loaded only through settings.json hooks — the
-recommended path above — never registers commands.
+the current local-install flow. A plugin
+wired only through settings.json hooks does not register its commands, so
+`kankaku setup` installs the `/kankaku:*` commands separately (see
+"Commands").
 
 **Do not combine the two.** If `kankaku setup` has already configured this
 machine's `~/.claude/settings.json` hooks, loading the plugin again with
@@ -126,6 +125,9 @@ only reads a project's own state file, so an unrelated session never leaves
 anything behind in whatever project happens to be open.
 
 ## Commands
+
+`kankaku setup` installs these as user commands under
+`~/.claude/commands/kankaku/`, so they work without `--plugin-dir`.
 
 - `/kankaku:report` — a report of recent work, grouped by day (wraps
   `node dist/cli.js report`).
@@ -217,6 +219,12 @@ process is no longer alive. A dead session with an open prompt is replayed
 and appended as one `status: "interrupted"` record before its files are
 deleted; a dead session with no open prompt just has its files deleted. This
 also runs for the current session's own leftover state at `SessionEnd`.
+
+An interrupted prompt is closed at its last recorded activity — the
+timestamp of the last event logged for it, or its own start when nothing
+followed — never at the moment of recovery, so a session that hung and was
+recovered hours later does not report those hours as work. A waiting span
+still open is closed at that same instant.
 
 ## Limitations
 

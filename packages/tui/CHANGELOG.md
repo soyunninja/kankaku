@@ -3,6 +3,24 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- **`kankaku setup` installs the `/kankaku:*` slash commands.** Claude Code
+  only offers a plugin's commands when it loads kankaku as a plugin, but
+  setup wires the hooks and statusLine through `~/.claude/settings.json`,
+  so `/kankaku:report` and the rest did not exist. Setup now generates
+  `~/.claude/commands/kankaku/<name>.md` from the plugin's `commands/*.md`
+  (the plugin root filled in for `${CLAUDE_PLUGIN_ROOT}`), reports each
+  file as `wrote`/`unchanged`/`removed`, and unchecking Claude Code removes
+  them (and the directory once empty). Files it did not generate are never
+  overwritten or removed. Claude Code counts as configured only when the
+  statusLine, hooks and commands share one root; `kankaku doctor` reports
+  `commands missing` / `commands point at <root>` otherwise, and `setup
+  --dry-run` prints the directory and file count. Re-run `kankaku setup`
+  after the install path changes (e.g. switching Node versions).
+
 ## 0.10.0 — 2026-09-28
 
 ### Fixed

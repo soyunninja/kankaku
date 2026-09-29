@@ -123,7 +123,12 @@ formatting or sync-planning logic.
   since they're the same shape, preserving every other key and its
   order); `claude.ts` (`writeStatusLine` — sets Claude Code's
   `statusLine.command` to run a given `kankaku-claude` checkout's
-  `src/statusline.ts`); `hub.ts` (`writeHubCredentials`, 0600, `~/.kankaku`
+  `src/statusline.ts`); `claude-commands.ts` (`writeClaudeCommands`/
+  `removeClaudeCommands` — generate and remove the `/kankaku:*` user
+  commands under `~/.claude/commands/kankaku/` from the plugin's
+  `commands/*.md`, touching only files recognised as ours by
+  `domain/claude-integration.ts#ourCommandFileRoot` and reporting the
+  rest as foreign); `hub.ts` (`writeHubCredentials`, 0600, `~/.kankaku`
   created 0700 only when it does not exist yet — an already-existing
   `~/.kankaku` is never chmod'd, mirroring kankaku's own R2 rule since the
   directory is shared with kankaku's worklog storage; `checkHubHealth`,

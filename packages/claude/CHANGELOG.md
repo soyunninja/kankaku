@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- **A prompt interrupted by a hung session was recorded with the time until
+  the next session started.** Crash recovery settled the open prompt at
+  recovery time, so a session that hung and was recovered the next morning
+  produced a record with a 14.4 h wall time. The prompt is now closed at
+  the timestamp of the last event recorded for it (its own
+  `UserPromptSubmit` when nothing followed); a waiting span still open is
+  closed at the same instant, and the record stays `interrupted`.
+
 ## 0.10.0 — 2026-09-28
 
 ### Fixed

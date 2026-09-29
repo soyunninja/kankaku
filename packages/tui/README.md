@@ -64,13 +64,24 @@ The wizard's steps, `enter` to advance and `esc` to go back throughout
 Checking Claude Code (in the wizard, or answering yes in `kankaku setup`'s
 non-interactive flow) writes two things into `~/.claude/settings.json`,
 merged in — every other key, every foreign hook and every other event is
-left untouched:
+left untouched — and installs the slash commands:
 
 - `statusLine.command`, so Claude Code reports per-prompt cost.
 - `hooks` for every event the bundled `kankaku-claude` plugin declares
   (`packages/claude/hooks/hooks.json`), so the plugin actually measures
   time even when Claude Code is started as plain `claude` — **no
   `--plugin-dir` flag needed**.
+
+It also installs the `/kankaku:*` slash commands (`/kankaku:report`,
+`/kankaku:status`, `/kankaku:sync`, …) as user commands under
+`~/.claude/commands/kankaku/<name>.md`, generated from the plugin's own
+`commands/*.md` with the plugin's absolute install path filled in. Setup
+lists each file it wrote or left unchanged; `kankaku doctor` reports Claude
+Code as configured only when the statusLine, the hooks and the commands all
+point at the same install. A file in that directory that kankaku did not
+generate is never overwritten or removed, and setup says so. **Re-run
+`kankaku setup` if the install path changes** — for example after switching
+Node versions, which moves the global `node_modules`.
 
 `kankaku-tui` depends on `kankaku-claude` directly (lockstep, same as its
 `kankaku`/`kankaku-hub` dependencies), so the plugin's files ship inside
@@ -82,15 +93,13 @@ kankaku-claude, drop that flag once `kankaku setup` has configured Claude
 Code** — the hooks it now writes into `settings.json` run on every Claude
 Code launch regardless, so a `--plugin-dir` load on top of that would run
 the hooks twice and double-write worklog records. The `/kankaku:*` slash
-commands (`/kankaku:report`, `/kankaku:setup`, …) only exist when the
-plugin itself is loaded via `--plugin-dir`, since a Claude Code plugin
-installed only through its hooks (not loaded as a plugin) never registers
-commands — keep using `--plugin-dir` if you want those, just be aware of
-the double-run cost above.
+commands do not need it either: setup installs them as user commands.
 
 Unchecking Claude Code (or removing it from an already-configured
 machine) removes exactly kankaku's own statusLine and hooks entries,
-leaving everything else in `settings.json` untouched.
+leaving everything else in `settings.json` untouched, and removes the
+generated command files (plus the `kankaku/` directory once it is empty,
+and never anything else under `~/.claude/commands`).
 
 **Overriding the plugin root.** For local development, or to point at a
 different kankaku-claude checkout, pass `--claude-plugin-dir <dir>` to
