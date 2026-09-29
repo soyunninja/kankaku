@@ -41,28 +41,36 @@ export function trackTranscriptAtSubmit(existing: TranscriptState | undefined, p
   };
 }
 
-/** Poll every 25 ms, for at most 300 ms (see {@link waitForTranscript}). */
+/** Poll every 25 ms; not before 100 ms and not after 300 ms since the hook started (see {@link waitForTranscript}). */
 export const TRANSCRIPT_POLL_MS = 25;
+export const TRANSCRIPT_WAIT_MIN_MS = 100;
 export const TRANSCRIPT_WAIT_MAX_MS = 300;
 
 /**
  * Claude Code writes the transcript asynchronously: the last assistant lines
- * reach the disk shortly AFTER the Stop hook has started. Before a settle
- * reads, poll the main transcript until its new bytes hold at least one
- * complete assistant line AND its size did not change across two consecutive
- * polls, every {@link TRANSCRIPT_POLL_MS}, for at most
- * {@link TRANSCRIPT_WAIT_MAX_MS}; then the caller reads whatever is there.
- * Clock and sleep are injected. Never throws.
+ * reach the disk shortly AFTER the Stop hook has started, while earlier
+ * assistant messages of the same prompt are usually on disk long before. So
+ * a line being there is not enough. Before a settle reads, poll the main
+ * transcript every {@link TRANSCRIPT_POLL_MS} until ALL hold: at least
+ * {@link TRANSCRIPT_WAIT_MIN_MS} have passed since `startedAt` (when the hook
+ * process started), its size did not change across two consecutive polls,
+ * and its new bytes hold a complete assistant line. It gives up
+ * {@link TRANSCRIPT_WAIT_MAX_MS} after `startedAt` regardless; time already
+ * spent (the statusline wait) counts, so a hook that waited 300 ms or more
+ * does not sleep again. The caller then reads whatever is there. Clock and
+ * sleep are injected. Never throws.
  */
 export async function waitForTranscript(
   transcript: TranscriptState | undefined,
   clock: { now: () => number; sleep: (ms: number) => Promise<void> },
+  startedAt: number = clock.now(),
 ): Promise<void> {
   if (!transcript) return;
-  const start = clock.now();
   const position = transcript.offsets[transcript.path] ?? { bytes: 0 };
   let previousSize: number | undefined;
   for (;;) {
+    const elapsed = clock.now() - startedAt;
+    if (elapsed >= TRANSCRIPT_WAIT_MAX_MS) return;
     let ready = false;
     try {
       const size = statTranscriptSize(transcript.path);
@@ -70,15 +78,13 @@ export async function waitForTranscript(
       const sawLine =
         read.lastMessageId !== undefined &&
         (read.lastMessageId !== position.lastMessageId || read.usage.input + read.usage.output + read.usage.cacheRead + read.usage.cacheWrite > 0);
-      ready = sawLine && size !== undefined && size === previousSize;
+      ready = elapsed >= TRANSCRIPT_WAIT_MIN_MS && sawLine && size !== undefined && size === previousSize;
       previousSize = size;
     } catch {
       return;
     }
     if (ready) return;
-    const remaining = TRANSCRIPT_WAIT_MAX_MS - (clock.now() - start);
-    if (remaining <= 0) return;
-    await clock.sleep(Math.min(TRANSCRIPT_POLL_MS, remaining));
+    await clock.sleep(Math.min(TRANSCRIPT_POLL_MS, TRANSCRIPT_WAIT_MAX_MS - elapsed));
   }
 }
 

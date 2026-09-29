@@ -206,7 +206,12 @@ extension has one. Instead:
   Claude Code writes the transcript ASYNCHRONOUSLY: at Stop the last
   assistant lines are often not on disk yet (measured: none at 0 ms, there at
   50 ms). `Stop` (interactive and headless) calls `waitForTranscript` after
-  the statusline wait (25 ms polls, 300 ms max, injected clock and sleep);
+  the statusline wait (25 ms polls; ends when >= 100 ms since the hook
+  process started AND the size was stable across two polls AND an assistant
+  line is present; gives up at 300 ms since the hook started, so time spent
+  in the statusline wait counts; injected clock and sleep, and the start
+  time is the hook's `ts`). A line already on disk must not end the wait
+  early: the prompt's last message is the late one;
   usage arriving later is counted by the next settle. A headless
   `SessionEnd` and recovery re-read and add the tokens to the LAST pending
   prompt (`withLateTokens`) before building records, and recovery never

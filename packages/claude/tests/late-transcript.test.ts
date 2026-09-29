@@ -270,3 +270,80 @@ test("recovery adds late usage to the last pending prompt and takes the model fr
     cleanup(env);
   }
 });
+
+
+test("interactive: an earlier assistant line is on disk and the prompt's last one lands at 60 ms: it belongs to this record", async () => {
+  const env = setup();
+  try {
+    await start(env, INTERACTIVE);
+    await submit(env, 1000);
+    appendFileSync(env.transcript, assistant("m1", 1, 1));
+    freshCost(env, 0.2, 1500);
+    const started = 2000;
+    env.onSleep.current = (now) => {
+      if (now >= started + 60 && !existsSync(`${env.transcript}.done`)) {
+        writeFileSync(`${env.transcript}.done`, "");
+        appendFileSync(env.transcript, assistant("m2", 10, 20));
+      }
+    };
+    await stop(env, started);
+    const [record] = worklog(env);
+    assert.deepEqual([record?.usage.input, record?.usage.output], [11, 21]);
+  } finally {
+    cleanup(env);
+  }
+});
+
+test("interactive: a line that lands after the wait is counted by the next settle", async () => {
+  const env = setup();
+  try {
+    await start(env, INTERACTIVE);
+    await submit(env, 1000);
+    appendFileSync(env.transcript, assistant("m1", 1, 1));
+    freshCost(env, 0.2, 1500);
+    env.onSleep.current = (now) => {
+      if (now >= 2320 && !existsSync(`${env.transcript}.done`)) {
+        writeFileSync(`${env.transcript}.done`, "");
+        appendFileSync(env.transcript, assistant("m2", 10, 20));
+      }
+    };
+    await stop(env, 2000);
+    assert.equal(env.clock() - 2000, 100, "a stable line on disk ends the wait at 100 ms");
+    env.onSleep.current = undefined;
+    appendFileSync(env.transcript, assistant("m2", 10, 20));
+    await submit(env, 5000, "two");
+    freshCost(env, 0.4, 5500);
+    await stop(env, 6000);
+    const records = worklog(env);
+    assert.equal(records[0]?.usage.input, 1);
+    assert.equal(records[1]?.usage.input, 10);
+  } finally {
+    cleanup(env);
+  }
+});
+
+test("interactive: a statusline wait that already took 400 ms leaves no further transcript wait", async () => {
+  const env = setup();
+  try {
+    await start(env, INTERACTIVE);
+    await submit(env, 1000);
+    appendFileSync(env.transcript, assistant("m1", 1, 1));
+    const started = 2000;
+    const sleepsAfterCost: number[] = [];
+    env.onSleep.current = (now) => {
+      if (now >= started + 400 && readCostFile(env) === undefined) freshCost(env, 0.2, started + 400);
+      else if (readCostFile(env) !== undefined) sleepsAfterCost.push(now);
+    };
+    await stop(env, started);
+    assert.equal(worklog(env).length, 1);
+    assert.deepEqual(sleepsAfterCost, [], "no sleep after the statusline cost arrived");
+    assert.equal(env.clock() - started, 400);
+  } finally {
+    cleanup(env);
+  }
+});
+
+function readCostFile(env: Env): number | undefined {
+  const file = join(env.homeDir, ".kankaku", "claude", "cost", "session-1.json");
+  return existsSync(file) ? 1 : undefined;
+}

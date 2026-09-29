@@ -341,11 +341,15 @@ How it is read:
 - **The transcript is written asynchronously.** Measured on real runs, the
   last assistant lines reach the disk shortly AFTER the `Stop` hook has
   started (none at 0 ms, present at 50 ms). Before reading at settle,
-  `Stop` therefore polls the transcript every 25 ms, for at most 300 ms,
-  until its new bytes hold a complete assistant line and its size did not
-  change across two polls; then it reads whatever is there (after the
-  statusline cost wait, so it usually adds little). Usage that still arrives
-  later is counted by the next settle. A headless session reads once more at
+  `Stop` therefore polls the transcript every 25 ms, measured from when the
+  hook process started, and reads once ALL hold: at least 100 ms have
+  passed (earlier assistant messages of the same prompt are usually on disk
+  long before, and the last one is the late one, so a line being present is
+  not enough), the size did not change across two polls, and the new bytes
+  hold a complete assistant line. It gives up 300 ms after the hook started
+  whatever it sees. Time already spent in the statusline wait counts, so a
+  hook that waited 300 ms or more for the statusline does not wait again.
+  Usage that still arrives   later is counted by the next settle. A headless session reads once more at
   `SessionEnd` (or in recovery, which does not wait: the file is final) and
   adds what it finds to the last pending prompt, since late lines belong to
   the prompt that just settled.

@@ -184,7 +184,7 @@ function clockFor(onSleep?: (now: number) => void) {
   };
 }
 
-test("waitForTranscript returns after two stable polls when the assistant line is already there", async () => {
+test("waitForTranscript never returns before 100 ms after the start, even when a line is already there and stable", async () => {
   const { dir, main } = setup();
   try {
     writeFileSync(main, "");
@@ -192,7 +192,7 @@ test("waitForTranscript returns after two stable polls when the assistant line i
     appendFileSync(main, assistant("m1", 1));
     const clock = clockFor();
     await waitForTranscript(tracked, clock);
-    assert.deepEqual(clock.sleeps, [25]);
+    assert.deepEqual(clock.sleeps, [25, 25, 25, 25]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -212,7 +212,7 @@ test("waitForTranscript waits for a line that arrives late and then for the size
     });
     await waitForTranscript(tracked, clock);
     assert.equal(wrote, true);
-    assert.ok(clock.total() >= 75 && clock.total() < 300, `waited ${clock.total()} ms`);
+    assert.ok(clock.total() >= 100 && clock.total() < 300, `waited ${clock.total()} ms`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -274,6 +274,92 @@ test("settleTranscripts learns the entry point and version from the head of the 
     const result = settleTranscripts(tracked)!;
     assert.equal(result.transcript.entrypoint, "sdk-cli");
     assert.equal(result.transcript.agentVersion, "2.5.0");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+
+function lateLine(main: string, at: number, id: string) {
+  let wrote = false;
+  return (now: number) => {
+    if (now >= at && !wrote) {
+      wrote = true;
+      appendFileSync(main, assistant(id, 1));
+    }
+  };
+}
+
+function readAfter(main: string, tracked: NonNullable<ReturnType<typeof trackTranscriptAtSubmit>>): number {
+  return settleTranscripts(tracked)!.tokens!.input;
+}
+
+test("waitForTranscript: an earlier assistant line on disk does not end the wait before the last one lands at 60 ms", async () => {
+  const { dir, main } = setup();
+  try {
+    writeFileSync(main, "");
+    const tracked = trackTranscriptAtSubmit(undefined, main)!;
+    appendFileSync(main, assistant("m1", 1));
+    const clock = clockFor(lateLine(main, 60, "m2"));
+    await waitForTranscript(tracked, clock);
+    assert.equal(readAfter(main, tracked), 2);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("waitForTranscript: a line arriving at 250 ms is counted (stability is re-established before 300 ms), one at 320 ms is left for the next settle", async () => {
+  const a = setup();
+  const b = setup();
+  try {
+    writeFileSync(a.main, "");
+    const trackedA = trackTranscriptAtSubmit(undefined, a.main)!;
+    const at250 = clockFor(lateLine(a.main, 250, "m1"));
+    await waitForTranscript(trackedA, at250);
+    assert.equal(readAfter(a.main, trackedA), 1);
+    assert.ok(at250.total() > 250 && at250.total() < 300, `waited ${at250.total()} ms`);
+
+    writeFileSync(b.main, "");
+    const trackedB = trackTranscriptAtSubmit(undefined, b.main)!;
+    const at320 = clockFor(lateLine(b.main, 320, "m1"));
+    await waitForTranscript(trackedB, at320);
+    assert.equal(at320.total(), 300);
+    assert.equal(readAfter(b.main, trackedB), 0);
+  } finally {
+    rmSync(a.dir, { recursive: true, force: true });
+    rmSync(b.dir, { recursive: true, force: true });
+  }
+});
+
+test("waitForTranscript: once 100 ms have passed with a stable line on disk it stops, leaving a later line to the next settle", async () => {
+  const { dir, main } = setup();
+  try {
+    writeFileSync(main, "");
+    const tracked = trackTranscriptAtSubmit(undefined, main)!;
+    appendFileSync(main, assistant("m1", 1));
+    const clock = clockFor(lateLine(main, 320, "m2"));
+    await waitForTranscript(tracked, clock);
+    assert.equal(clock.total(), 100);
+    assert.equal(readAfter(main, tracked), 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("waitForTranscript counts time already spent since the hook started: 400 ms in, it does not sleep at all", async () => {
+  const { dir, main } = setup();
+  try {
+    writeFileSync(main, "");
+    const tracked = trackTranscriptAtSubmit(undefined, main)!;
+    const clock = clockFor();
+    await waitForTranscript(tracked, { now: () => clock.now() + 400, sleep: clock.sleep }, 0);
+    assert.deepEqual(clock.sleeps, []);
+
+    // 150 ms in with a stable line on disk: only the one stability poll interval runs.
+    appendFileSync(main, assistant("m1", 1));
+    const partly = clockFor();
+    await waitForTranscript(tracked, { now: () => partly.now() + 150, sleep: partly.sleep }, 0);
+    assert.deepEqual(partly.sleeps, [25]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

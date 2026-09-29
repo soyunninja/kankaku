@@ -127,7 +127,7 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
       const stopHookActive = raw.stop_hook_active === true;
       appendEvent(paths.eventsFile, { ts, event: "Stop", stopHookActive });
       clearPermissionOpen(paths.stateFile);
-      await handleStop(paths, sessionId, deps);
+      await handleStop(paths, sessionId, deps, ts);
       return;
     }
     case "SessionStart": {
@@ -147,7 +147,8 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
   }
 }
 
-async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleHookDeps): Promise<void> {
+/** `startedAt` is when the hook process started: the transcript wait is measured from it. */
+async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleHookDeps, startedAt: number): Promise<void> {
   const { replayPrompt } = await import("./replay.ts");
   const { buildClaudeRecord, stampTokens } = await import("./record.ts");
   const { JsonlWorkLog } = await import("kankaku-pi/hub");
@@ -169,7 +170,7 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   }
 
   // Claude Code writes the transcript asynchronously: give the last assistant lines a bounded moment to land.
-  if (opened?.promptOpen) await waitForTranscript(opened.transcript, deps).catch(() => {});
+  if (opened?.promptOpen) await waitForTranscript(opened.transcript, deps, startedAt).catch(() => {});
   const state = readState(paths.stateFile);
   const transcript = state?.promptOpen ? settleSafely(state, deps) : undefined;
   const headless = transcript?.transcript.entrypoint === HEADLESS_ENTRYPOINT;

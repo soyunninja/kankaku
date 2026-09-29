@@ -21,8 +21,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   their tokens and each record carries `costAllocated`, kept local and never
   sent to the hub.
 - **Late transcript writes are covered.** Claude Code writes the transcript
-  asynchronously, after `Stop` has started. `Stop` waits up to 300 ms
-  (polling every 25 ms) for the last assistant lines, a headless
+  asynchronously, after `Stop` has started. `Stop` polls every 25 ms and
+  reads once at least 100 ms have passed since the hook started, the size is
+  stable and an assistant line is present, giving up at 300 ms (the statusline
+  wait counts), so the last message of a prompt is not shifted into the next
+  record, a headless
   `SessionEnd` or recovery reads once more and adds late usage to the last
   pending prompt, and the entry point and version are also read from the
   start of the file when no new line carries them.
