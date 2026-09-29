@@ -4,6 +4,14 @@
   "version": "0.12.0",
   "description": "kankaku client monorepo: the pi extension/library, the Claude Code plugin, and the terminal dashboard, released in lockstep.",
   "license": "MIT",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./packages/kankaku/src/extension.ts"
+    ]
+  },
   "engines": {
     "node": ">=24"
   },

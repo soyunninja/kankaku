@@ -434,10 +434,11 @@ npm run check   # tsc --noEmit + node --test tests/*.test.ts
 ```
 
 For behaviour changes also run a headless smoke test and confirm a record
-is written:
+is written (`KANKAKU_SYNC_AUTO=0` keeps the test prompt from being
+uploaded to the configured hub as a real task):
 
 ```
-KANKAKU_DIR=/tmp/kankaku-smoke pi -p --no-session "Reply with exactly the word OK."
+KANKAKU_SYNC_AUTO=0 KANKAKU_DIR=/tmp/kankaku-smoke pi -p --no-session "Reply with exactly the word OK."
 ```
 
 ## Git

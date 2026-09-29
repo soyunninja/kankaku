@@ -34,6 +34,11 @@ their own repositories.
   `node_modules`, which the tests then resolve instead of the workspace
   copy. Commit `chore(release): prepare <v>`, tag `v<v>`, then
   `npm run publish:all`.
+- **The root `package.json` carries a `pi` manifest** pointing at
+  `packages/kankaku/src/extension.ts`: `pi install
+  git:github.com/soyunninja/kankaku` clones the repository and reads the
+  manifest at ITS root, not the package's. Keep both manifests in step
+  (`packages/kankaku/tests/monorepo-pi-manifest.test.ts` enforces it).
 - **One lockfile**, at the root. Never add a `package-lock.json` inside a
   package.
 - **Strict TDD and the per-package verification commands are unchanged**;
