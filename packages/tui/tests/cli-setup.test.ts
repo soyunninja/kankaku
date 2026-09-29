@@ -3,10 +3,12 @@ import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { runCli } from "../src/cli.tsx";
+import { buildWizardActions, runCli } from "../src/cli.tsx";
 import type { CliDeps } from "../src/cli.tsx";
 import type { Prompter } from "../src/ports/prompter.ts";
 import { locateClaudePlugin, readPluginHooks, buildSettingsHooks } from "../src/adapters/setup/claude-plugin.ts";
+import { commandsDirectory, readPluginCommands, writeClaudeCommands } from "../src/adapters/setup/claude-commands.ts";
+import type { WizardState } from "../src/domain/setup-wizard.ts";
 
 function makeHome(): string {
   return mkdtempSync(join(tmpdir(), "kankaku-tui-cli-setup-home-"));
@@ -34,10 +36,13 @@ function makeFullyConfiguredHome(): string {
       2,
     ),
   );
+  writeClaudeCommands(home, CLAUDE_PLUGIN_ROOT, readPluginCommands(CLAUDE_PLUGIN_ROOT));
   mkdirSync(join(home, ".kankaku"), { recursive: true });
   writeFileSync(join(home, ".kankaku", "credentials.json"), JSON.stringify({ url: "https://hub.example.com", email: "a@b.com", password: "s" }, null, 2));
   return home;
 }
+
+const PLUGIN_COMMAND_FILES = readPluginCommands(CLAUDE_PLUGIN_ROOT).map((command) => `${command.name}.md`);
 
 function okFetch(): typeof fetch {
   return (async () => new Response(null, { status: 200 })) as typeof fetch;
@@ -403,7 +408,9 @@ test("setup --yes --from-checkout <dir>: on a checkout missing its dev scripts, 
 });
 
 function makeFakePluginDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "kankaku-tui-fake-claude-plugin-"));
+  const dir = mkdtempSync(join(tmpdir(), "kankaku-claude-fake-plugin-"));
+  mkdirSync(join(dir, "commands"), { recursive: true });
+  writeFileSync(join(dir, "commands", "report.md"), 'run\n!node "${CLAUDE_PLUGIN_ROOT}/dist/cli.js" report\n');
   mkdirSync(join(dir, "hooks"), { recursive: true });
   writeFileSync(
     join(dir, "hooks", "hooks.json"),
@@ -482,5 +489,118 @@ test("setup --yes --claude-plugin-dir <bad dir>: reports the failure on stderr a
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(badDir, { recursive: true, force: true });
+  }
+});
+
+// ---- Claude Code slash commands (~/.claude/commands/kankaku) ----
+
+test("doctor: Claude Code is todo with 'commands missing' when statusLine and hooks are set but the commands are not", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    rmSync(commandsDirectory(home), { recursive: true, force: true });
+    const lines: string[] = [];
+    await runCli(["doctor"], baseDeps(home, { stdout: (text) => lines.push(text) }));
+    assert.match(lines.join("\n"), /^Claude Code: todo .*\(commands missing\)/m);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --yes: generates the user commands when only statusLine and hooks were set, and reports each file", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    rmSync(commandsDirectory(home), { recursive: true, force: true });
+    mkdirSync(join(home, "project"), { recursive: true });
+    const lines: string[] = [];
+    await runCli(["setup", "--yes"], baseDeps(home, { stdout: (text) => lines.push(text) }));
+
+    const output = lines.join("\n");
+    for (const file of PLUGIN_COMMAND_FILES) {
+      assert.ok(existsSync(join(commandsDirectory(home), file)), file);
+      assert.ok(output.split("\n").includes(`wrote ${join(commandsDirectory(home), file)}`), file);
+    }
+    const report = readFileSync(join(commandsDirectory(home), "report.md"), "utf8");
+    assert.match(report, new RegExp(`"${CLAUDE_PLUGIN_ROOT.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/dist/cli\\.js" report`));
+    assert.doesNotMatch(report, /CLAUDE_PLUGIN_ROOT/);
+    assert.match(output, /^Claude Code: done/m);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --yes: a foreign file in the commands directory is left alone and reported", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    rmSync(commandsDirectory(home), { recursive: true, force: true });
+    mkdirSync(commandsDirectory(home), { recursive: true });
+    writeFileSync(join(commandsDirectory(home), "report.md"), "my own report\n");
+    mkdirSync(join(home, "project"), { recursive: true });
+    const lines: string[] = [];
+    await runCli(["setup", "--yes"], baseDeps(home, { stdout: (text) => lines.push(text) }));
+
+    assert.equal(readFileSync(join(commandsDirectory(home), "report.md"), "utf8"), "my own report\n");
+    assert.match(lines.join("\n"), new RegExp(`^skipped ${join(commandsDirectory(home), "report.md").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\(not a kankaku command\\)$`, "m"));
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --dry-run: prints the commands directory and how many files it would write, and writes nothing", async () => {
+  const home = makeFullyConfiguredHome();
+  try {
+    rmSync(commandsDirectory(home), { recursive: true, force: true });
+    const lines: string[] = [];
+    await runCli(["setup", "--dry-run"], baseDeps(home, { stdout: (text) => lines.push(text) }));
+
+    assert.ok(lines.join("\n").split("\n").includes(`Claude commands: ${PLUGIN_COMMAND_FILES.length} file(s) would be written to ${commandsDirectory(home)}`));
+    assert.equal(existsSync(commandsDirectory(home)), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("setup --yes --claude-plugin-dir <dir>: generates commands from the override plugin's own commands directory", async () => {
+  const home = makeHome();
+  const pluginDir = makeFakePluginDir();
+  try {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "x" }, null, 2));
+    mkdirSync(join(home, "project"), { recursive: true });
+    await runCli(["setup", "--yes", "--claude-plugin-dir", pluginDir], baseDeps(home));
+
+    assert.equal(readFileSync(join(commandsDirectory(home), "report.md"), "utf8"), `run\n!node "${pluginDir}/dist/cli.js" report\n`);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(pluginDir, { recursive: true, force: true });
+  }
+});
+
+test("wizard actions: write-claude writes settings and commands; remove-claude removes both, keeping foreign files", async () => {
+  const home = makeHome();
+  const pluginDir = makeFakePluginDir();
+  try {
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    const settingsPath = join(home, ".claude", "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({ model: "x" }, null, 2));
+    const actions = buildWizardActions(baseDeps(home), pluginDir);
+    const state = {} as WizardState;
+
+    const wrote = await actions.apply({ kind: "write-claude", file: settingsPath, label: "configure" }, state);
+    assert.equal(wrote.outcome, "wrote");
+    assert.ok(existsSync(join(commandsDirectory(home), "report.md")));
+
+    const again = await actions.apply({ kind: "write-claude", file: settingsPath, label: "configure" }, state);
+    assert.equal(again.outcome, "unchanged");
+
+    writeFileSync(join(commandsDirectory(home), "mine.md"), "mine\n");
+    const removed = await actions.apply({ kind: "remove-claude", file: settingsPath, label: "remove" }, state);
+    assert.equal(removed.outcome, "removed");
+    assert.equal(existsSync(join(commandsDirectory(home), "report.md")), false);
+    assert.equal(readFileSync(join(commandsDirectory(home), "mine.md"), "utf8"), "mine\n");
+    assert.match(removed.detail ?? "", /mine\.md/);
+    assert.equal(JSON.parse(readFileSync(settingsPath, "utf8")).statusLine, undefined);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(pluginDir, { recursive: true, force: true });
   }
 });

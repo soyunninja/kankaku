@@ -118,6 +118,7 @@ test("readAgentFacts: reads Claude Code's statusLine.command", () => {
       statusLineCommand: 'node "/x/kankaku-claude/dist/statusline.js"',
       hooksRoot: undefined,
       hooksLegacy: false,
+      commandsRoot: undefined,
     });
   } finally {
     rmSync(home, { recursive: true, force: true });
@@ -130,7 +131,7 @@ test("readAgentFacts: Claude Code settings.json without a statusLine reads as pr
     mkdirSync(join(home, ".claude"), { recursive: true });
     writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ model: "x" }));
     const facts = readAgentFacts(home);
-    assert.deepEqual(facts.claudeCode, { settingsPath: join(home, ".claude", "settings.json"), statusLineCommand: undefined, hooksRoot: undefined, hooksLegacy: false });
+    assert.deepEqual(facts.claudeCode, { settingsPath: join(home, ".claude", "settings.json"), statusLineCommand: undefined, hooksRoot: undefined, hooksLegacy: false, commandsRoot: undefined });
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -147,6 +148,53 @@ test("readAgentFacts: detects Codex and OpenCode config files by existence only"
     const facts = readAgentFacts(home);
     assert.deepEqual(facts.codex, { configPath: join(home, ".codex", "config.toml") });
     assert.deepEqual(facts.opencode, { configPath: join(home, ".config", "opencode", "opencode.json") });
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+function writeSettings(home: string): void {
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  writeFileSync(join(home, ".claude", "settings.json"), "{}");
+}
+
+function writeCommand(home: string, name: string, content: string): void {
+  const dir = join(home, ".claude", "commands", "kankaku");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, name), content);
+}
+
+test("readAgentFacts: reads the root our generated command files point at", () => {
+  const home = makeHome();
+  try {
+    writeSettings(home);
+    writeCommand(home, "report.md", '!node "/x/kankaku-claude/dist/cli.js" report\n');
+    writeCommand(home, "status.md", '!node "/x/kankaku-claude/dist/cli.js" status\n');
+    assert.equal(readAgentFacts(home).claudeCode?.commandsRoot, "/x/kankaku-claude");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("readAgentFacts: foreign command files and an absent directory read as no commands", () => {
+  const home = makeHome();
+  try {
+    writeSettings(home);
+    assert.equal(readAgentFacts(home).claudeCode?.commandsRoot, undefined);
+    writeCommand(home, "mine.md", "my own command\n");
+    assert.equal(readAgentFacts(home).claudeCode?.commandsRoot, undefined);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("readAgentFacts: command files pointing at different roots report every root, so they never match a single one", () => {
+  const home = makeHome();
+  try {
+    writeSettings(home);
+    writeCommand(home, "report.md", '!node "/b/kankaku-claude/dist/cli.js" report\n');
+    writeCommand(home, "status.md", '!node "/a/kankaku-claude/dist/cli.js" status\n');
+    assert.equal(readAgentFacts(home).claudeCode?.commandsRoot, "/a/kankaku-claude, /b/kankaku-claude");
   } finally {
     rmSync(home, { recursive: true, force: true });
   }

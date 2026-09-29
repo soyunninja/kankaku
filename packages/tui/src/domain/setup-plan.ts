@@ -21,10 +21,11 @@ export interface AgentStatus {
   detail: string;
   /**
    * Extra context for a partially-configured agent — currently only
-   * Claude Code, whose `configured` requires both the statusLine and
-   * hooks to be present and point at the same root: `"statusLine only"`,
-   * `"hooks only"`, or `"hooks point at <root>, statusLine at <root>"`
-   * when they disagree. `undefined` when fully configured, absent, or
+   * Claude Code, whose `configured` requires the statusLine, hooks and
+   * generated commands to be present and point at the same root:
+   * `"statusLine only"`, `"hooks only"`, `"hooks point at <root>,
+   * statusLine at <root>"` when they disagree, `"commands missing"` or
+   * `"commands point at <root>"`. `undefined` when fully configured, absent, or
    * for every other agent.
    */
   detailNote?: string;
@@ -44,6 +45,13 @@ export interface ClaudeSettingsFacts {
   hooksRoot: string | undefined;
   /** True when the matched hook command uses the legacy `/src/hook.ts` checkout form rather than the current `/dist/hook.js` one. Defaults to `false` when omitted. */
   hooksLegacy?: boolean;
+  /**
+   * The plugin root our generated `~/.claude/commands/kankaku/*.md` files
+   * point at (see `adapters/setup/agents.ts`), or `undefined` when there
+   * are none. Files pointing at several roots are reported as those roots
+   * joined by `", "`, so they never equal a single root. Omitted = none.
+   */
+  commandsRoot?: string | undefined;
 }
 
 /** An agent kankaku-tui only detects, never configures (Codex, OpenCode). */
@@ -77,8 +85,8 @@ function settingsPackagesStatus(id: AgentId, facts: SettingsPackagesFacts | unde
 }
 
 /**
- * Claude Code is `configured` only when our statusLine AND our hooks are
- * present, share the same root, AND both use the current `/dist/*.js`
+ * Claude Code is `configured` only when our statusLine, our hooks AND our
+ * generated commands are present, share the same root, AND the first two use the current `/dist/*.js`
  * form (see the module doc on `AgentStatus`) — the legacy `/src/*.ts`
  * checkout form a pre-dist `kankaku setup` may have written is still
  * recognized as ours (see `domain/claude-integration.ts`), but never as
@@ -96,7 +104,9 @@ function claudeCodeStatus(facts: ClaudeSettingsFacts | undefined): AgentStatus {
   const sameRoot = statusLineRoot !== undefined && hooksRoot !== undefined && statusLineRoot === hooksRoot;
   const statusLineLegacy = statusLineMatch?.legacy === true;
   const hooksLegacy = facts.hooksLegacy === true;
-  const configured = sameRoot && !statusLineLegacy && !hooksLegacy;
+  const commandsRoot = facts.commandsRoot;
+  const commandsOk = sameRoot && commandsRoot === statusLineRoot;
+  const configured = sameRoot && !statusLineLegacy && !hooksLegacy && commandsOk;
 
   let detailNote: string | undefined;
   if (!configured) {
@@ -108,7 +118,8 @@ function claudeCodeStatus(facts: ClaudeSettingsFacts | undefined): AgentStatus {
       const outdated: string[] = [];
       if (statusLineLegacy) outdated.push("statusLine");
       if (hooksLegacy) outdated.push("hooks");
-      detailNote = `outdated ${outdated.join(" and ")}`;
+      if (outdated.length > 0) detailNote = `outdated ${outdated.join(" and ")}`;
+      else detailNote = commandsRoot === undefined ? "commands missing" : `commands point at ${commandsRoot}`;
     }
   }
 
@@ -165,7 +176,7 @@ const AGENT_TITLES: Record<AgentId, string> = {
 };
 
 function todoAction(agent: AgentStatus): string {
-  if (agent.id === "claude-code") return `write the kankaku statusLine and hooks to ${agent.detail}${agent.detailNote ? ` (${agent.detailNote})` : ""}`;
+  if (agent.id === "claude-code") return `write the kankaku statusLine, hooks and commands to ${agent.detail}${agent.detailNote ? ` (${agent.detailNote})` : ""}`;
   return `add "npm:kankaku" to packages in ${agent.detail}`;
 }
 

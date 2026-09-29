@@ -73,12 +73,13 @@ test("detectAgents: a local path package NOT ending in 'kankaku' is not configur
   assert.equal(gentleShell!.configured, false);
 });
 
-test("detectAgents: claude-code is configured only when the statusLine AND hooks are present and point at the same root", () => {
+test("detectAgents: claude-code is configured only when the statusLine, hooks AND commands are present and point at the same root", () => {
   const facts = baseFacts();
   facts.claudeCode = {
     settingsPath: "/home/.claude/settings.json",
     statusLineCommand: 'node "/home/dev/kankaku-claude/dist/statusline.js"',
     hooksRoot: "/home/dev/kankaku-claude",
+    commandsRoot: "/home/dev/kankaku-claude",
   };
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, true);
@@ -124,6 +125,32 @@ test("detectAgents: claude-code with only the hooks on the legacy src form (stat
   const [, , claude] = detectAgents(facts);
   assert.equal(claude!.configured, false);
   assert.equal(claude!.detailNote, "outdated hooks");
+});
+
+test("detectAgents: claude-code with statusLine and hooks but no generated commands is not configured, detailNote 'commands missing'", () => {
+  const facts = baseFacts();
+  facts.claudeCode = {
+    settingsPath: "/home/.claude/settings.json",
+    statusLineCommand: 'node "/home/dev/kankaku-claude/dist/statusline.js"',
+    hooksRoot: "/home/dev/kankaku-claude",
+    commandsRoot: undefined,
+  };
+  const [, , claude] = detectAgents(facts);
+  assert.equal(claude!.configured, false);
+  assert.equal(claude!.detailNote, "commands missing");
+});
+
+test("detectAgents: claude-code whose commands point at another root is not configured, detailNote names that root", () => {
+  const facts = baseFacts();
+  facts.claudeCode = {
+    settingsPath: "/home/.claude/settings.json",
+    statusLineCommand: 'node "/home/dev/kankaku-claude/dist/statusline.js"',
+    hooksRoot: "/home/dev/kankaku-claude",
+    commandsRoot: "/old/kankaku-claude",
+  };
+  const [, , claude] = detectAgents(facts);
+  assert.equal(claude!.configured, false);
+  assert.equal(claude!.detailNote, "commands point at /old/kankaku-claude");
 });
 
 test("detectAgents: claude-code with an unrelated statusLine is present but not configured", () => {
@@ -244,7 +271,7 @@ test("planSetup: claude-code todo action mentions statusLine and hooks, plus a d
   );
   const claude = steps.find((s) => s.id === "claude-code")!;
   assert.equal(claude.state, "todo");
-  assert.match(claude.action, /statusLine and hooks/);
+  assert.match(claude.action, /statusLine, hooks and commands/);
   assert.match(claude.action, /\(statusLine only\)$/);
 });
 

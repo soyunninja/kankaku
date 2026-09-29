@@ -5,11 +5,12 @@
  * `adapters/tui-config.ts#readTuiConfig` and kankaku's own
  * `hub-credentials.ts#readCredentialsFile`.
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentDetectionFacts, ClaudeSettingsFacts, ConfigFileFacts, SettingsPackagesFacts } from "../../domain/setup-plan.ts";
-import { ourHookCommandMatch } from "../../domain/claude-integration.ts";
+import { ourCommandFileRoot, ourHookCommandMatch } from "../../domain/claude-integration.ts";
 import type { CommandMatch } from "../../domain/claude-integration.ts";
+import { commandsDirectory } from "./claude-commands.ts";
 
 function readJsonObject(filePath: string): Record<string, unknown> | undefined {
   if (!existsSync(filePath)) return undefined;
@@ -55,7 +56,29 @@ function extractHooksMatch(parsed: Record<string, unknown>): CommandMatch | unde
   return undefined;
 }
 
-function readClaudeSettings(settingsPath: string): ClaudeSettingsFacts | undefined {
+/** The root(s) our generated command files under `homeDir` point at, distinct and sorted, joined by `", "`; `undefined` when there are none. */
+function readCommandsRoot(homeDir: string): string | undefined {
+  const dir = commandsDirectory(homeDir);
+  let entries: string[];
+  try {
+    entries = readdirSync(dir);
+  } catch {
+    return undefined;
+  }
+  const roots = new Set<string>();
+  for (const entry of entries) {
+    if (!entry.endsWith(".md")) continue;
+    try {
+      const root = ourCommandFileRoot(readFileSync(join(dir, entry), "utf8"));
+      if (root !== undefined) roots.add(root);
+    } catch {
+      // unreadable entry: not ours
+    }
+  }
+  return roots.size === 0 ? undefined : [...roots].sort().join(", ");
+}
+
+function readClaudeSettings(settingsPath: string, homeDir: string): ClaudeSettingsFacts | undefined {
   const parsed = readJsonObject(settingsPath);
   if (!parsed) return undefined;
   const statusLine = parsed["statusLine"];
@@ -64,7 +87,13 @@ function readClaudeSettings(settingsPath: string): ClaudeSettingsFacts | undefin
       ? ((statusLine as Record<string, unknown>)["command"] as string)
       : undefined;
   const hooksMatch = extractHooksMatch(parsed);
-  return { settingsPath, statusLineCommand: command, hooksRoot: hooksMatch?.root, hooksLegacy: hooksMatch?.legacy ?? false };
+  return {
+    settingsPath,
+    statusLineCommand: command,
+    hooksRoot: hooksMatch?.root,
+    hooksLegacy: hooksMatch?.legacy ?? false,
+    commandsRoot: readCommandsRoot(homeDir),
+  };
 }
 
 function readConfigFilePresence(configPath: string): ConfigFileFacts | undefined {
@@ -76,7 +105,7 @@ export function readAgentFacts(homeDir: string): AgentDetectionFacts {
   return {
     pi: readSettingsPackages(join(homeDir, ".pi", "agent", "settings.json")),
     gentleShell: readSettingsPackages(join(homeDir, ".gentle-shell", "agent", "settings.json")),
-    claudeCode: readClaudeSettings(join(homeDir, ".claude", "settings.json")),
+    claudeCode: readClaudeSettings(join(homeDir, ".claude", "settings.json"), homeDir),
     codex: readConfigFilePresence(join(homeDir, ".codex", "config.toml")),
     opencode: readConfigFilePresence(join(homeDir, ".config", "opencode", "opencode.json")),
   };

@@ -56,3 +56,27 @@ export function ourHookCommandRoot(command: string): string | undefined {
 export function ourStatusLineCommandRoot(command: string): string | undefined {
   return ourStatusLineCommandMatch(command)?.root;
 }
+
+/**
+ * Pure: the content of a generated user-level slash command — the plugin's
+ * own `commands/<name>.md` verbatim, except that every
+ * `${CLAUDE_PLUGIN_ROOT}` becomes the absolute plugin `root` (Claude Code
+ * substitutes that variable only in plugin commands, never in user ones).
+ */
+export function buildCommandFileContent(root: string, source: string): string {
+  return source.replaceAll("${CLAUDE_PLUGIN_ROOT}", root);
+}
+
+/**
+ * The plugin root a generated command file points at, or `undefined` when
+ * the file is not one of ours. A file is ours when it contains a
+ * `"<root>/dist/cli.js"` invocation whose `<root>` contains
+ * `kankaku-claude` or `packages/claude`; the first such invocation wins.
+ */
+export function ourCommandFileRoot(content: string): string | undefined {
+  for (const match of content.matchAll(/"([^"\n]+)\/dist\/cli\.js"/g)) {
+    const root = match[1]!;
+    if (root.includes("kankaku-claude") || root.includes("packages/claude")) return root;
+  }
+  return undefined;
+}

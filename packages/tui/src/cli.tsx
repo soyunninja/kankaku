@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { homedir, hostname } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { randomBytes as cryptoRandomBytes } from "node:crypto";
@@ -36,6 +36,8 @@ import { readAgentFacts } from "./adapters/setup/agents.ts";
 import { addKankakuPackage, removeKankakuPackage } from "./adapters/setup/pi.ts";
 import { removeClaudeIntegration, writeClaudeIntegration } from "./adapters/setup/claude.ts";
 import { locateClaudePlugin, readPluginHooks } from "./adapters/setup/claude-plugin.ts";
+import { commandsDirectory, readPluginCommands, removeClaudeCommands, writeClaudeCommands } from "./adapters/setup/claude-commands.ts";
+import type { CommandsWriteResult } from "./adapters/setup/claude-commands.ts";
 import { checkHubHealth, credentialsPath, writeHubCredentials } from "./adapters/setup/hub.ts";
 import { tuiConfigPath, writeTuiConfig } from "./adapters/setup/tui-config.ts";
 import { installLocalHub } from "./adapters/setup/local-hub.ts";
@@ -411,12 +413,16 @@ async function applyWizardAction(action: WizardAction, state: WizardState, deps:
       }
       case "write-claude": {
         const { root } = locateClaudePlugin(claudePluginOverride);
-        const result = writeClaudeIntegration(action.file, root, readPluginHooks(root));
-        return { action, outcome: result.changed ? "wrote" : "unchanged" };
+        const settings = writeClaudeIntegration(action.file, root, readPluginHooks(root));
+        const commands = writeClaudeCommands(deps.homeDir, root, readPluginCommands(root));
+        const detail = describeCommands(commands);
+        return { action, outcome: settings.changed || commands.wrote.length > 0 || commands.removed.length > 0 ? "wrote" : "unchanged", ...(detail ? { detail } : {}) };
       }
       case "remove-claude": {
-        const result = removeClaudeIntegration(action.file);
-        return { action, outcome: result.changed ? "removed" : "unchanged" };
+        const settings = removeClaudeIntegration(action.file);
+        const commands = removeClaudeCommands(deps.homeDir);
+        const detail = describeCommands(commands);
+        return { action, outcome: settings.changed || commands.removed.length > 0 ? "removed" : "unchanged", ...(detail ? { detail } : {}) };
       }
       case "write-hub": {
         const result = writeHubCredentials(deps.homeDir, { url: state.hub.url, email: state.hub.email, password: state.hub.password });
@@ -438,8 +444,25 @@ async function applyWizardAction(action: WizardAction, state: WizardState, deps:
   }
 }
 
+/** A short wizard-result note about the generated commands: how many were written/removed, and any foreign file left alone. `undefined` when there is nothing to say. */
+function describeCommands(result: CommandsWriteResult): string | undefined {
+  const parts: string[] = [];
+  if (result.wrote.length > 0) parts.push(`${result.wrote.length} command(s) written`);
+  if (result.removed.length > 0) parts.push(`${result.removed.length} command(s) removed`);
+  if (result.foreign.length > 0) parts.push(`left ${result.foreign.map((file) => basename(file)).join(", ")} alone (not a kankaku command)`);
+  return parts.length > 0 ? parts.join("; ") : undefined;
+}
+
+/** Tell the user what setup did to the generated commands, one line per file, like {@link announceWrite}. */
+function announceCommands(deps: CliDeps, result: CommandsWriteResult): void {
+  for (const file of result.wrote) deps.stdout(`wrote ${file}`);
+  for (const file of result.unchanged) deps.stdout(`unchanged ${file}`);
+  for (const file of result.removed) deps.stdout(`removed ${file}`);
+  for (const file of result.foreign) deps.stdout(`skipped ${file} (not a kankaku command)`);
+}
+
 /** Build the setup wizard's `WizardActions` for the interactive app: every write goes through the same real `adapters/setup/*` writers `kankaku setup --yes` uses. Used only by `renderApp`. */
-function buildWizardActions(deps: CliDeps, claudePluginOverride: string | undefined): WizardActions {
+export function buildWizardActions(deps: CliDeps, claudePluginOverride: string | undefined): WizardActions {
   return {
     apply: (action, state) => applyWizardAction(action, state, deps, claudePluginOverride),
     checkHealth: (url) => checkHubHealth(url, { fetch: deps.fetch }),
@@ -637,6 +660,7 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
       try {
         const { root } = locateClaudePlugin(claudePluginOverride);
         lines.push(`Claude plugin root: ${root} (would write ${claudeStep.file})`);
+        lines.push(`Claude commands: ${readPluginCommands(root).length} file(s) would be written to ${commandsDirectory(deps.homeDir)}`);
       } catch {
         // The plugin isn't resolvable (e.g. not installed yet); the rest of the plan still prints.
       }
@@ -654,11 +678,14 @@ async function runSetupCommand(args: string[], deps: CliDeps): Promise<void> {
     if (step.state !== "todo") continue;
 
     if (agent.id === "claude-code") {
-      const doIt = await ask.confirm(`Configure Claude Code (statusLine + hooks) for kankaku (${step.file})?`, true);
+      const doIt = await ask.confirm(`Configure Claude Code (statusLine + hooks + /kankaku:* commands) for kankaku (${step.file})?`, true);
       if (!doIt) continue;
       try {
         const { root } = locateClaudePlugin(claudePluginOverride);
-        announceWrite(deps, step.file, writeClaudeIntegration(step.file, root, readPluginHooks(root)));
+        const hooks = readPluginHooks(root);
+        const commands = readPluginCommands(root);
+        announceWrite(deps, step.file, writeClaudeIntegration(step.file, root, hooks));
+        announceCommands(deps, writeClaudeCommands(deps.homeDir, root, commands));
       } catch (error) {
         deps.stderr(`kankaku setup: could not configure Claude Code: ${error instanceof Error ? error.message : String(error)}\n`);
       }

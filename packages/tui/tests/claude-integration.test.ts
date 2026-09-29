@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ourHookCommandRoot, ourStatusLineCommandRoot, ourHookCommandMatch, ourStatusLineCommandMatch } from "../src/domain/claude-integration.ts";
+import { buildCommandFileContent, ourCommandFileRoot, ourHookCommandRoot, ourStatusLineCommandRoot, ourHookCommandMatch, ourStatusLineCommandMatch } from "../src/domain/claude-integration.ts";
 
 // ---- ourHookCommandRoot (current dist/hook.js form) ----
 
@@ -85,4 +85,29 @@ test("ourStatusLineCommandMatch: legacy src form is reported as legacy", () => {
 
 test("ourStatusLineCommandMatch: undefined for an unrelated command", () => {
   assert.equal(ourStatusLineCommandMatch("node other.js"), undefined);
+});
+
+// ---- generated slash commands ----
+
+test("buildCommandFileContent: replaces every ${CLAUDE_PLUGIN_ROOT} with the absolute root and touches nothing else", () => {
+  const source = 'a ${CLAUDE_PLUGIN_ROOT}/x\n!node "${CLAUDE_PLUGIN_ROOT}/dist/cli.js" sync $ARGUMENTS\n${OTHER}\n';
+  assert.equal(
+    buildCommandFileContent("/r/kankaku-claude", source),
+    'a /r/kankaku-claude/x\n!node "/r/kankaku-claude/dist/cli.js" sync $ARGUMENTS\n${OTHER}\n',
+  );
+});
+
+test("ourCommandFileRoot: extracts the plugin root from a generated command file", () => {
+  assert.equal(ourCommandFileRoot('x\n!node "/a/node_modules/kankaku-claude/dist/cli.js" report\n'), "/a/node_modules/kankaku-claude");
+  assert.equal(ourCommandFileRoot('!node "/dev/kankaku/packages/claude/dist/cli.js" status'), "/dev/kankaku/packages/claude");
+});
+
+test("ourCommandFileRoot: a file is ours when any invocation matches, even if others do not", () => {
+  assert.equal(ourCommandFileRoot('!node "/x/other/dist/cli.js" a\n!node "/y/kankaku-claude/dist/cli.js" b'), "/y/kankaku-claude");
+});
+
+test("ourCommandFileRoot: undefined for foreign content, other cli paths and other entry points", () => {
+  assert.equal(ourCommandFileRoot("just notes"), undefined);
+  assert.equal(ourCommandFileRoot('!node "/x/other-tool/dist/cli.js" report'), undefined);
+  assert.equal(ourCommandFileRoot('!node "/x/kankaku-claude/dist/hook.js"'), undefined);
 });

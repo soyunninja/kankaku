@@ -213,7 +213,7 @@ export function planFromWizard(state: WizardState, facts: WizardFacts): WizardAc
     if (selected !== claude.configured) {
       actions.push(
         selected
-          ? { kind: "write-claude", file: claude.detail, label: `configure Claude Code (statusLine + hooks) in ${claude.detail}` }
+          ? { kind: "write-claude", file: claude.detail, label: `configure Claude Code (statusLine + hooks + commands) in ${claude.detail}` }
           : { kind: "remove-claude", file: claude.detail, label: `remove kankaku from Claude Code (${claude.detail})` },
       );
     }
