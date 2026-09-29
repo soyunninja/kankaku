@@ -60,6 +60,8 @@ function wizardActions(): WizardActions {
   return {
     apply: async (action) => ({ action, outcome: "wrote" }),
     checkHealth: async () => true,
+    isPortFree: async () => true,
+    suggestPort: async (from) => from,
   };
 }
 

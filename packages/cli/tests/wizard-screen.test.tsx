@@ -22,9 +22,9 @@ function baseFacts(overrides: Partial<WizardFacts> = {}): WizardFacts {
 
 function fakeActions(overrides: Partial<WizardActions> = {}): {
   actions: WizardActions;
-  calls: { apply: [WizardAction, WizardState][]; checkHealth: string[] };
+  calls: { apply: [WizardAction, WizardState][]; checkHealth: string[]; isPortFree: number[]; suggestPort: number[] };
 } {
-  const calls = { apply: [] as [WizardAction, WizardState][], checkHealth: [] as string[] };
+  const calls = { apply: [] as [WizardAction, WizardState][], checkHealth: [] as string[], isPortFree: [] as number[], suggestPort: [] as number[] };
   const actions: WizardActions = {
     apply: async (action, state) => {
       calls.apply.push([action, state]);
@@ -34,6 +34,14 @@ function fakeActions(overrides: Partial<WizardActions> = {}): {
     checkHealth: async (url) => {
       calls.checkHealth.push(url);
       return true;
+    },
+    isPortFree: async (port) => {
+      calls.isPortFree.push(port);
+      return true;
+    },
+    suggestPort: async (from) => {
+      calls.suggestPort.push(from);
+      return from;
     },
     ...overrides,
   };
@@ -157,6 +165,145 @@ test("Review step: lists the plan's label and file, Roots step renders along the
   assert.equal(frame.includes("Setup · Review"), true);
   assert.equal(frame.includes("install kankaku in pi"), true);
   assert.equal(frame.includes("/home/.pi/agent/settings.json"), true);
+});
+
+/** Moves the wizard to the Hub step in local mode with the owner fields filled, leaving focus on the radio. */
+async function toLocalHub(stdin: { write: (data: string) => void }): Promise<void> {
+  stdin.write("\r"); // agents -> hub
+  await nextTick();
+  stdin.write("\u001B[A"); // skip -> local
+  await nextTick();
+  stdin.write("\t");
+  await nextTick();
+  stdin.write("owner@example.com");
+  await nextTick();
+  stdin.write("\t");
+  await nextTick();
+  stdin.write("s3cret");
+  await nextTick();
+}
+
+test("Hub step (local mode): the port field is prefilled with the first free port from the default upwards", async () => {
+  const asked: number[] = [];
+  const { actions } = fakeActions({
+    suggestPort: async (from) => {
+      asked.push(from);
+      return from + 3;
+    },
+  });
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+  await nextTick();
+  stdin.write("\r"); // agents -> hub
+  await nextTick();
+  stdin.write("\u001B[A"); // skip -> local
+  await nextTick();
+
+  const frame = lastFrame() ?? "";
+  assert.equal(frame.includes("port: 8093"), true);
+  assert.equal(frame.includes("http://127.0.0.1:8093"), true);
+  assert.deepEqual(asked, [8090]);
+});
+
+test("Hub step (local mode): an occupied port is rejected inline and blocks next; a free one goes through", async () => {
+  const taken = [8095];
+  const probed: number[] = [];
+  const { actions } = fakeActions({
+    suggestPort: async () => 8095,
+    isPortFree: async (port) => {
+      probed.push(port);
+      return !taken.includes(port);
+    },
+  });
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+  await nextTick();
+  await toLocalHub(stdin);
+
+  stdin.write("\r"); // hub -> roots: blocked, 8095 is taken
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
+  assert.equal((lastFrame() ?? "").includes("port 8095 is in use"), true);
+
+  stdin.write("\t"); // owner password -> port
+  await nextTick();
+  stdin.write("\u007F"); // backspace: 8095 -> 809
+  await nextTick();
+  stdin.write("6");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("port 8095 is in use"), false); // editing clears the error
+  stdin.write("\r");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+  assert.deepEqual(probed, [8095, 8096]);
+});
+
+test("Hub step (local mode): a port outside 1024-65535 is rejected without probing", async () => {
+  const probed: number[] = [];
+  const { actions } = fakeActions({
+    isPortFree: async (port) => {
+      probed.push(port);
+      return true;
+    },
+  });
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+  await nextTick();
+  await toLocalHub(stdin);
+  stdin.write("\t"); // -> port
+  await nextTick();
+  for (let i = 0; i < 4; i += 1) stdin.write("\u007F");
+  await nextTick();
+  stdin.write("80");
+  await nextTick();
+  stdin.write("\r");
+  await nextTick();
+
+  assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
+  assert.equal((lastFrame() ?? "").includes("enter a port between 1024 and 65535"), true);
+  assert.deepEqual(probed, []);
+});
+
+test("Hub step (local mode): an existing install keeps its own port, prefilled and never probed", async () => {
+  const facts = baseFacts({ hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localPort: 8093 } });
+  const probed: number[] = [];
+  const asked: number[] = [];
+  const { actions } = fakeActions({
+    isPortFree: async (port) => {
+      probed.push(port);
+      return false;
+    },
+    suggestPort: async (from) => {
+      asked.push(from);
+      return from;
+    },
+  });
+  const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
+  await nextTick();
+  await toLocalHub(stdin);
+  assert.equal((lastFrame() ?? "").includes("port: 8093"), true);
+  assert.deepEqual(asked, []);
+
+  stdin.write("\r");
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+  assert.deepEqual(probed, []);
+});
+
+test("Review and apply carry the chosen port into the install action", async () => {
+  const { actions, calls } = fakeActions({ suggestPort: async () => 8093 });
+  const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={120} rows={24} />);
+  await nextTick();
+  await toLocalHub(stdin);
+  stdin.write("\r"); // hub -> roots
+  await nextTick();
+  stdin.write("\r"); // roots -> review
+  await nextTick();
+  assert.equal((lastFrame() ?? "").includes("install a local hub at http://127.0.0.1:8093"), true);
+
+  stdin.write("\r"); // review -> apply
+  await nextTick();
+  await nextTick();
+  const install = calls.apply.find(([action]) => action.kind === "install-local-hub");
+  assert.equal(install?.[0].file, "http://127.0.0.1:8093");
+  assert.equal(install?.[1].hub.port, "8093");
 });
 
 async function reviewWithLocalHub(facts: WizardFacts): Promise<string> {

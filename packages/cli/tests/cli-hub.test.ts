@@ -4,11 +4,12 @@ import { createHash } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildWizardActions, runCli } from "../src/cli.tsx";
+import { buildWizardActions, gatherWizardFacts, runCli } from "../src/cli.tsx";
 import { createWizardState, setHubField, setHubMode } from "../src/domain/setup-wizard.ts";
 import type { CliDeps } from "../src/cli.tsx";
 import type { HubManagerDeps } from "../src/adapters/hub-manager/install.ts";
 import type { ScriptRunner, ScriptRunResult } from "../src/ports/script-runner.ts";
+import type { PortBinder } from "../src/adapters/hub-manager/port-probe.ts";
 import type { Prompter } from "../src/ports/prompter.ts";
 
 function makeHome(): string {
@@ -138,8 +139,17 @@ function fakeRunner(): ScriptRunner {
 
 let nextFakePid = 55000;
 
-function fakeHubManager(packageDir: string, zip: Buffer, state: ServerState): Partial<HubManagerDeps> {
+/** A binder where the ports in `taken` are held by someone else. Every CLI test that could reach the bind probe injects one, so no test ever opens a real socket. */
+function fakePortBinder(taken: number[] = []): PortBinder {
+  return async (port) => {
+    if (taken.includes(port)) throw Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+    return async () => {};
+  };
+}
+
+function fakeHubManager(packageDir: string, zip: Buffer, state: ServerState, taken: number[] = []): Partial<HubManagerDeps> {
   return {
+    portBinder: fakePortBinder(taken),
     runner: fakeRunner(),
     startDetached: (_binary, _args, opts) => {
       const pid = (nextFakePid += 1);
@@ -461,5 +471,114 @@ test("wizard install-local-hub: credentials for another hub stay put and the res
   } finally {
     rmSync(home, { recursive: true, force: true });
     rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("hub install: without --port and with the default port taken, fails (exit 1) naming the first free port, and installs nothing", async () => {
+  const home = makeHome();
+  const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+  const packageDir = makePackageDir(zip);
+  try {
+    const lines: string[] = [];
+    let exitCode: number | undefined;
+    const state: ServerState = { listening: false };
+    await runCli(
+      ["hub", "install", "--owner-email", "owner@example.test", "--owner-password", "s3cret"],
+      baseDeps(home, { fetch: fakeFetch(zip, state), hubManager: fakeHubManager(packageDir, zip, state, [8090]), stdout: (text) => lines.push(text), exit: (code) => (exitCode = code) }),
+    );
+
+    assert.equal(exitCode, 1);
+    assert.match(lines.join("\n"), /^check port: error \(port 8090 is already in use — try: kankaku hub install --port 8091\)$/m);
+    assert.equal(existsSync(join(home, ".kankaku", "hub")), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("hub install: --port on a free port installs there; --port on a taken one fails with the suggestion", async () => {
+  const home = makeHome();
+  const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+  const packageDir = makePackageDir(zip);
+  try {
+    const args = ["hub", "install", "--port", "8095", "--owner-email", "owner@example.test", "--owner-password", "s3cret"];
+
+    const takenLines: string[] = [];
+    let takenExit: number | undefined;
+    const takenState: ServerState = { listening: false };
+    await runCli(args, baseDeps(home, { fetch: fakeFetch(zip, takenState), hubManager: fakeHubManager(packageDir, zip, takenState, [8095]), stdout: (text) => takenLines.push(text), exit: (code) => (takenExit = code) }));
+    assert.equal(takenExit, 1);
+    assert.match(takenLines.join("\n"), /port 8095 is already in use by another process — pass --port <N> or stop it; try: kankaku hub install --port 8096/);
+
+    const okLines: string[] = [];
+    let okExit: number | undefined;
+    const okState: ServerState = { listening: false };
+    await runCli(args, baseDeps(home, { fetch: fakeFetch(zip, okState), hubManager: fakeHubManager(packageDir, zip, okState), stdout: (text) => okLines.push(text), exit: (code) => (okExit = code) }));
+    assert.equal(okExit, undefined);
+    assert.match(okLines.join("\n"), /^hub running at http:\/\/127\.0\.0\.1:8095$/m);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("hub install: an invalid --port is a usage error (exit 1), never a silent fallback to the default", async () => {
+  const home = makeHome();
+  try {
+    for (const bad of ["abc", "0", "70000", "80.5"]) {
+      const errors: string[] = [];
+      let exitCode: number | undefined;
+      await runCli(["hub", "install", "--port", bad, "--owner-email", "o@example.test", "--owner-password", "pw"], baseDeps(home, { stderr: (text) => errors.push(text), exit: (code) => (exitCode = code) }));
+      assert.equal(exitCode, 1, bad);
+      assert.match(errors.join(""), /--port must be a whole number between 1 and 65535/, bad);
+    }
+    assert.equal(existsSync(join(home, ".kankaku", "hub")), false);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("wizard actions: isPortFree and suggestPort go through the injected binder", async () => {
+  const home = makeHome();
+  try {
+    const actions = buildWizardActions(baseDeps(home, { hubManager: { portBinder: fakePortBinder([8090, 8091]) } }), undefined);
+    assert.equal(await actions.isPortFree(8090), false);
+    assert.equal(await actions.isPortFree(8092), true);
+    assert.equal(await actions.suggestPort(8090), 8092);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("wizard install-local-hub: installs on the port chosen in the wizard", async () => {
+  const home = makeHome();
+  const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+  const packageDir = makePackageDir(zip);
+  try {
+    const state: ServerState = { listening: false };
+    const deps = baseDeps(home, { fetch: fakeFetch(zip, state), hubManager: fakeHubManager(packageDir, zip, state) });
+    const facts = gatherWizardFacts(deps);
+    let wizard = setHubMode(createWizardState(facts), "local");
+    wizard = setHubField(setHubField(setHubField(wizard, "ownerEmail", "owner@example.test"), "ownerPassword", "s3cret"), "port", "8093");
+
+    const result = await buildWizardActions(deps, undefined).apply({ kind: "install-local-hub", file: "http://127.0.0.1:8093", label: "install" }, wizard);
+
+    assert.equal(result.outcome, "started");
+    assert.match(result.detail ?? "", /running at http:\/\/127\.0\.0\.1:8093$/);
+    assert.equal(JSON.parse(readFileSync(join(home, ".kankaku", "hub", "hub.json"), "utf8")).port, 8093);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("gatherWizardFacts: carries an existing local install's port, and none when there is no install", () => {
+  const home = makeHome();
+  try {
+    assert.equal(gatherWizardFacts(baseDeps(home)).hub.localPort, undefined);
+    writeHubJson(home, 8093);
+    assert.equal(gatherWizardFacts(baseDeps(home)).hub.localPort, 8093);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
   }
 });

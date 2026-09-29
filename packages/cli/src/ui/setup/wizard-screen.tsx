@@ -7,10 +7,12 @@ import {
   createWizardState,
   hintsForStep,
   next,
+  parseHubPort,
   planFromWizard,
   setHubField,
   setHubHealth,
   setHubMode,
+  setHubPortInUse,
   setRoots,
   shortenHome,
   toggleAgent,
@@ -47,11 +49,16 @@ const FOOTER_ROWS = 1;
  * own `--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR` override), so the
  * wizard never asks for a checkout path. `install-local-hub` itself
  * (`hub-manager/install.ts#installHub`) runs entirely inside `apply`; the
- * UI never calls it directly.
+ * UI never calls it directly - it only asks `isPortFree`/`suggestPort`
+ * about the port field.
  */
 export interface WizardActions {
   apply(action: WizardAction, state: WizardState): Promise<ApplyResult>;
   checkHealth(url: string): Promise<boolean>;
+  /** Whether `127.0.0.1:<port>` can be bound right now (`hub-manager/port-probe.ts#isPortFree`); the Hub step rejects an occupied port inline. */
+  isPortFree(port: number): Promise<boolean>;
+  /** The first free port from `from` upwards, or `undefined` when none is; prefills the Hub step's port field. */
+  suggestPort(from: number): Promise<number | undefined>;
 }
 
 export interface SetupWizardProps {
@@ -170,12 +177,27 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
   const [healthChecking, setHealthChecking] = useState(false);
   const [rootsText, setRootsText] = useState(() => state.roots.join(", "));
   const applyStartedRef = useRef(false);
+  const portTouchedRef = useRef(false);
 
   useEffect(() => {
     if (state.step === "hub") setHubFocus(0);
   }, [state.step]);
 
-  const hubFieldCount = state.hub.mode === "existing" ? 4 : state.hub.mode === "local" ? 3 : 1;
+  // Prefill the local hub's port with the first free one from the default upwards, unless an install already recorded its own or the user got there first.
+  useEffect(() => {
+    if (facts.hub.localPort !== undefined) return;
+    let cancelled = false;
+    void actions.suggestPort(DEFAULT_HUB_PORT).then((port) => {
+      if (cancelled || port === undefined || portTouchedRef.current) return;
+      setState((s) => setHubField(s, "port", String(port)));
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const hubFieldCount = state.hub.mode === "existing" ? 4 : state.hub.mode === "local" ? 4 : 1;
   const textInputFocused = state.step === "roots" || (state.step === "hub" && hubFocus >= 1 && hubFocus < hubFieldCount);
 
   useEffect(() => {
@@ -201,6 +223,14 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
       if (state.step === "done") {
         onDone();
         return;
+      }
+      if (state.step === "hub" && state.hub.mode === "local") {
+        // A valid port is probed before advancing; an existing install's own port is ours and is never probed.
+        const port = parseHubPort(state.hub.port);
+        if (port !== undefined && port !== facts.hub.localPort) {
+          void actions.isPortFree(port).then((free) => setState((s) => (free ? next(s, facts) : setHubPortInUse(s, port))));
+          return;
+        }
       }
       setState((s) => next(s, facts));
       return;
@@ -279,7 +309,7 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
               )}
               {state.hub.mode === "local" && (
                 <Box flexDirection="column">
-                  <Text dimColor>{`will install and run at http://127.0.0.1:${DEFAULT_HUB_PORT}`}</Text>
+                  <Text dimColor>{`will install and run at http://127.0.0.1:${parseHubPort(state.hub.port) ?? DEFAULT_HUB_PORT}`}</Text>
                   <Box flexDirection="row">
                     <Text>{"owner email: "}</Text>
                     <TextInput value={state.hub.ownerEmail} onChange={(value) => setState((s) => setHubField(s, "ownerEmail", value))} focused={hubFocus === 1} />
@@ -288,8 +318,20 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
                     <Text>{"owner password: "}</Text>
                     <TextInput value={state.hub.ownerPassword} onChange={(value) => setState((s) => setHubField(s, "ownerPassword", value))} masked focused={hubFocus === 2} />
                   </Box>
+                  <Box flexDirection="row">
+                    <Text>{"port: "}</Text>
+                    <TextInput
+                      value={state.hub.port}
+                      onChange={(value) => {
+                        portTouchedRef.current = true;
+                        setState((s) => setHubField(s, "port", value.replace(/\D/g, "")));
+                      }}
+                      focused={hubFocus === 3}
+                    />
+                  </Box>
                   {state.errors.ownerEmail && <Text color={theme.error}>{state.errors.ownerEmail}</Text>}
                   {state.errors.ownerPassword && <Text color={theme.error}>{state.errors.ownerPassword}</Text>}
+                  {state.errors.port && <Text color={theme.error}>{state.errors.port}</Text>}
                 </Box>
               )}
             </Box>

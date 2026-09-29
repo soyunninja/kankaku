@@ -8,6 +8,7 @@ import { installHub, startHub, stopHub, hubStatus, upgradeHub, hubLogs } from ".
 import type { HubManagerDeps } from "../src/adapters/hub-manager/install.ts";
 import { startDetached as realStartDetached, isAlive as realIsAlive } from "../src/adapters/hub-manager/process.ts";
 import type { ScriptRunner, ScriptRunResult } from "../src/ports/script-runner.ts";
+import type { PortBinder } from "../src/adapters/hub-manager/port-probe.ts";
 
 const LOCAL_FILE_HEADER_SIGNATURE = 0x04034b50;
 const CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
@@ -190,6 +191,17 @@ function fakeStartDetached(state: ServerState): { startDetached: HubManagerDeps[
   };
 }
 
+/** A binder where the ports in `taken` are held by someone else; records every port it was asked to bind. */
+function fakePortBinder(taken: number[] = []): { binder: PortBinder; binds: number[] } {
+  const binds: number[] = [];
+  const binder: PortBinder = async (port) => {
+    binds.push(port);
+    if (taken.includes(port)) throw Object.assign(new Error("listen EADDRINUSE"), { code: "EADDRINUSE" });
+    return async () => {};
+  };
+  return { binder, binds };
+}
+
 function baseDeps(
   homeDir: string,
   packageDir: string,
@@ -212,6 +224,7 @@ function baseDeps(
     platform: "darwin",
     arch: "arm64",
     isAlive: (pid) => realIsAlive(pid),
+    portBinder: fakePortBinder().binder,
     ...overrides,
   };
   return { deps, fetchCalls, runnerCalls, spawnCalls, state };
@@ -328,6 +341,7 @@ test("installHub: refuses to provision accounts when another process already ans
       platform: "darwin",
       arch: "arm64",
       isAlive: () => false,
+      portBinder: fakePortBinder().binder,
     };
 
     const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, conflictingDeps);
@@ -339,7 +353,7 @@ test("installHub: refuses to provision accounts when another process already ans
     assert.equal(outcomes["start hub"], "error");
     assert.equal(outcomes["provision accounts"], undefined);
     const failedStep = report.steps.find((s) => s.step === "start hub")!;
-    assert.equal(failedStep.detail, "port 8090 is already in use by another process — pass --port <N> or stop it");
+    assert.equal(failedStep.detail, "port 8090 is already in use by another process — pass --port <N> or stop it; try: kankaku hub install --port 8091");
 
     assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "accounts.json")), false);
     assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "pid")), false);
@@ -522,6 +536,119 @@ test("installHub: re-run on an older install whose service password is nowhere t
   }
 });
 
+test("installHub: a fresh install without --port fails, naming the first free port, when the default port is taken - before downloading or creating anything", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const { deps, fetchCalls, spawnCalls } = baseDeps(homeDir, packageDir, zip, { portBinder: fakePortBinder([8090, 8091]).binder });
+
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.steps, [{ step: "check port", outcome: "error", detail: "port 8090 is already in use — try: kankaku hub install --port 8092" }]);
+    assert.equal(fetchCalls.length, 0);
+    assert.equal(spawnCalls.length, 0);
+    assert.equal(existsSync(join(homeDir, ".kankaku")), false);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("installHub: an explicit --port that is taken fails with the existing message plus the first free port, and never picks another silently", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const { deps, spawnCalls } = baseDeps(homeDir, packageDir, zip, { portBinder: fakePortBinder([8095]).binder });
+
+    const report = await installHub({ port: 8095, ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.steps, [
+      { step: "check port", outcome: "error", detail: "port 8095 is already in use by another process — pass --port <N> or stop it; try: kankaku hub install --port 8096" },
+    ]);
+    assert.equal(spawnCalls.length, 0);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("installHub: a taken port with no free port nearby still fails, without a suggestion", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const everyPort = Array.from({ length: 30 }, (_, index) => 8090 + index);
+    const { deps } = baseDeps(homeDir, packageDir, zip, { portBinder: fakePortBinder(everyPort).binder });
+
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.equal(report.ok, false);
+    assert.deepEqual(report.steps, [{ step: "check port", outcome: "error", detail: "port 8090 is already in use" }]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("installHub: an existing install keeps its recorded port when no --port is given, and never probes it", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const { deps: firstDeps } = baseDeps(homeDir, packageDir, zip);
+    await installHub({ port: 8093, ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, firstDeps);
+
+    const { binder, binds } = fakePortBinder([8090, 8093]); // the default is taken and so is the recorded port (our own running hub)
+    const { deps } = baseDeps(homeDir, packageDir, zip, { portBinder: binder });
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.equal(report.ok, true);
+    assert.equal(report.url, "http://127.0.0.1:8093");
+    assert.equal(JSON.parse(readFileSync(join(homeDir, ".kankaku", "hub", "hub.json"), "utf8")).port, 8093);
+    assert.deepEqual(binds, []);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("installHub: a half-finished install (hub.json but no accounts) retries on its recorded port, not the default", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const { deps: firstDeps } = baseDeps(homeDir, packageDir, zip, { portBinder: fakePortBinder([8091]).binder });
+    const failed = await installHub({ port: 8091, ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, firstDeps);
+    assert.equal(failed.ok, false); // 8091 taken: nothing recorded yet
+    assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "hub.json")), false);
+
+    const { deps: secondDeps } = baseDeps(homeDir, packageDir, zip);
+    const first = await installHub({ port: 8092, ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, secondDeps);
+    assert.equal(first.ok, true);
+    rmSync(join(homeDir, ".kankaku", "hub", "accounts.json"));
+
+    const { binder, binds } = fakePortBinder();
+    const { deps: retryDeps } = baseDeps(homeDir, packageDir, zip, { portBinder: binder });
+    const retry = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, retryDeps);
+
+    assert.equal(retry.ok, true);
+    assert.equal(retry.url, "http://127.0.0.1:8092");
+    assert.deepEqual(binds, [8092]);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
 test("startHub/stopHub/hubStatus: not installed, then start/stop transitions after install", async () => {
   const homeDir = makeDir();
   const packageDir = makeDir();
@@ -608,6 +735,7 @@ test("startHub: fails immediately, reporting the last hub.log line, and removes 
       platform: "darwin",
       arch: "arm64",
       isAlive: (pid) => realIsAlive(pid),
+      portBinder: fakePortBinder().binder,
     };
 
     const startedAt = Date.now();
@@ -719,6 +847,7 @@ test("upgradeHub: refuses to restart when another process now holds the port, an
       platform: "darwin",
       arch: "arm64",
       isAlive: (pid) => realIsAlive(pid),
+      portBinder: fakePortBinder().binder,
     };
 
     const report = await upgradeHub(upgradeDeps);

@@ -23,9 +23,11 @@ export interface WizardHubState {
   /** The owner account created by `install-local-hub` (`hub-manager/install.ts#installHub`) — asked only in `local` mode. */
   ownerEmail: string;
   ownerPassword: string;
+  /** The local hub's port as typed (digits only, 1024-65535) - asked only in `local` mode; prefilled with the first free port from the default upwards, or an existing install's own port. */
+  port: string;
 }
 
-export type WizardErrorKey = "url" | "email" | "password" | "roots" | "ownerEmail" | "ownerPassword";
+export type WizardErrorKey = "url" | "email" | "password" | "roots" | "ownerEmail" | "ownerPassword" | "port";
 
 export type WizardActionKind = "install-pi" | "remove-pi" | "write-claude" | "remove-claude" | "write-hub" | "install-local-hub" | "write-roots";
 
@@ -64,9 +66,11 @@ export interface WizardHubFacts {
   email: string | undefined;
   password: string | undefined;
   credentialsPath: string;
+  /** The port an existing local hub install recorded in `hub.json`, if any. */
+  localPort?: number;
 }
 
-/** The local hub's fixed port for the wizard's `install locally` review line and `install-local-hub` action — mirrors `hub-manager/install.ts#DEFAULT_HUB_PORT`. */
+/** The local hub's default port, where the wizard's port field starts looking for a free one - mirrors `hub-manager/install.ts#DEFAULT_HUB_PORT`. */
 export const DEFAULT_HUB_PORT = 8090;
 
 export interface WizardRootsFacts {
@@ -110,7 +114,7 @@ function clearError(errors: WizardState["errors"], key: WizardErrorKey): WizardS
   return rest;
 }
 
-const HUB_ERROR_KEYS: WizardErrorKey[] = ["url", "email", "password", "ownerEmail", "ownerPassword"];
+const HUB_ERROR_KEYS: WizardErrorKey[] = ["url", "email", "password", "ownerEmail", "ownerPassword", "port"];
 
 function clearHubErrors(errors: WizardState["errors"]): WizardState["errors"] {
   return HUB_ERROR_KEYS.reduce((acc, key) => clearError(acc, key), errors);
@@ -132,6 +136,7 @@ export function createWizardState(facts: WizardFacts): WizardState {
       password: facts.hub.password ?? "",
       ownerEmail: "",
       ownerPassword: "",
+      port: String(facts.hub.localPort ?? DEFAULT_HUB_PORT),
     },
     roots: facts.roots.current ?? facts.roots.defaultRoots,
     errors: {},
@@ -149,10 +154,22 @@ export function setHubMode(state: WizardState, mode: HubMode): WizardState {
   return { ...state, hub: { ...state.hub, mode }, errors: clearHubErrors(state.errors) };
 }
 
-export type HubField = "url" | "email" | "password" | "ownerEmail" | "ownerPassword";
+export type HubField = "url" | "email" | "password" | "ownerEmail" | "ownerPassword" | "port";
 
 export function setHubField(state: WizardState, field: HubField, value: string): WizardState {
   return { ...state, hub: { ...state.hub, [field]: value }, errors: clearError(state.errors, field) };
+}
+
+/** The local hub port as a number when `text` is digits only within 1024-65535, otherwise `undefined`. */
+export function parseHubPort(text: string): number | undefined {
+  if (!/^\d+$/.test(text)) return undefined;
+  const port = Number(text);
+  return port >= 1024 && port <= 65535 ? port : undefined;
+}
+
+/** Flags `port` as occupied (`port N is in use`), found by the probe the Hub step runs before advancing; editing the port field clears it. */
+export function setHubPortInUse(state: WizardState, port: number): WizardState {
+  return { ...state, errors: { ...state.errors, port: `port ${port} is in use` } };
 }
 
 export function setHubHealth(state: WizardState, ok: boolean): WizardState {
@@ -180,6 +197,7 @@ function validateHub(hub: WizardHubState): Partial<Record<WizardErrorKey, string
     const errors: Partial<Record<WizardErrorKey, string>> = {};
     if (!hub.ownerEmail.includes("@")) errors.ownerEmail = "enter a valid email";
     if (hub.ownerPassword.trim() === "") errors.ownerPassword = "enter a password";
+    if (parseHubPort(hub.port) === undefined) errors.port = "enter a port between 1024 and 65535";
     return errors;
   }
   return {};
@@ -232,7 +250,7 @@ export function planFromWizard(state: WizardState, facts: WizardFacts): WizardAc
       actions.push({ kind: "write-hub", file: facts.hub.credentialsPath, label: `write hub credentials to ${facts.hub.credentialsPath}` });
     }
   } else if (state.hub.mode === "local") {
-    const url = `http://127.0.0.1:${DEFAULT_HUB_PORT}`;
+    const url = `http://127.0.0.1:${parseHubPort(state.hub.port) ?? DEFAULT_HUB_PORT}`;
     const existingUrl = facts.hub.credentialsPresent ? facts.hub.url : undefined;
     const note = shouldWriteCredentials(existingUrl, url)
       ? "sync credentials → the local hub"

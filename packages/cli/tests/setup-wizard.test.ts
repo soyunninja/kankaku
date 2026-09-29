@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   DEFAULT_HUB_PORT,
   createWizardState,
+  setHubPortInUse,
   shortenHome,
   toggleAgent,
   setHubMode,
@@ -202,7 +203,7 @@ test("next: agents -> hub when Claude is selected and already configured", () =>
 
 test("next: hub existing mode rejects a non-http(s) url", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "existing", url: "ftp://x", email: "a@b.com", password: "secret", ownerEmail: "", ownerPassword: "" } }, facts);
+  const state = stateAt("hub", { hub: { mode: "existing", url: "ftp://x", email: "a@b.com", password: "secret", ownerEmail: "", ownerPassword: "", port: "8090" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
   assert.equal(typeof result.errors.url, "string");
@@ -210,7 +211,7 @@ test("next: hub existing mode rejects a non-http(s) url", () => {
 
 test("next: hub existing mode rejects an email without '@'", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "not-an-email", password: "secret", ownerEmail: "", ownerPassword: "" } }, facts);
+  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "not-an-email", password: "secret", ownerEmail: "", ownerPassword: "", port: "8090" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
   assert.equal(typeof result.errors.email, "string");
@@ -218,7 +219,7 @@ test("next: hub existing mode rejects an email without '@'", () => {
 
 test("next: hub existing mode rejects an empty password", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "a@b.com", password: "", ownerEmail: "", ownerPassword: "" } }, facts);
+  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "a@b.com", password: "", ownerEmail: "", ownerPassword: "", port: "8090" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
   assert.equal(typeof result.errors.password, "string");
@@ -226,13 +227,13 @@ test("next: hub existing mode rejects an empty password", () => {
 
 test("next: hub existing mode with valid fields advances to roots", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "a@b.com", password: "secret", ownerEmail: "", ownerPassword: "" } }, facts);
+  const state = stateAt("hub", { hub: { mode: "existing", url: "https://x", email: "a@b.com", password: "secret", ownerEmail: "", ownerPassword: "", port: "8090" } }, facts);
   assert.equal(next(state, facts).step, "roots");
 });
 
 test("next: hub local mode rejects an invalid owner email", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "not-an-email", ownerPassword: "s3cret" } }, facts);
+  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "not-an-email", ownerPassword: "s3cret", port: "8090" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
   assert.equal(typeof result.errors.ownerEmail, "string");
@@ -240,7 +241,7 @@ test("next: hub local mode rejects an invalid owner email", () => {
 
 test("next: hub local mode rejects an empty owner password", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "owner@example.com", ownerPassword: "" } }, facts);
+  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "owner@example.com", ownerPassword: "", port: "8090" } }, facts);
   const result = next(state, facts);
   assert.equal(result.step, "hub");
   assert.equal(typeof result.errors.ownerPassword, "string");
@@ -248,13 +249,65 @@ test("next: hub local mode rejects an empty owner password", () => {
 
 test("next: hub local mode advances when owner email/password are set", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "owner@example.com", ownerPassword: "s3cret" } }, facts);
+  const state = stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "owner@example.com", ownerPassword: "s3cret", port: "8090" } }, facts);
   assert.equal(next(state, facts).step, "roots");
+});
+
+function localHubState(port: string, facts: WizardFacts = baseFacts()): WizardState {
+  return stateAt("hub", { hub: { mode: "local", url: "", email: "", password: "", ownerEmail: "owner@example.com", ownerPassword: "s3cret", port } }, facts);
+}
+
+test("createWizardState: the local hub port starts at the default, or at the port of an existing install", () => {
+  assert.equal(createWizardState(baseFacts()).hub.port, "8090");
+  const installed = baseFacts({ hub: { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: "/home/.kankaku/credentials.json", localPort: 8093 } });
+  assert.equal(createWizardState(installed).hub.port, "8093");
+});
+
+test("next: hub local mode accepts digits from 1024 to 65535 as the port", () => {
+  for (const port of ["1024", "8091", "65535"]) {
+    assert.equal(next(localHubState(port), baseFacts()).step, "roots", port);
+  }
+});
+
+test("next: hub local mode rejects a port that is not digits within 1024-65535", () => {
+  for (const port of ["", "abc", "80", "1023", "65536", "80.5", "-8090", "8 090"]) {
+    const result = next(localHubState(port), baseFacts());
+    assert.equal(result.step, "hub", port);
+    assert.equal(result.errors.port, "enter a port between 1024 and 65535", port);
+  }
+});
+
+test("setHubField: editing the port clears its error; setHubPortInUse sets `port N is in use` and next keeps it until edited", () => {
+  const flagged = setHubPortInUse(localHubState("8095"), 8095);
+  assert.equal(flagged.errors.port, "port 8095 is in use");
+  assert.equal(setHubField(flagged, "port", "8096").errors.port, undefined);
+});
+
+test("next: leaving the hub step clears a stale port error", () => {
+  const advanced = next({ ...localHubState("8096"), errors: { port: "port 8095 is in use" } }, baseFacts());
+  assert.equal(advanced.step, "roots");
+  assert.equal(advanced.errors.port, undefined);
+});
+
+test("next: a port typed in skip or existing mode is ignored by validation", () => {
+  const state = stateAt("hub", { hub: { mode: "skip", url: "", email: "", password: "", ownerEmail: "", ownerPassword: "", port: "abc" } });
+  assert.equal(next(state, baseFacts()).step, "roots");
+});
+
+test("planFromWizard: install-local-hub carries the chosen port into its file, label and note", () => {
+  const facts = baseFacts({ hub: { credentialsPresent: true, url: "http://127.0.0.1:8091", email: "a@b.c", password: "pw", credentialsPath: "/home/.kankaku/credentials.json" } });
+  const plan = planFromWizard(localHubState("8091", facts), facts);
+  assert.deepEqual(plan.find((a) => a.kind === "install-local-hub"), {
+    kind: "install-local-hub",
+    file: "http://127.0.0.1:8091",
+    label: "install a local hub at http://127.0.0.1:8091",
+    note: "sync credentials → the local hub",
+  });
 });
 
 test("next: hub skip mode always advances", () => {
   const facts = baseFacts();
-  const state = stateAt("hub", { hub: { mode: "skip", url: "", email: "", password: "", ownerEmail: "", ownerPassword: "" } }, facts);
+  const state = stateAt("hub", { hub: { mode: "skip", url: "", email: "", password: "", ownerEmail: "", ownerPassword: "", port: "8090" } }, facts);
   assert.equal(next(state, facts).step, "roots");
 });
 

@@ -25,6 +25,8 @@ import { locateHubPackage } from "./package.ts";
 import type { LocateHubPackageResult } from "./package.ts";
 import { downloadPocketBase } from "./download.ts";
 import { isAlive, readPid, stopProcess, waitForHealth } from "./process.ts";
+import { firstFreePort, isPortFree } from "./port-probe.ts";
+import type { PortBinder } from "./port-probe.ts";
 import { createUser, upsertSuperuser } from "./accounts.ts";
 import { credentialsPath, writeHubCredentials } from "../setup/hub.ts";
 import { readJsonObjectOrEmpty } from "../setup/json-writer.ts";
@@ -78,6 +80,8 @@ export interface HubManagerDeps {
   arch: string;
   /** `hub-manager/process.ts#isAlive`, injected so tests can simulate the spawned hub process dying during startup without needing a real spawned process. */
   isAlive: (pid: number) => boolean;
+  /** Binds `127.0.0.1:<port>` for the free-port probe (`hub-manager/port-probe.ts`); the real caller passes `realPortBinder`, tests a fake so no unit test ever opens a socket. */
+  portBinder: PortBinder;
 }
 
 function message(error: unknown): string {
@@ -113,8 +117,15 @@ function readLogLines(layout: HubLayout): string[] {
   return lines;
 }
 
-function portInUseMessage(port: number): string {
-  return `port ${port} is already in use by another process — pass --port <N> or stop it`;
+/** The message when a foreign process holds `port`; `suggestion` (the first free port above it) adds the command that would work. */
+function portInUseMessage(port: number, suggestion?: number): string {
+  const base = `port ${port} is already in use by another process — pass --port <N> or stop it`;
+  return suggestion === undefined ? base : `${base}; try: kankaku hub install --port ${suggestion}`;
+}
+
+/** The first free port above `port`, for a "try: kankaku hub install --port N" suggestion; `undefined` when none of the next 20 is free. */
+function suggestPortAbove(port: number, deps: Pick<HubManagerDeps, "portBinder">): Promise<number | undefined> {
+  return firstFreePort(port + 1, 20, deps.portBinder);
 }
 
 /**
@@ -123,15 +134,29 @@ function portInUseMessage(port: number): string {
  * held by a process that is not ours. Callers only reach this once they
  * have already established that no pid of ours is alive, so any response
  * here means a foreign process. Returns the detail message to report, or
- * `undefined` when the port is free.
+ * `undefined` when the port is free. `suggest` (install only) appends the
+ * first free port to try instead.
  */
-async function ensurePortFree(port: number, deps: Pick<HubManagerDeps, "fetch">): Promise<string | undefined> {
+async function ensurePortFree(port: number, deps: Pick<HubManagerDeps, "fetch" | "portBinder">, suggest = false): Promise<string | undefined> {
   try {
     await deps.fetch(`${baseUrlFor(port)}/api/health`);
-    return portInUseMessage(port);
+    return portInUseMessage(port, suggest ? await suggestPortAbove(port, deps) : undefined);
   } catch {
     return undefined;
   }
+}
+
+/**
+ * The earlier, cheaper check of a fresh install: binds `127.0.0.1:<port>`.
+ * `explicit` (a `--port` was given) keeps the existing message and adds the
+ * first free port; without `--port` the default is never swapped silently -
+ * the message names the first free port to pass instead.
+ */
+async function checkPortBindable(port: number, explicit: boolean, deps: Pick<HubManagerDeps, "portBinder">): Promise<string | undefined> {
+  if (await isPortFree(port, deps.portBinder)) return undefined;
+  const suggestion = await suggestPortAbove(port, deps);
+  if (explicit) return portInUseMessage(port, suggestion);
+  return suggestion === undefined ? `port ${port} is already in use` : `port ${port} is already in use — try: kankaku hub install --port ${suggestion}`;
 }
 
 interface SpawnAndAwaitHealthResult {
@@ -238,7 +263,6 @@ function ensureServiceAccount(homeDir: string, url: string): HubStepReport[] {
  * stops the sequence and is reported as `error`.
  */
 export async function installHub(options: InstallHubOptions, deps: HubManagerDeps): Promise<HubActionReport> {
-  const port = options.port ?? DEFAULT_HUB_PORT;
   const steps: HubStepReport[] = [];
 
   let located: LocateHubPackageResult;
@@ -250,13 +274,20 @@ export async function installHub(options: InstallHubOptions, deps: HubManagerDep
   const manifest = located.manifest;
   const layout = hubLayout(deps.homeDir);
 
+  // An existing install keeps its recorded port; a fresh one takes the default, and never a different one silently.
+  const existingConfig = readConfigOrUndefined(layout.hubJson);
+  const port = options.port ?? existingConfig?.port ?? DEFAULT_HUB_PORT;
+  if (!existsSync(layout.accountsJson)) {
+    const conflict = await checkPortBindable(port, options.port !== undefined, deps);
+    if (conflict) return { ok: false, steps: [{ step: "check port", outcome: "error", detail: conflict }] };
+  }
+
   const rootExisted = existsSync(layout.root);
   if (!rootExisted) mkdirSync(layout.root, { recursive: true, mode: OWNER_DIR_MODE });
   mkdirSync(layout.bin, { recursive: true });
   mkdirSync(layout.pbData, { recursive: true });
   steps.push({ step: "create ~/.kankaku/hub", outcome: rootExisted ? "unchanged" : "done" });
 
-  const existingConfig = readConfigOrUndefined(layout.hubJson);
   const needsBinary = !existsSync(layout.binary) || existingConfig?.pocketbaseVersion !== manifest.pocketbase.version;
   if (needsBinary) {
     try {
@@ -304,7 +335,7 @@ export async function installHub(options: InstallHubOptions, deps: HubManagerDep
 
   // Reported as its own step: a hub that cannot start is not an accounts
   // problem, and the accounts step must never claim to have run.
-  const portConflict = await ensurePortFree(port, deps);
+  const portConflict = await ensurePortFree(port, deps, true);
   if (portConflict) {
     steps.push({ step: "start hub", outcome: "error", detail: portConflict });
     return { ok: false, steps };

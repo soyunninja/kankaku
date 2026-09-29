@@ -31,6 +31,7 @@ import { DEFAULT_THEME, ThemeProvider, resolveTheme } from "./ui/theme.ts";
 import type { Theme } from "./ui/theme.ts";
 import { detectAgents, formatDoctorLines, formatSetupPlanLines, planSetup } from "./domain/setup-plan.ts";
 import type { AgentStatus, HubPlanFacts, TuiPlanFacts } from "./domain/setup-plan.ts";
+import { parseHubPort } from "./domain/setup-wizard.ts";
 import type { ApplyResult, WizardAction, WizardFacts, WizardState } from "./domain/setup-wizard.ts";
 import { readAgentFacts } from "./adapters/setup/agents.ts";
 import { addKankakuPackage, removeKankakuPackage } from "./adapters/setup/pi.ts";
@@ -52,6 +53,8 @@ import type { HubManagerDeps } from "./adapters/hub-manager/install.ts";
 import { isAlive, readPid, startDetached } from "./adapters/hub-manager/process.ts";
 import { locateHubPackage } from "./adapters/hub-manager/package.ts";
 import { useLocalHub } from "./adapters/hub-manager/credentials.ts";
+import { firstFreePort, isPortFree, realPortBinder } from "./adapters/hub-manager/port-probe.ts";
+import type { PortBinder } from "./adapters/hub-manager/port-probe.ts";
 
 export interface CliDeps {
   homeDir: string;
@@ -329,20 +332,24 @@ async function runDoctorCommand(deps: CliDeps, claudePluginOverride?: string): P
  * with no network call — the hub's health is checked interactively, from
  * the wizard's own Hub step, never upfront.
  */
-function gatherWizardFacts(deps: CliDeps, claudePluginOverride?: string): WizardFacts {
+export function gatherWizardFacts(deps: CliDeps, claudePluginOverride?: string): WizardFacts {
   const agentFacts = readAgentFacts(deps.homeDir, claudePluginOverride);
   const hubResolution = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
   const credPath = credentialsPath(deps.homeDir);
 
-  const hub: WizardFacts["hub"] = hubResolution.ok
-    ? {
-        credentialsPresent: true,
-        url: hubResolution.credentials.url,
-        email: hubResolution.credentials.email,
-        password: hubResolution.credentials.password,
-        credentialsPath: credPath,
-      }
-    : { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: credPath };
+  const localPort = localHubPort(deps);
+  const hub: WizardFacts["hub"] = {
+    ...(hubResolution.ok
+      ? {
+          credentialsPresent: true,
+          url: hubResolution.credentials.url,
+          email: hubResolution.credentials.email,
+          password: hubResolution.credentials.password,
+          credentialsPath: credPath,
+        }
+      : { credentialsPresent: false, url: undefined, email: undefined, password: undefined, credentialsPath: credPath }),
+    ...(localPort !== undefined ? { localPort } : {}),
+  };
 
   const tuiPath = tuiConfigPath(deps.homeDir);
   const roots: WizardFacts["roots"] = {
@@ -369,6 +376,7 @@ function buildHubManagerDeps(deps: CliDeps): HubManagerDeps {
     platform: process.platform,
     arch: process.arch,
     isAlive: (pid) => isAlive(pid),
+    portBinder: realPortBinder,
     ...deps.hubManager,
   };
 }
@@ -432,7 +440,7 @@ async function applyWizardAction(action: WizardAction, state: WizardState, deps:
         return { action, outcome: result.changed ? "wrote" : "unchanged" };
       }
       case "install-local-hub": {
-        const report = await installHub({ ownerEmail: state.hub.ownerEmail, ownerPassword: state.hub.ownerPassword }, buildHubManagerDeps(deps));
+        const report = await installHub({ port: parseHubPort(state.hub.port), ownerEmail: state.hub.ownerEmail, ownerPassword: state.hub.ownerPassword }, buildHubManagerDeps(deps));
         const detail = report.steps.map((step) => `${step.step}: ${step.outcome}${step.step === "sync credentials" && step.detail ? ` (${step.detail})` : ""}`).join("; ");
         if (!report.ok) return { action, outcome: "error", detail };
         return { action, outcome: "started", detail: `${detail} — running at ${report.url}` };
@@ -464,11 +472,18 @@ function announceCommands(deps: CliDeps, result: CommandsWriteResult): void {
   for (const file of result.foreign) deps.stdout(`skipped ${file} (not a kankaku command)`);
 }
 
+/** The binder for the wizard's port probe: the real one, unless a test injected another through `CliDeps.hubManager`. */
+function portBinderFor(deps: CliDeps): PortBinder {
+  return deps.hubManager?.portBinder ?? realPortBinder;
+}
+
 /** Build the setup wizard's `WizardActions` for the interactive app: every write goes through the same real `adapters/setup/*` writers `kankaku setup --yes` uses. Used only by `renderApp`. */
 export function buildWizardActions(deps: CliDeps, claudePluginOverride: string | undefined): WizardActions {
   return {
     apply: (action, state) => applyWizardAction(action, state, deps, claudePluginOverride),
     checkHealth: (url) => checkHubHealth(url, { fetch: deps.fetch }),
+    isPortFree: (port) => isPortFree(port, portBinderFor(deps)),
+    suggestPort: (from) => firstFreePort(from, 20, portBinderFor(deps)),
   };
 }
 
@@ -515,15 +530,21 @@ function syncCredentialsUrl(deps: CliDeps): string | undefined {
   return hub.ok ? hub.credentials.url : undefined;
 }
 
-/** The installed local hub's URL from `hub.json`'s port, or `undefined` when it is not installed. */
-function localHubUrl(deps: CliDeps): string | undefined {
+/** The installed local hub's port from `hub.json`, or `undefined` when it is not installed (or `hub.json` is unreadable). */
+function localHubPort(deps: CliDeps): number | undefined {
   const layout = hubLayout(deps.homeDir);
   if (!existsSync(layout.hubJson)) return undefined;
   try {
-    return `http://127.0.0.1:${parseHubConfig(JSON.parse(readFileSync(layout.hubJson, "utf8"))).port}`;
+    return parseHubConfig(JSON.parse(readFileSync(layout.hubJson, "utf8"))).port;
   } catch {
     return undefined;
   }
+}
+
+/** The installed local hub's URL, or `undefined` when it is not installed. */
+function localHubUrl(deps: CliDeps): string | undefined {
+  const port = localHubPort(deps);
+  return port === undefined ? undefined : `http://127.0.0.1:${port}`;
 }
 
 /** `-n <count>`'s value, defaulting to 50 when absent or not a positive integer. */
@@ -538,11 +559,12 @@ function flagValue(args: string[], flag: string): string | undefined {
   return index === -1 ? undefined : args[index + 1];
 }
 
+/** `--port`'s value: `undefined` when the flag is absent, `NaN` when it is present but not a whole number between 1 and 65535. */
 function portFlag(args: string[]): number | undefined {
   const raw = flagValue(args, "--port");
-  if (raw === undefined) return undefined;
+  if (raw === undefined) return args.includes("--port") ? Number.NaN : undefined;
   const value = Number(raw);
-  return Number.isInteger(value) && value > 0 ? value : undefined;
+  return Number.isInteger(value) && value >= 1 && value <= 65535 ? value : Number.NaN;
 }
 
 /** Print every `HubActionReport` step, one per line (`<step>: <outcome> (<detail>)`), and the resulting URL when present. */
@@ -567,6 +589,12 @@ async function runHubCommand(args: string[], deps: CliDeps): Promise<void> {
   const hubDeps = buildHubManagerDeps(deps);
 
   if (sub === "install") {
+    const port = portFlag(rest);
+    if (Number.isNaN(port)) {
+      deps.stderr("kankaku hub install: --port must be a whole number between 1 and 65535\n");
+      deps.exit(1);
+      return;
+    }
     let ownerEmail = flagValue(rest, "--owner-email");
     let ownerPassword = flagValue(rest, "--owner-password");
     if ((ownerEmail === undefined || ownerPassword === undefined) && (deps.isTTY?.() ?? false) && deps.prompter) {
@@ -578,7 +606,7 @@ async function runHubCommand(args: string[], deps: CliDeps): Promise<void> {
       deps.exit(1);
       return;
     }
-    const report = await installHub({ port: portFlag(rest), ownerEmail, ownerPassword }, hubDeps);
+    const report = await installHub({ port, ownerEmail, ownerPassword }, hubDeps);
     printHubReport(deps, report);
     if (!report.ok) deps.exit(1);
     return;
