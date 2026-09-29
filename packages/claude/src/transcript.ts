@@ -29,6 +29,13 @@ export interface TranscriptPosition {
   bytes: number;
   /** The last `message.id` counted from this file, so a message split across two reads is counted once. */
   lastMessageId?: string;
+  /**
+   * What has been counted so far for {@link lastMessageId}. When the next read
+   * starts with more lines of that message, only the growth is added. Absent
+   * in a position written before this field existed: the message's lines at
+   * the head of the next read are then skipped (its total is unknown).
+   */
+  lastMessageUsage?: TokenUsage;
 }
 
 export interface TranscriptCostState {
@@ -39,6 +46,8 @@ export interface TranscriptCostState {
 export interface ParsedChunk {
   usage: TokenUsage;
   lastMessageId?: string;
+  /** Counted so far for {@link lastMessageId}; carry it into the next read. Absent for a legacy position that has not advanced. */
+  lastMessageUsage?: TokenUsage;
   version?: string;
   entrypoint?: string;
   costState?: TranscriptCostState;
@@ -66,22 +75,36 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+function parseUsage(raw: Record<string, unknown>): TokenUsage {
+  return {
+    input: counted(raw.input_tokens),
+    output: counted(raw.output_tokens),
+    cacheRead: counted(raw.cache_read_input_tokens),
+    cacheWrite: counted(raw.cache_creation_input_tokens),
+  };
+}
+
 /**
  * Pure: parses the text of complete transcript lines.
  *
- * - `assistant` lines are counted once per `message.id` (Claude Code repeats
- *   one message over several lines); a line whose id is `lastMessageId` was
- *   counted by the previous read and is skipped. A line without an id cannot
- *   be de-duplicated and is not counted.
+ * - Claude Code writes one message over several adjacent lines whose usage
+ *   grows (earlier lines are partial snapshots), so an `assistant` message is
+ *   counted once per `message.id` by its LAST line in the chunk. A line
+ *   without an id cannot be de-duplicated and is not counted.
+ * - A message can straddle two reads. `previous` carries the last id and the
+ *   usage counted for it: when this chunk holds more lines of that id, only
+ *   the growth is added, per field and never negative. A `previous` with an
+ *   id but no usage (a legacy position) skips that id's lines instead.
  * - A non-finite, negative or non-numeric usage field counts as 0.
  * - `version` and `entrypoint` come from the first line that carries each.
  * - `costState` is the last valid `cost-state` line.
  */
-export function parseTranscriptChunk(text: string, options: { lastMessageId?: string }): ParsedChunk {
-  const usage = zeroUsage();
-  const seen = new Set<string>();
-  if (options.lastMessageId !== undefined) seen.add(options.lastMessageId);
-  let lastMessageId = options.lastMessageId;
+export function parseTranscriptChunk(
+  text: string,
+  previous: { lastMessageId?: string; lastMessageUsage?: TokenUsage },
+): ParsedChunk {
+  const finals = new Map<string, TokenUsage>();
+  let lastMessageId = previous.lastMessageId;
   let version: string | undefined;
   let entrypoint: string | undefined;
   let costState: TranscriptCostState | undefined;
@@ -107,15 +130,9 @@ export function parseTranscriptChunk(text: string, options: { lastMessageId?: st
     if (parsed.type === "assistant") {
       const message = parsed.message;
       if (!isObject(message) || typeof message.id !== "string" || message.id === "") continue;
-      if (seen.has(message.id)) continue;
-      seen.add(message.id);
       lastMessageId = message.id;
-      const raw = message.usage;
-      if (!isObject(raw)) continue;
-      usage.input += counted(raw.input_tokens);
-      usage.output += counted(raw.output_tokens);
-      usage.cacheRead += counted(raw.cache_read_input_tokens);
-      usage.cacheWrite += counted(raw.cache_creation_input_tokens);
+      if (isObject(message.usage)) finals.set(message.id, parseUsage(message.usage));
+      else if (!finals.has(message.id)) finals.set(message.id, zeroUsage());
     } else if (parsed.type === "cost-state") {
       const total = parsed.totalCostUSD;
       if (typeof total !== "number" || !Number.isFinite(total) || total < 0) continue;
@@ -123,9 +140,44 @@ export function parseTranscriptChunk(text: string, options: { lastMessageId?: st
     }
   }
 
+  const usage = zeroUsage();
+  for (const [id, final] of finals) {
+    let added = final;
+    if (id === previous.lastMessageId) {
+      const before = previous.lastMessageUsage;
+      if (before === undefined) continue; // legacy: this message's total so far is unknown, skip it
+      added = {
+        input: Math.max(0, final.input - before.input),
+        output: Math.max(0, final.output - before.output),
+        cacheRead: Math.max(0, final.cacheRead - before.cacheRead),
+        cacheWrite: Math.max(0, final.cacheWrite - before.cacheWrite),
+      };
+    }
+    usage.input += added.input;
+    usage.output += added.output;
+    usage.cacheRead += added.cacheRead;
+    usage.cacheWrite += added.cacheWrite;
+  }
+
+  let lastMessageUsage: TokenUsage | undefined = previous.lastMessageUsage;
+  if (lastMessageId !== undefined && finals.has(lastMessageId)) {
+    const final = finals.get(lastMessageId)!;
+    if (lastMessageId !== previous.lastMessageId) lastMessageUsage = final;
+    else if (previous.lastMessageUsage !== undefined) {
+      const before = previous.lastMessageUsage;
+      lastMessageUsage = {
+        input: Math.max(before.input, final.input),
+        output: Math.max(before.output, final.output),
+        cacheRead: Math.max(before.cacheRead, final.cacheRead),
+        cacheWrite: Math.max(before.cacheWrite, final.cacheWrite),
+      };
+    }
+  }
+
   return {
     usage,
     ...(lastMessageId !== undefined ? { lastMessageId } : {}),
+    ...(lastMessageUsage !== undefined ? { lastMessageUsage } : {}),
     ...(version !== undefined ? { version } : {}),
     ...(entrypoint !== undefined ? { entrypoint } : {}),
     ...(costState !== undefined ? { costState } : {}),
@@ -164,14 +216,16 @@ export function readTranscriptSince(
     const replaced = size < position.bytes;
     const start = replaced ? 0 : position.bytes;
     const lastMessageId = replaced ? undefined : position.lastMessageId;
+    const lastMessageUsage = replaced ? undefined : position.lastMessageUsage;
+    const carried = { ...(lastMessageId !== undefined ? { lastMessageId } : {}), ...(lastMessageUsage !== undefined ? { lastMessageUsage } : {}) };
     const length = size - start;
     if (length === 0) {
-      return { usage: zeroUsage(), position: { bytes: start, ...(lastMessageId !== undefined ? { lastMessageId } : {}) }, truncated: false };
+      return { usage: zeroUsage(), position: { bytes: start, ...carried }, truncated: false };
     }
     if (length > maxBytes) {
       return {
         usage: zeroUsage(),
-        position: { bytes: size, ...(lastMessageId !== undefined ? { lastMessageId } : {}) },
+        position: { bytes: size, ...carried },
         truncated: true,
       };
     }
@@ -185,13 +239,17 @@ export function readTranscriptSince(
     }
     const lastNewline = buffer.subarray(0, filled).lastIndexOf(0x0a);
     if (lastNewline < 0) {
-      return { usage: zeroUsage(), position: { bytes: start, ...(lastMessageId !== undefined ? { lastMessageId } : {}) }, truncated: false };
+      return { usage: zeroUsage(), position: { bytes: start, ...carried }, truncated: false };
     }
     const consumed = lastNewline + 1;
-    const parsed = parseTranscriptChunk(buffer.subarray(0, consumed).toString("utf8"), { lastMessageId });
+    const parsed = parseTranscriptChunk(buffer.subarray(0, consumed).toString("utf8"), carried);
     return {
       ...parsed,
-      position: { bytes: start + consumed, ...(parsed.lastMessageId !== undefined ? { lastMessageId: parsed.lastMessageId } : {}) },
+      position: {
+        bytes: start + consumed,
+        ...(parsed.lastMessageId !== undefined ? { lastMessageId: parsed.lastMessageId } : {}),
+        ...(parsed.lastMessageUsage !== undefined ? { lastMessageUsage: parsed.lastMessageUsage } : {}),
+      },
       truncated: false,
     };
   } catch {

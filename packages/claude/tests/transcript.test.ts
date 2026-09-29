@@ -33,7 +33,7 @@ test("parseTranscriptChunk maps the four usage fields", () => {
 
 test("parseTranscriptChunk counts each message.id once within the chunk", () => {
   const result = parseTranscriptChunk(
-    lines(assistant("m1", usage(1, 1, 1, 1)), assistant("m1", usage(1, 1, 1, 1)), assistant("m2", usage(10, 0, 0, 0)), assistant("m1", usage(1, 1, 1, 1))),
+    lines(assistant("m1", usage(1, 1, 1, 1)), assistant("m1", usage(1, 1, 1, 1)), assistant("m2", usage(10, 0, 0, 0)), assistant("m2", usage(10, 0, 0, 0))),
     {},
   );
   assert.deepEqual(result.usage, { input: 11, output: 1, cacheRead: 1, cacheWrite: 1 });
@@ -272,6 +272,136 @@ test("listSubagentTranscripts lists only the .jsonl files under <session>/subage
 
     assert.deepEqual(listSubagentTranscripts(session), [join(sub, "agent-a.jsonl"), join(sub, "agent-b.jsonl")]);
     assert.deepEqual(listSubagentTranscripts(join(dir, "missing.jsonl")), []);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- last line of a message wins; messages straddling two reads ----
+
+test("parseTranscriptChunk counts a message by its LAST line", () => {
+  const result = parseTranscriptChunk(
+    lines(assistant("m1", usage(5, 10, 7, 1)), assistant("m1", usage(5, 40, 7, 1)), assistant("m1", usage(5, 90, 7, 3))),
+    {},
+  );
+  assert.deepEqual(result.usage, { input: 5, output: 90, cacheRead: 7, cacheWrite: 3 });
+  assert.equal(result.lastMessageId, "m1");
+  assert.deepEqual(result.lastMessageUsage, { input: 5, output: 90, cacheRead: 7, cacheWrite: 3 });
+});
+
+test("parseTranscriptChunk with interleaved messages does not crash and the last line per id wins", () => {
+  const result = parseTranscriptChunk(
+    lines(assistant("a", usage(1, 1, 0, 0)), assistant("b", usage(2, 2, 0, 0)), assistant("a", usage(1, 5, 0, 0)), assistant("b", usage(2, 9, 0, 0))),
+    {},
+  );
+  assert.deepEqual(result.usage, { input: 3, output: 14, cacheRead: 0, cacheWrite: 0 });
+  assert.equal(result.lastMessageId, "b");
+});
+
+test("parseTranscriptChunk keeps the last line that has a usage object when a later line of the id has none", () => {
+  const noUsage = JSON.stringify({ type: "assistant", message: { id: "m1" } });
+  const result = parseTranscriptChunk(lines(assistant("m1", usage(1, 8, 0, 0)), noUsage), {});
+  assert.deepEqual(result.usage, { input: 1, output: 8, cacheRead: 0, cacheWrite: 0 });
+});
+
+test("a message continued in the next chunk adds only the difference, per field", () => {
+  const previous = { lastMessageId: "m1", lastMessageUsage: { input: 5, output: 10, cacheRead: 7, cacheWrite: 1 } };
+  const result = parseTranscriptChunk(lines(assistant("m1", usage(5, 30, 7, 4))), previous);
+  assert.deepEqual(result.usage, { input: 0, output: 20, cacheRead: 0, cacheWrite: 3 });
+  assert.equal(result.lastMessageId, "m1");
+  assert.deepEqual(result.lastMessageUsage, { input: 5, output: 30, cacheRead: 7, cacheWrite: 4 });
+});
+
+test("a chunk starting with a different id subtracts nothing", () => {
+  const previous = { lastMessageId: "m1", lastMessageUsage: { input: 5, output: 10, cacheRead: 7, cacheWrite: 1 } };
+  const result = parseTranscriptChunk(lines(assistant("m2", usage(1, 2, 3, 4))), previous);
+  assert.deepEqual(result.usage, { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 });
+  assert.equal(result.lastMessageId, "m2");
+  assert.deepEqual(result.lastMessageUsage, { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 });
+});
+
+test("a stored usage larger than the new one contributes 0, never a negative number", () => {
+  const previous = { lastMessageId: "m1", lastMessageUsage: { input: 9, output: 50, cacheRead: 7, cacheWrite: 1 } };
+  const result = parseTranscriptChunk(lines(assistant("m1", usage(5, 30, 7, 4))), previous);
+  assert.deepEqual(result.usage, { input: 0, output: 0, cacheRead: 0, cacheWrite: 3 });
+  assert.deepEqual(result.lastMessageUsage, { input: 9, output: 50, cacheRead: 7, cacheWrite: 4 });
+});
+
+test("a legacy position (id without counted usage) skips the head lines of that id and stays legacy", () => {
+  const result = parseTranscriptChunk(lines(assistant("m1", usage(5, 30, 7, 4)), assistant("m1", usage(5, 40, 7, 4))), { lastMessageId: "m1" });
+  assert.deepEqual(result.usage, ZERO);
+  assert.equal(result.lastMessageId, "m1");
+  assert.equal(result.lastMessageUsage, undefined);
+
+  const next = parseTranscriptChunk(lines(assistant("m1", usage(5, 50, 7, 4)), assistant("m2", usage(1, 1, 0, 0))), { lastMessageId: "m1" });
+  assert.deepEqual(next.usage, { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 });
+  assert.deepEqual(next.lastMessageUsage, { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 });
+});
+
+test("readTranscriptSince stores the counted usage and adds only the difference when a message straddles two reads", () => {
+  const dir = tmp();
+  try {
+    const file = join(dir, "s.jsonl");
+    writeFileSync(file, lines(assistant("m1", usage(1, 10, 0, 0))));
+    const a = readTranscriptSince(file, { bytes: 0 });
+    assert.deepEqual(a.position.lastMessageUsage, { input: 1, output: 10, cacheRead: 0, cacheWrite: 0 });
+    appendFileSync(file, lines(assistant("m1", usage(1, 25, 0, 0))));
+    const b = readTranscriptSince(file, a.position);
+    assert.deepEqual(b.usage, { input: 0, output: 15, cacheRead: 0, cacheWrite: 0 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function prng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+test("conservation: reading a growing subagent-like transcript in any slices sums to the last line of every message", () => {
+  const dir = tmp();
+  try {
+    const file = join(dir, "s.jsonl");
+    for (let seed = 1; seed <= 60; seed++) {
+      const rnd = prng(seed);
+      const int = (max: number) => Math.floor(rnd() * max);
+      const expected = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      let text = "";
+      const count = 3 + int(12);
+      for (let m = 0; m < count; m++) {
+        let u = { input: int(5), output: int(20), cacheRead: int(50), cacheWrite: int(9) };
+        const repeats = 1 + int(4);
+        for (let r = 0; r < repeats; r++) {
+          if (r > 0) u = { ...u, output: u.output + int(30), cacheWrite: u.cacheWrite + int(3) };
+          text += lines(assistant(`msg-${seed}-${m}`, usage(u.input, u.output, u.cacheRead, u.cacheWrite)));
+          if (rnd() < 0.3) text += `${JSON.stringify({ type: "user", note: "ñ" })}\n`;
+        }
+        expected.input += u.input;
+        expected.output += u.output;
+        expected.cacheRead += u.cacheRead;
+        expected.cacheWrite += u.cacheWrite;
+      }
+      const bytes = Buffer.from(text);
+      const cuts = Array.from({ length: 1 + int(8) }, () => int(bytes.length)).sort((x, y) => x - y);
+      const sum = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+      let position: { bytes: number; lastMessageId?: string; lastMessageUsage?: typeof sum } = { bytes: 0 };
+      for (const cut of [...cuts, bytes.length]) {
+        writeFileSync(file, bytes.subarray(0, cut));
+        const read = readTranscriptSince(file, position);
+        sum.input += read.usage.input;
+        sum.output += read.usage.output;
+        sum.cacheRead += read.usage.cacheRead;
+        sum.cacheWrite += read.usage.cacheWrite;
+        position = read.position;
+      }
+      assert.deepEqual(sum, expected, `cut pattern with seed ${seed}`);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

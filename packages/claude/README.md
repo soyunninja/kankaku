@@ -310,7 +310,11 @@ for the session. kankaku-claude reads it for three things, and nothing else:
   record's `usage.input`, `usage.output`, `usage.cacheRead` and
   `usage.cacheWrite`, which is what makes `cache hit` appear for Claude Code
   records in the `kankaku` CLI. Claude Code writes one message over several
-  lines, so each `message.id` is counted once.
+  adjacent lines whose usage grows (the earlier lines are partial snapshots;
+  subagent transcripts show it clearly), so each `message.id` is counted once,
+  by its last line. When a read ends in the middle of a message, the stored
+  position remembers the message id and what was counted for it, and the
+  next read adds only the growth.
 - **The version.** The `version` of the first line read becomes the record's
   `agentVersion`.
 - **For headless runs, the cost.** See "Headless runs" below.

@@ -158,3 +158,18 @@ test("a malformed transcript or pending field is dropped and the rest of the sta
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("a read position round-trips its counted usage, and a malformed one drops the transcript field", () => {
+  const { dir, file } = tmpFile();
+  try {
+    const usage = { input: 1, output: 2, cacheRead: 3, cacheWrite: 4 };
+    const state: SessionState = { ...baseState(), transcript: { path: "/t.jsonl", offsets: { "/t.jsonl": { bytes: 9, lastMessageId: "m", lastMessageUsage: usage } } } };
+    writeState(file, state);
+    assert.deepEqual(readState(file), state);
+
+    writeFileSync(file, JSON.stringify({ ...state, transcript: { path: "/t.jsonl", offsets: { "/t.jsonl": { bytes: 9, lastMessageUsage: { input: -1 } } } } }));
+    assert.deepEqual(readState(file), baseState());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

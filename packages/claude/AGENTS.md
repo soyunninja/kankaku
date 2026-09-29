@@ -203,6 +203,10 @@ extension has one. Instead:
   record; a settle reads at most `MAX_SETTLE_BYTES` (16 MiB) across all files
   and, beyond it, skips to the end and stamps no tokens. Any failure in this
   path is swallowed: the record is written as it would be without it.
+  A message's lines are adjacent and grow, so a message counts by its LAST
+  line; a position stores `lastMessageId` and `lastMessageUsage` so a message
+  split across two reads adds only its growth (a legacy position without the
+  usage skips that message's head lines instead).
   Handlers that rebuild the state must carry `transcript` and `pending`
   over (`carriedOver`). Tests use synthetic fixtures that copy only the
   shapes; never put real transcript content in a fixture, test or doc.

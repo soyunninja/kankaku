@@ -111,8 +111,20 @@ function isTranscriptState(value: unknown): value is TranscriptState {
   return Object.values(o.offsets).every((position) => {
     if (typeof position !== "object" || position === null) return false;
     const p = position as Record<string, unknown>;
-    return typeof p.bytes === "number" && Number.isFinite(p.bytes) && p.bytes >= 0 && (p.lastMessageId === undefined || typeof p.lastMessageId === "string");
+    return (
+      typeof p.bytes === "number" &&
+      Number.isFinite(p.bytes) &&
+      p.bytes >= 0 &&
+      (p.lastMessageId === undefined || typeof p.lastMessageId === "string") &&
+      (p.lastMessageUsage === undefined || isTokenUsage(p.lastMessageUsage))
+    );
   });
+}
+
+function isTokenUsage(value: unknown): boolean {
+  if (typeof value !== "object" || value === null) return false;
+  const u = value as Record<string, unknown>;
+  return ["input", "output", "cacheRead", "cacheWrite"].every((key) => typeof u[key] === "number" && Number.isFinite(u[key]) && (u[key] as number) >= 0);
 }
 
 function isPendingPrompt(value: unknown): value is PendingPrompt {
