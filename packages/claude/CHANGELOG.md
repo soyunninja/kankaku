@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.2.0 — 2026-09-29
+
+No changes in this package's code; released in lockstep with kankaku 1.2.0.
+
 ## 1.1.0 — 2026-09-29
 
 No changes in this package; released in lockstep with kankaku-pi and
