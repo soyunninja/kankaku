@@ -1,4 +1,3 @@
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { JsonlWorkLog } from "kankaku/hub";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";
@@ -9,7 +8,7 @@ import { runSyncCli } from "./sync-cli.ts";
 import { runDoctor } from "./doctor.ts";
 import { runTaskCli } from "./task-cli.ts";
 import type { PsInfo } from "./claude-pid.ts";
-import { formatTargetLine, resolveClaudeWorkTarget } from "./work-target.ts";
+import { formatTargetLine, formatTaskLine, resolveSessionWorkTarget } from "./work-target.ts";
 
 export interface CliDeps {
   env: NodeJS.ProcessEnv;
@@ -76,9 +75,8 @@ function runStatus(deps: CliDeps): CliResult {
   const kankakuDir = resolveKankakuDir(deps.env.KANKAKU_DIR ?? ".kankaku", deps.cwd);
   const claudeDir = join(kankakuDir, "claude");
   const files = listStateFiles(claudeDir);
-  const targetLine = formatTargetLine(
-    resolveClaudeWorkTarget({ cwd: deps.cwd, kankakuDir, homeDir: deps.env.HOME || homedir(), env: deps.env }),
-  );
+  const resolved = resolveSessionWorkTarget(deps);
+  const targetLine = `${formatTargetLine(resolved)}\n${formatTaskLine(resolved)}`;
   if (files.length === 0) {
     return { stdout: `${targetLine}\nNo active sessions.\n`, exitCode: 0 };
   }

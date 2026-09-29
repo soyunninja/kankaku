@@ -63,6 +63,8 @@ export function buildClaudeRecord(
           clientName: target.clientName,
           ...(target.projectId !== undefined ? { projectId: target.projectId } : {}),
           ...(target.projectName !== undefined ? { projectName: target.projectName } : {}),
+          ...(target.hubTaskId !== undefined ? { hubTaskId: target.hubTaskId } : {}),
+          ...(target.hubTaskId !== undefined && target.hubTaskTitle !== undefined ? { hubTaskTitle: target.hubTaskTitle } : {}),
         }
       : {}),
   };

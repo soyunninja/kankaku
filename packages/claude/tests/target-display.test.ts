@@ -30,7 +30,7 @@ test("status prints the resolved target and its source, then the sessions", asyn
   try {
     const result = await runCli(["status"], f.deps);
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, "target: Acme Corp · Web (source: repo_paths)\nNo active sessions.\n");
+    assert.equal(result.stdout, "target: Acme Corp · Web (source: repo_paths)\ntask: none\nNo active sessions.\n");
   } finally { f.cleanup(); }
 });
 
@@ -38,7 +38,7 @@ test("status prints 'target: none' with the reason when there is no cache", asyn
   const f = fixture(false);
   try {
     const result = await runCli(["status"], f.deps);
-    assert.equal(result.stdout, "target: none (no catalog cache)\nNo active sessions.\n");
+    assert.equal(result.stdout, "target: none (no catalog cache)\ntask: none\nNo active sessions.\n");
   } finally { f.cleanup(); }
 });
 

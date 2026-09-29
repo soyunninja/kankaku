@@ -12,6 +12,7 @@ export interface ResolvedPaths {
   claudeDir: string;
   eventsFile: string;
   stateFile: string;
+  targetFile: string;
 }
 
 /**
@@ -33,6 +34,7 @@ export function resolvePaths(input: ResolvePathsInput): ResolvedPaths {
     claudeDir,
     eventsFile: join(claudeDir, `${input.sessionId}.events.jsonl`),
     stateFile: join(claudeDir, `${input.sessionId}.state.json`),
+    targetFile: resolveTargetFile(claudeDir, input.sessionId),
   };
 }
 

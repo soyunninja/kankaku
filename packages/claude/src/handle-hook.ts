@@ -169,7 +169,7 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   const core = replayPrompt(last, { cost: costDelta });
   if (core) {
     const assignment = await assignmentResolver(paths, deps);
-    const record = buildClaudeRecord(core, state, sessionId, cost?.model, assignment(state.cwd));
+    const record = buildClaudeRecord(core, state, sessionId, cost?.model, assignment(state.cwd, sessionId));
     const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
     log.append(record);
   }
@@ -242,7 +242,7 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
       if (core) {
         const model = readCost(deps.env, sessionId)?.model;
         const assignment = await assignmentResolver(paths, deps);
-        const record = buildClaudeRecord(core, state, sessionId, model, assignment(state.cwd));
+        const record = buildClaudeRecord(core, state, sessionId, model, assignment(state.cwd, sessionId));
         const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
         log.append(record);
       }
@@ -264,18 +264,25 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
 async function assignmentResolver(
   paths: ResolvedPaths,
   deps: HandleHookDeps,
-): Promise<(cwd: string) => RecordAssignment> {
+): Promise<(cwd: string, sessionId: string) => RecordAssignment> {
   try {
     const { resolveClaudeWorkTarget } = await import("./work-target.ts");
     const { homedir } = await import("node:os");
+    const { readSessionTarget } = await import("./session-target-store.ts");
+    const { resolveTargetFile } = await import("./paths.ts");
     const resolve = deps.resolveTarget ?? resolveClaudeWorkTarget;
-    return (cwd) => {
+    return (cwd, sessionId) => {
       try {
+        // The session-only task link (`/kankaku:task`); heavy hooks only.
+        const stored = readSessionTarget(resolveTargetFile(paths.claudeDir, sessionId));
         const { target, legacyClient } = resolve({
           cwd,
           kankakuDir: paths.kankakuDir,
           homeDir: deps.env.HOME || homedir(),
           env: deps.env,
+          ...(stored?.hubTaskId !== undefined
+            ? { taskLink: { hubTaskId: stored.hubTaskId, ...(stored.hubTaskTitle !== undefined ? { hubTaskTitle: stored.hubTaskTitle } : {}) } }
+            : {}),
         });
         return {
           ...(target !== undefined ? { target } : {}),
@@ -304,7 +311,7 @@ async function syncHeavy(trigger: SyncTrigger, cwd: string, deps: HandleHookDeps
 }
 
 function deleteSessionFiles(paths: ResolvedPaths): void {
-  for (const file of [paths.stateFile, paths.eventsFile]) {
+  for (const file of [paths.stateFile, paths.eventsFile, paths.targetFile]) {
     try {
       unlinkSync(file);
     } catch {

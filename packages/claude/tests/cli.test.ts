@@ -102,7 +102,7 @@ test("runCli status reports no active sessions when the claude directory is empt
   try {
     const result = await runCli(["status"], deps);
     assert.equal(result.exitCode, 0);
-    assert.equal(result.stdout, "target: none (no catalog cache)\nNo active sessions.\n");
+    assert.equal(result.stdout, "target: none (no catalog cache)\ntask: none\nNo active sessions.\n");
   } finally {
     cleanup({ dir, homeDir });
   }

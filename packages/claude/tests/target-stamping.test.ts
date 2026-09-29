@@ -8,6 +8,7 @@ import { handleHook, type HandleHookDeps } from "../src/handle-hook.ts";
 import { recoverStaleSessions } from "../src/inflight-recovery.ts";
 import { writeState } from "../src/session-state.ts";
 import { appendEvent } from "../src/event-log.ts";
+import { writeSessionTarget } from "../src/session-target-store.ts";
 import type { ClaudeWorkTarget } from "../src/work-target.ts";
 
 const HUB = "https://hub.example.test";
@@ -153,8 +154,11 @@ test("the light hook path never resolves a target; only Stop does", async () => 
   const d = makeDirs();
   try {
     let calls = 0;
-    const { deps, set } = makeDeps(d, { resolveTarget: (): ClaudeWorkTarget => { calls++; return {}; } });
+    const links: unknown[] = [];
+    const { deps, set } = makeDeps(d, { resolveTarget: (input): ClaudeWorkTarget => { calls++; links.push(input.taskLink); return {}; } });
     const cwd = "/work/acme/web";
+    // A session link on disk: only the heavy path may read it.
+    writeSessionTarget(join(d.kankakuDir, "claude", "s1.target.json"), { hubTaskId: "t1", hubTaskTitle: "Task", lastList: [] });
     set(0);
     await handleHook(input(cwd, { hook_event_name: "UserPromptSubmit", prompt: "work" }), deps);
     await handleHook(input(cwd, { hook_event_name: "PreToolUse", tool_use_id: "t1", tool_name: "Read", tool_input: {} }), deps);
@@ -166,6 +170,7 @@ test("the light hook path never resolves a target; only Stop does", async () => 
     set(4000);
     await handleHook(input(cwd, { hook_event_name: "Stop", stop_hook_active: false }), deps);
     assert.equal(calls, 1);
+    assert.deepEqual(links, [{ hubTaskId: "t1", hubTaskTitle: "Task" }]);
   } finally { cleanup(d); }
 });
 

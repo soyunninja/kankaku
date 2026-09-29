@@ -1,7 +1,7 @@
 import { unlinkSync } from "node:fs";
 import { basename } from "node:path";
 import type { WorkRecord } from "kankaku/domain";
-import { listStateFiles } from "./paths.ts";
+import { listStateFiles, resolveTargetFile } from "./paths.ts";
 import { readState } from "./session-state.ts";
 import { readEventLog } from "./event-log.ts";
 import { splitPrompts, replayPrompt } from "./replay.ts";
@@ -16,8 +16,8 @@ export interface RecoverStaleSessionsInput {
   /** Fallback close time, used only when a prompt has no usable event timestamp. */
   now: number;
   env: CostEnv;
-  /** Target and legacy label for a recovered session, looked up by that session's own cwd. Omitted: unassigned. */
-  resolveAssignment?: (cwd: string) => RecordAssignment;
+  /** Target and legacy label for a recovered session, looked up by that session's own cwd and session id (its task link). Omitted: unassigned. */
+  resolveAssignment?: (cwd: string, sessionId: string) => RecordAssignment;
 }
 
 /**
@@ -41,10 +41,12 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
 
     const state = readState(stateFile);
     const eventsFile = stateFile.replace(/\.state\.json$/, ".events.jsonl");
+    const targetFile = resolveTargetFile(input.claudeDir, sessionId);
 
     if (!state) {
       safeUnlink(stateFile);
       safeUnlink(eventsFile);
+      safeUnlink(targetFile);
       continue;
     }
 
@@ -64,13 +66,14 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
         const core = replayPrompt(last, { settledAt });
         if (core) {
           const model = readCost(input.env, sessionId)?.model;
-          records.push(buildClaudeRecord(core, state, sessionId, model, input.resolveAssignment?.(state.cwd)));
+          records.push(buildClaudeRecord(core, state, sessionId, model, input.resolveAssignment?.(state.cwd, sessionId)));
         }
       }
     }
 
     safeUnlink(stateFile);
     safeUnlink(eventsFile);
+    safeUnlink(targetFile);
     deleteCost(input.env, sessionId);
   }
 

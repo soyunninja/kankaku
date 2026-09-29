@@ -6,7 +6,7 @@ import type { CliDeps } from "./cli-core.ts";
 import { costDir } from "./cost-store.ts";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";
 import { readState } from "./session-state.ts";
-import { formatTargetLine, resolveClaudeWorkTarget } from "./work-target.ts";
+import { formatTargetLine, formatTaskLine, resolveSessionWorkTarget } from "./work-target.ts";
 
 function metadata(file: string): Record<string, unknown> | undefined {
   try {
@@ -25,6 +25,11 @@ function label(value: unknown): string {
 function syncWindowHours(env: NodeJS.ProcessEnv): number {
   const hours = Number(env.KANKAKU_SYNC_WINDOW_HOURS);
   return env.KANKAKU_SYNC_WINDOW_HOURS && Number.isFinite(hours) && hours > 0 ? hours : 24;
+}
+
+function workTargetLines(deps: CliDeps): string[] {
+  const resolved = resolveSessionWorkTarget(deps);
+  return [formatTargetLine(resolved), formatTaskLine(resolved)];
 }
 
 /** Read-only, local diagnostic. No sync runner or network client is reachable from this path. */
@@ -56,7 +61,7 @@ export function runDoctor(deps: CliDeps): string {
   const target = hub.credentials?.url ?? store.read()?.target ?? "";
   const { state, pending, staleOutsideWindow } = computeSyncStatus(log, store, target, syncWindowHours(deps.env));
   const hubState = hub.invalidReason ? "invalid URL" : hub.credentials ? "configured" : "unconfigured";
-  const commands = ["report", "status", "setup", "sync", "sync-status", "sync-all", "doctor"];
+  const commands = ["report", "status", "setup", "sync", "sync-status", "sync-all", "doctor", "task"];
   const present = commands.filter((name) => existsSync(join(deps.pluginRoot, "commands", `${name}.md`))).length;
   const actions = ["/kankaku:status", "/kankaku:sync-status"];
   if (!costsVisible) actions.unshift("/kankaku:setup (configure the statusline for cost)");
@@ -79,7 +84,7 @@ export function runDoctor(deps: CliDeps): string {
     `alive: ${alive}; dead: ${dead}; open prompts: ${open}; unreadable: ${unreadable}`,
     `cost files visible: ${costsVisible ? "yes" : "no"} (current HOME)`,
     "", "## Work target",
-    formatTargetLine(resolveClaudeWorkTarget({ cwd: deps.cwd, kankakuDir: dir, homeDir: deps.env.HOME || homedir(), env: deps.env })),
+    ...workTargetLines(deps),
     "", "## Hub / sync",
     `hub: ${hubState}`,
     `pending: ${pending}`,
