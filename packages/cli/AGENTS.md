@@ -73,7 +73,7 @@ formatting or sync-planning logic.
   — the Hub step's `local` mode asks for `ownerEmail`/`ownerPassword`
   (also via `setHubField`, `HubField` extended with those two keys) since
   installing locally now runs the real `hub-manager/install.ts#installHub`
-  at the fixed `DEFAULT_HUB_PORT` (8090), not a checkout path; `next`/`back` validate and step
+  on the port the Hub step's `port` field holds (`WizardHubState.port`, digits only 1024-65535, `parseHubPort`; prefilled with the first free port from `DEFAULT_HUB_PORT` (8090) upwards or an existing install's own `WizardHubFacts.localPort`; `setHubPortInUse` flags an occupied one), not a checkout path; a `WizardAction.note` is an extra Review line — `install-local-hub` says whether the sync credentials move to the local hub or stay on the existing one; `next`/`back` validate and step
   through — skipping the Claude step when it isn't needed (`claudeStepNeeded`,
   exported so `ui/setup/wizard-screen.tsx` can number only the steps a run
   will actually show), and never advancing out of `apply` until every
@@ -103,7 +103,7 @@ formatting or sync-planning logic.
   segments joined with `/`; never throws on an unreadable or missing
   directory), `worklog-reader.ts` (kankaku's `JsonlWorkLog`),
   `app-info.ts` (`readOwnVersion`, this package's own version for the
-  header bar), and `hub.ts` — credentials (`resolveHub`, wrapping kankaku's
+  header bar), `package-versions.ts` (`readCarriedVersions`, the versions of `kankaku-pi`/`kankaku-claude`/`kankaku-hub` for `kankaku --version`, text from `domain/version-info.ts`), and `hub.ts` — credentials (`resolveHub`, wrapping kankaku's
   `resolveHubCredentials`), the disk-backed catalog (`createCatalog`/
   `refreshCatalog`, kankaku's `CachedCatalog`), no-network status
   (`computeProjectSyncStatus`, kankaku's `computeSyncStatus`) and a
@@ -170,7 +170,7 @@ formatting or sync-planning logic.
   owner still on this machine; `stopProcess` — SIGTERM with a bounded
   poll, SIGKILL as a last resort, always removes the pid file;
   `waitForHealth` polls a URL until it responds ok or times out); and
-  `accounts.ts` (`upsertSuperuser` shells `pocketbase superuser upsert`
+  `credentials.ts` (`readServiceAccount`/`writeServiceAccount` — the local hub's service account in `service.json`, 0600, always written by install — and `useLocalHub`, `kankaku hub use`: points `~/.kankaku/credentials.json` at it, one-time `.bak`; install itself writes `credentials.json` only when none exists or it already points at the local hub, decided by the pure `shouldWriteCredentials`); `port-probe.ts` (`isPortFree`/`firstFreePort` — bind `127.0.0.1:<port>` through an injectable `PortBinder`, `HubManagerDeps.portBinder`; only one test uses the real binder); and `accounts.ts` (`upsertSuperuser` shells `pocketbase superuser upsert`
   through a `ScriptRunner`, offline, no running server needed; `createUser`
   authenticates as that superuser over REST and idempotently creates an
   owner/service application user). `install.ts` orchestrates all of the
@@ -256,7 +256,7 @@ formatting or sync-planning logic.
 - `src/cli.tsx` only wires argv parsing to config, discovery, the domain
   model and rendering (`today`/`tasks`/`catalog [refresh]`/
   `sync [status|all] [--project <dir>]`/`setup [--yes] [--dry-run]
-  [--from-checkout <dir>]`/`doctor`/`hub install|start|stop|status|upgrade|logs`,
+  [--from-checkout <dir>]`/`doctor`/`hub install|use|start|stop|status|upgrade|logs`/`--version`,
   plus the interactive default — the `today` subcommand name is unrelated
   to the Dashboard screen's own name and stays as-is).
   `loadDashboard` builds the Dashboard screen's model from the same

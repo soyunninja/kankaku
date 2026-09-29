@@ -3,6 +3,47 @@
 All notable changes to kankaku (formerly kankaku-tui). The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- `kankaku hub use` points `~/.kankaku/credentials.json` at the local hub
+  (one-time `.bak`, mode 0600) and prints `sync now points at <local url>
+  (was <previous url>)`.
+- `kankaku hub install` stores the local hub's service account in
+  `~/.kankaku/hub/service.json` (0600). Re-running it on an install made by
+  an older version writes that file when the service password is still
+  known, and says so plainly when it is not.
+- `kankaku hub status` ends with where this machine syncs: `sync: local
+  hub`, `sync: <url>` or `sync: not configured`.
+- `kankaku hub install` checks the port by binding `127.0.0.1:<port>`
+  before anything else. Without `--port` it keeps an existing install's
+  port, uses 8090 when free and otherwise fails with `port 8090 is already
+  in use — try: kankaku hub install --port <first free>`.
+- The setup wizard's local install has a `port` field, prefilled with the
+  first free port from 8090 upwards and validated inline (`port <N> is in
+  use`); its Review step says whether the sync credentials move to the
+  local hub or stay where they are.
+- `kankaku --version`, `-v` and `version` print the version and the
+  versions of the packages kankaku carries.
+
+### Changed
+
+- A taken `--port` now also names the first free port to try, and an
+  invalid `--port` is a usage error instead of falling back to the
+  default.
+
+### Fixed
+
+- `kankaku hub install` (and the wizard's local install) overwrote
+  `~/.kankaku/credentials.json` with the local hub's service account even
+  when it pointed at another hub, silently moving every agent on the
+  machine to the local hub. It now writes `credentials.json` only when none
+  exists or it already points at the local hub, and otherwise leaves it
+  untouched and reports how to switch (`kankaku hub use`).
+- The wizard's local install could only use port 8090, so it failed on a
+  machine where another process holds it.
+
 ## 1.0.2 — 2026-09-29
 
 No changes in this package; released in lockstep with kankaku-claude 1.0.2.

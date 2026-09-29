@@ -81,14 +81,16 @@ The wizard's steps, `enter` to advance and `esc` to go back throughout
    below.
 2. **Hub** — `use an existing hub` (URL, email, masked password, a `c`
    inline health check, reusing the current credentials as the default),
-   `install locally`, or `skip`. Installing locally asks only for the
-   owner's email and password and then runs the same installer as
-   `kankaku hub install` (see "Local hub" below): no `kankaku-hub`
-   checkout is needed, and the wizard writes the local hub's service
-   account as this machine's hub credentials. The wizard always uses the
-   default port; if another process already holds it the step fails with
-   the port-in-use message, and `kankaku hub install --port <N>` is the
-   way to pick another one.
+   `install locally`, or `skip`. Installing locally asks for the owner's
+   email and password and a `port` (digits only, 1024-65535), then runs
+   the same installer as `kankaku hub install` (see "Local hub" below): no
+   `kankaku-hub` checkout is needed. The port field starts at the first
+   free port from 8090 upwards (or at the port of an existing install)
+   and rejects a port that is in use inline (`port <N> is in use`). The
+   Review step says what happens to the sync credentials: either
+   `sync credentials → the local hub`, or `sync credentials stay on <url>
+   (switch later with kankaku hub use)` when this machine already syncs to
+   another hub.
 3. **Roots** — the comma-separated project roots, defaulting to the
    current `tui.json` (or the parent of the current directory the first
    time). See "Configuration" below for how deep each root is searched.
@@ -265,9 +267,18 @@ sets up and runs your own hub on this machine, under `~/.kankaku/hub/`:
 - `accounts.json` (owner-only, `0600`) — the PocketBase superuser email
   and generated password, and the owner account's email. The owner logs
   into the hub's own web admin UI with that owner account.
-- `~/.kankaku/credentials.json` — the generated `service` account
-  (`kankaku-sync@kankaku.local`) this app and kankaku's own sync already
-  read, exactly like a remote hub's credentials.
+- `service.json` (owner-only, `0600`) — the generated `service` account
+  (`kankaku-sync@kankaku.local`) as `{ url, email, password }`. Install
+  always writes it.
+
+Install never repoints where this machine syncs on its own.
+`~/.kankaku/credentials.json` (the file this app and kankaku's own sync
+read) is written by install only when it does not exist yet, or when its
+`url` already is this local hub's (same host and port). When it points at
+another hub it is left untouched, and the install report says so with a
+`sync credentials` step: `this machine syncs to <url>; run 'kankaku hub
+use' to switch to the local hub`. `kankaku hub use` is the explicit
+switch.
 
 Commands (macOS and Linux only — PocketBase ships no other build):
 
@@ -275,15 +286,33 @@ Commands (macOS and Linux only — PocketBase ships no other build):
   — installs (or, run again, verifies) the hub and leaves it running. On
   a real terminal, a missing owner email/password is prompted for
   (masked); without a TTY, both flags are required. Idempotent: re-running
-  with everything already in place changes nothing. If another process
-  already answers on the target port, `install`/`start`/`upgrade` refuse
-  with `port <N> is already in use by another process — pass --port <N>
-  or stop it` instead of provisioning accounts against it; pass a
-  different `--port` or free the port and retry.
+  with everything already in place changes nothing, and an existing
+  install keeps its recorded port. Without `--port`, a fresh install uses
+  8090 when it is free; when it is not, install fails (exit 1) with `port
+  8090 is already in use — try: kankaku hub install --port <first free>`
+  and never picks a port silently. A `--port` that is taken fails the same
+  way, with the existing message plus the suggestion; a `--port` that is
+  not a whole number between 1 and 65535 is a usage error. The check binds
+  `127.0.0.1:<port>` before anything is downloaded or created, and the
+  pre-spawn health check still runs after it. `start` and `upgrade` refuse
+  with `port <N> is already in use by another process — pass --port <N> or
+  stop it` when a foreign process holds the recorded port. Re-running
+  install on a hub made by an older version, which has no `service.json`,
+  writes it when the service password is still known (it is in
+  `credentials.json`); otherwise it says the password is not recoverable
+  and does not invent one.
+- `kankaku hub use` — points `~/.kankaku/credentials.json` at the local
+  hub, from `service.json` (the previous file is kept once as
+  `credentials.json.bak`, mode `0600`) and prints `sync now points at
+  <local url> (was <previous url>)`. Running it again reports `unchanged`.
+  It fails (exit 1) when no local hub is installed or `service.json` is
+  missing.
 - `kankaku hub start` / `kankaku hub stop` — start or stop the server
   process; `stop` is a no-op when it isn't running.
 - `kankaku hub status` — `local hub: running 0.2.0 (PocketBase 0.40.4) at
-  http://127.0.0.1:8090 · pb_data 1.2 MB`, `stopped`, or `not installed`.
+  http://127.0.0.1:8090 · pb_data 1.2 MB`, `stopped`, or `not installed`,
+  followed by where this machine's sync points: `sync: local hub`,
+  `sync: <other url>` or `sync: not configured`.
 - `kankaku hub upgrade` — copies a fresh `app/<version>/` from the
   currently installed `kankaku-hub` package, downloads a new PocketBase
   binary only if that version changed, and restarts — `pb_data` is never
@@ -318,8 +347,12 @@ developers via `kankaku setup --from-checkout <dir>`.
   checkout-based local hub install, see "Local hub" above.
 - `kankaku doctor` — the same read-only report `kankaku setup` ends with,
   without prompting or writing anything.
-- `kankaku hub install|start|stop|status|upgrade|logs` — the local hub's
-  lifecycle; see "Local hub" above.
+- `kankaku hub install|use|start|stop|status|upgrade|logs` — the local
+  hub's lifecycle; see "Local hub" above.
+- `kankaku --version`, `kankaku -v` or `kankaku version` — prints `kankaku
+  <version>` and, indented, the version of each package it carries
+  (`kankaku-pi`, `kankaku-claude`, `kankaku-hub`), or `not found` for one
+  that cannot be resolved; exit 0.
 
 `--roots` (on `today`/`tasks`) overrides the configured roots for that run.
 

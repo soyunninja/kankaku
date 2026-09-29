@@ -3,6 +3,15 @@
 All notable changes to kankaku-pi (formerly kankaku). The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Changed
+
+- Dev-only: `@earendil-works/pi-coding-agent` and `@earendil-works/pi-tui`
+  are now 0.87.1 (were 0.85.1), matching the pi version kankaku runs on.
+  Clears the two moderate undici advisories `npm audit` reported through
+  the dev dependency. No source change; the published package is unchanged.
+
 ## 1.0.2 — 2026-09-29
 
 No changes in this package; released in lockstep with kankaku-claude and
