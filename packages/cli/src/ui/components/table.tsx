@@ -17,6 +17,8 @@ export interface TableProps<T> {
   /** Cell text for `column.key` on `row`. Kept separate from `columns` so callers can share one column layout across differently-shaped rows. */
   cell: (row: T, key: string) => string;
   selectedIndex?: number;
+  /** Text colour for one row (a theme colour), or `undefined` for the default; asked only for the rows actually rendered. */
+  rowColor?: (row: T) => string | undefined;
   emptyText?: string;
   /**
    * Caps the number of rendered body lines (data rows plus any indicator
@@ -66,7 +68,7 @@ function rowText<T>(columns: TableColumn<T>[], values: (column: TableColumn<T>) 
  * than its column truncates with `…`; `emptyText` renders instead of the
  * body when `rows` is empty.
  */
-export function Table<T>({ columns, rows, rowKey, cell, selectedIndex, emptyText = "no rows", maxRows }: TableProps<T>) {
+export function Table<T>({ columns, rows, rowKey, cell, selectedIndex, rowColor, emptyText = "no rows", maxRows }: TableProps<T>) {
   const theme = useTheme();
   const startRef = useRef(0);
 
@@ -90,7 +92,7 @@ export function Table<T>({ columns, rows, rowKey, cell, selectedIndex, emptyText
             const actualIndex = (window?.start ?? 0) + index;
             const selected = actualIndex === selectedIndex;
             return (
-              <Text key={rowKey(row)} backgroundColor={selected ? theme.selectionBg : undefined}>
+              <Text key={rowKey(row)} color={rowColor?.(row)} backgroundColor={selected ? theme.selectionBg : undefined}>
                 {`${selected ? "› " : "  "}${rowText(columns, (column) => cell(row, column.key))}`}
               </Text>
             );

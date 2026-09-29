@@ -50,6 +50,8 @@ export interface NavState {
   focus: Focus;
   /** Restricts the Tasks screen to one project's rows; unset shows every project. */
   projectFilter?: string;
+  /** Set while the active screen has a modal flow open (Tasks' reassignment picker): the app-level `esc`/`←`/`Tab` and screen-switch keys then stay out of its way. Absent otherwise. */
+  modal?: boolean;
 }
 
 export const INITIAL_NAV_STATE: NavState = { screen: "dashboard", focus: "sidebar" };
@@ -68,6 +70,14 @@ export function openProjectInTasks(state: NavState, project: string): NavState {
 export function clearProjectFilter(state: NavState): NavState {
   const { projectFilter, ...rest } = state;
   void projectFilter;
+  return rest;
+}
+
+/** Mark or clear the active screen's modal flow; clearing removes the key, so a state without a modal equals the plain one. */
+export function setModal(state: NavState, open: boolean): NavState {
+  if (open) return { ...state, modal: true };
+  const { modal, ...rest } = state;
+  void modal;
   return rest;
 }
 

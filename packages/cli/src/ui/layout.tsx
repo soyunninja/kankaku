@@ -49,6 +49,8 @@ export interface LayoutProps {
   activeId: string;
   sidebarStats: string[];
   keyHints: KeyHint[];
+  /** A short status message shown on the footer line in place of the key hints (e.g. "asking the hub…"); the line stays one row either way. */
+  footerNote?: string;
   /** Which zone has focus (see `domain/nav-model.ts`'s "Focus zones"); colours the sidebar's active-item marker. Defaults to `"sidebar"`. */
   focus?: Focus;
   children: (args: LayoutRenderArgs) => ReactNode;
@@ -83,7 +85,8 @@ function TabStrip({ items, activeId }: { items: SidebarItem[]; activeId: string 
  * own panels and scrolling lists to the actual `mainWidth`/`mainHeight`
  * in whichever mode is active.
  */
-export function Layout({ columns, rows, headerLeft, headerRight, sidebarItems, activeId, sidebarStats, keyHints, focus = "sidebar", children }: LayoutProps) {
+export function Layout({ columns, rows, headerLeft, headerRight, sidebarItems, activeId, sidebarStats, keyHints, footerNote, focus = "sidebar", children }: LayoutProps) {
+  const theme = useTheme();
   const { stdout } = useStdout();
   const width = columns ?? stdout?.columns ?? 80;
   const height = rows ?? stdout?.rows ?? DEFAULT_ROWS;
@@ -126,7 +129,7 @@ export function Layout({ columns, rows, headerLeft, headerRight, sidebarItems, a
           </Box>
         </Box>
       )}
-      <KeyHints hints={keyHints} />
+      {footerNote !== undefined ? <Text color={theme.warn}>{footerNote}</Text> : <KeyHints hints={keyHints} />}
     </Box>
   );
 }

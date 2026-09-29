@@ -126,3 +126,23 @@ test("shows only '↑ N more' when the selection is near the bottom", () => {
   assert.equal(lines.some((line) => line.includes("↓") && line.includes("more")), false);
   assert.equal(lines.some((line) => line.includes("project-39")), true);
 });
+
+test("asks rowColor for each visible row and never for a row outside the window", () => {
+  const asked: string[] = [];
+  const many: Row[] = Array.from({ length: 10 }, (_, index) => ({ id: `r${index}`, name: `n${index}`, work: "1m" }));
+  render(
+    <Table
+      columns={columns}
+      rows={many}
+      rowKey={(row: Row) => row.id}
+      cell={(row: Row, key: string) => (row as unknown as Record<string, string>)[key] ?? ""}
+      rowColor={(row: Row) => {
+        asked.push(row.id);
+        return undefined;
+      }}
+      selectedIndex={0}
+      maxRows={4}
+    />,
+  );
+  assert.deepEqual([...new Set(asked)], ["r0", "r1", "r2"]);
+});

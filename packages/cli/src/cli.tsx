@@ -12,6 +12,8 @@ import type { HubCredentials } from "kankaku-pi/hub";
 import { readTuiConfig } from "./adapters/tui-config.ts";
 import { discoverProjects } from "./adapters/project-discovery.ts";
 import { readProjectRecords } from "./adapters/worklog-reader.ts";
+import { createReassignActions } from "./adapters/hub-reassign.ts";
+import type { ReassignActions } from "./ports/reassign-actions.ts";
 import { computeProjectSyncStatus, createCatalog, refreshCatalog as refreshCatalogAdapter, resolveHub, syncProject } from "./adapters/hub.ts";
 import { readOwnVersion } from "./adapters/app-info.ts";
 import { readCarriedVersions } from "./adapters/package-versions.ts";
@@ -918,6 +920,22 @@ function catalogScreenDeps(deps: CliDeps): Pick<CatalogScreenProps, "load" | "re
   };
 }
 
+/**
+ * Build the Tasks screen's reassignment deps for the interactive app; used
+ * only by `renderApp`. Without hub credentials, `prepare` reports why (the
+ * screen shows it in the footer and opens nothing) and `apply` is never
+ * reached.
+ */
+export function reassignScreenDeps(deps: CliDeps): ReassignActions {
+  const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  if (!hub.ok) {
+    const reason = hub.reason;
+    return { prepare: async () => ({ ok: false, message: reason }), apply: async () => [] };
+  }
+  const { now, fetch: fetchOverride } = envDeps(deps);
+  return createReassignActions(hub.credentials, { homeDir: () => deps.homeDir, now, ...(fetchOverride ? { fetch: fetchOverride } : {}) });
+}
+
 /** Build the Sync screen's `load`/`syncOne`/`syncAll` deps for the interactive app; used only by `renderApp`. */
 function syncScreenDeps(deps: CliDeps, roots: string[]): Pick<SyncScreenProps, "load" | "syncOne" | "syncAll"> {
   const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
@@ -1066,6 +1084,7 @@ if (isMain) {
             loadTasks={(options) => loadTasks(roots, options)}
             catalog={catalogScreenDeps(realDeps)}
             sync={syncScreenDeps(realDeps, roots)}
+            reassign={reassignScreenDeps(realDeps)}
             dashboardActions={dashboardActionsDeps(realDeps, roots)}
             wizard={{
               facts: gatherWizardFacts(realDeps, options?.claudePluginDir ?? process.env["KANKAKU_CLAUDE_PLUGIN_DIR"]),

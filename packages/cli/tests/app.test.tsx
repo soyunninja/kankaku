@@ -9,6 +9,7 @@ import type { SyncModel } from "../src/ui/sync-screen.tsx";
 import type { DashboardActions } from "../src/ui/dashboard-screen.tsx";
 import type { WizardActions } from "../src/ui/setup/wizard-screen.tsx";
 import type { WizardFacts } from "../src/domain/setup-wizard.ts";
+import type { ReassignActions } from "../src/ports/reassign-actions.ts";
 
 function dashboardModel(): DashboardModel {
   return {
@@ -266,4 +267,100 @@ test("while the wizard is active, the app's own global keys (q, digits, arrows) 
   stdin.write("1"); // would switch to Dashboard on the normal shell
   await nextTick();
   assert.equal((lastFrame() ?? "").includes("Setup · Agents"), true);
+});
+
+function reassignActions(): ReassignActions & { applied: number } {
+  const actions = {
+    applied: 0,
+    async prepare(taskIds: string[]) {
+      return {
+        ok: true as const,
+        catalog: {
+          clients: [
+            { id: "c-acme", name: "Acme", code: "ACM", active: true },
+            { id: "c-sin", name: "Sin determinar", code: "SIN", active: true, unassigned: true },
+          ],
+          projects: [],
+          tasks: [],
+        },
+        rows: new Map(taskIds.map((id) => [id, { rowId: `row-${id}`, taskId: id, clientId: "c-sin", projectId: "", hubTaskId: "" }])),
+      };
+    },
+    async apply(plan: { lines: Array<{ kind: string; taskId: string }> }) {
+      actions.applied += 1;
+      return plan.lines.filter((line) => line.kind === "reassign").map((line) => ({ taskId: line.taskId, status: "reassigned" as const }));
+    },
+  };
+  return actions as unknown as ReassignActions & { applied: number };
+}
+
+function tasksProps(actions: ReassignActions) {
+  const row = { id: "t1", time: "09:00", project: "kankaku", wallMs: 1, workMs: 1, waitingMs: 0, cost: 0, subagentCount: 0, prompt: "do it", fullPrompt: "do it" };
+  return { ...appProps(), loadTasks: () => ({ rows: [row] }), reassign: actions };
+}
+
+test("while the reassignment picker is open, esc, left, tab and 1-4 stay inside it and focus stays on main", async () => {
+  const { lastFrame, stdin } = render(<App {...tasksProps(reassignActions())} />);
+  stdin.write("2"); // Tasks
+  await nextTick();
+  stdin.write("\r"); // focus main
+  await nextTick();
+  stdin.write("a"); // picker
+  await nextTick();
+  assert.match(lastFrame() ?? "", /Reassign · Client/);
+
+  stdin.write("\t");
+  await nextTick();
+  assert.match(lastFrame() ?? "", /Reassign · Client/, "tab must not move focus out of the picker");
+  stdin.write("3");
+  await nextTick();
+  assert.match(lastFrame() ?? "", /Reassign · Client/, "1-4 must not leave the screen while the picker is open");
+  assert.match(lastFrame() ?? "", /› Tasks/);
+
+  stdin.write("\r"); // Acme -> project step
+  await nextTick();
+  stdin.write("\u001B"); // esc: back to client, still open and focused
+  await nextTick();
+  assert.match(lastFrame() ?? "", /Reassign · Client/);
+
+  stdin.write("\u001B"); // esc at the first step closes the picker only
+  await nextTick();
+  let frame = lastFrame() ?? "";
+  assert.doesNotMatch(frame, /Reassign · /);
+  assert.match(frame, /← menu/, "focus is still on the main zone after the picker closed");
+
+  stdin.write("\u001B"); // a further esc now returns to the sidebar as usual
+  await nextTick();
+  frame = lastFrame() ?? "";
+  assert.match(frame, /↑↓ choose/);
+});
+
+test("after the picker closes, 1-4 switch screens again and a reopened Tasks screen starts closed", async () => {
+  const { lastFrame, stdin } = render(<App {...tasksProps(reassignActions())} />);
+  stdin.write("2");
+  await nextTick();
+  stdin.write("\r");
+  await nextTick();
+  stdin.write("a");
+  await nextTick();
+  stdin.write("\u001B");
+  await nextTick();
+  stdin.write("3");
+  await nextTick();
+  assert.match(lastFrame() ?? "", /› Catalog/);
+});
+
+test("q still quits while the picker is open", async () => {
+  const { lastFrame, stdin } = render(<App {...tasksProps(reassignActions())} />);
+  stdin.write("2");
+  await nextTick();
+  stdin.write("\r");
+  await nextTick();
+  stdin.write("a");
+  await nextTick();
+  assert.match(lastFrame() ?? "", /Reassign · Client/);
+  stdin.write("q");
+  await nextTick();
+  // Ink unmounts on exit and clears the frame.
+  assert.equal((lastFrame() ?? "").trim(), "");
 });

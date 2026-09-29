@@ -38,7 +38,7 @@ test("renders the table and the detail panel for the selected row", () => {
   assert.equal(frame.includes("short prompt"), true);
 });
 
-test("'a' toggles today/all and reloads", async () => {
+test("'t' toggles today/all and reloads", async () => {
   const calls: boolean[] = [];
   const { stdin } = render(
     <TasksScreen
@@ -51,7 +51,7 @@ test("'a' toggles today/all and reloads", async () => {
       columns={120}
     />,
   );
-  stdin.write("a");
+  stdin.write("t");
   await nextTick();
   assert.deepEqual(calls, [false, true]);
 });

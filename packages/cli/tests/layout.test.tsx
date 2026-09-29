@@ -97,3 +97,15 @@ test("in stacked mode, `mainHeight` accounts for the sidebar block's own rows", 
   // 20 rows - 1 header - 1 footer - sidebar block (2 items + 1 divider + 1 stat + 2 border = 6) = 12.
   assert.equal(frame.includes("height:12"), true);
 });
+
+test("a footer note replaces the key hints on the same single footer line", () => {
+  const { lastFrame } = render(
+    <Layout columns={120} rows={12} headerLeft=">_ kankaku" sidebarItems={sidebarItems} activeId="today" sidebarStats={["roots 1"]} keyHints={keyHints} footerNote="asking the hub…">
+      {() => <Text>main</Text>}
+    </Layout>,
+  );
+  const lines = (lastFrame() ?? "").split("\n");
+  assert.equal(lines.length, 12);
+  assert.equal(lines[lines.length - 1]?.includes("asking the hub…"), true);
+  assert.equal(lines[lines.length - 1]?.includes("q quit"), false);
+});

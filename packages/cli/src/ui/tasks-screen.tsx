@@ -1,9 +1,15 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { formatMinutes } from "../domain/today-model.ts";
 import type { TaskRow, TasksModel } from "../domain/tasks-model.ts";
 import { SCREENS, hintsFor } from "../domain/nav-model.ts";
 import { wrapText } from "../domain/text-wrap.ts";
+import { NOT_ON_HUB, describeAssignment, eligibleForBulk } from "../domain/reassign-model.ts";
+import type { HubRowSnapshot, ReassignMode, ReassignTarget, RowOutcome } from "../domain/reassign-model.ts";
+import { advance, back, finishApplying, jumpSelection, moveSelection, openPicker, pickerHints, pickerRowCount } from "../domain/reassign-picker.ts";
+import type { PickerState } from "../domain/reassign-picker.ts";
+import type { ReassignActions } from "../ports/reassign-actions.ts";
+import { ReassignPanel, pickerMaxRows } from "./reassign-panel.tsx";
 import { Layout } from "./layout.tsx";
 import { Panel } from "./components/panel.tsx";
 import { Table } from "./components/table.tsx";
@@ -22,6 +28,10 @@ export interface TasksScreenProps {
   projectFilter?: string;
   /** `esc`: drop `projectFilter`. Omitted when the caller does not wire navigation. */
   onClearFilter?: () => void;
+  /** The hub side of `a`/`A` (reassignment). Omitted in a standalone render: the keys then say reassignment is not available. */
+  reassign?: ReassignActions;
+  /** Called with `true` while the hub is queried or the picker is open, `false` otherwise, so the app shell keeps its own `esc`/`←`/`Tab`/`1`-`4` keys out of the way. */
+  onModalChange?: (open: boolean) => void;
 }
 
 function formatCost(cost: number): string {
@@ -84,7 +94,7 @@ const DETAIL_CHROME_ROWS = 2;
  * `muted` `… N more lines` line instead of letting Ink's own overflow
  * clipping silently swallow the rest with no visible cue.
  */
-function DetailPanel({ row, width, height }: { row: TaskRow | undefined; width: number; height: number }) {
+function DetailPanel({ row, hub, width, height }: { row: TaskRow | undefined; hub: string | undefined; width: number; height: number }) {
   const theme = useTheme();
 
   if (row === undefined) {
@@ -102,6 +112,7 @@ function DetailPanel({ row, width, height }: { row: TaskRow | undefined; width: 
   if (row.clientName !== undefined) metaLines.push({ text: `client   ${row.clientName}`, dim: true });
   if (row.projectName !== undefined) metaLines.push({ text: `project  ${row.projectName}`, dim: true });
   if (row.hubTaskTitle !== undefined) metaLines.push({ text: `task     ${row.hubTaskTitle}`, dim: true });
+  if (hub !== undefined) metaLines.push({ text: `hub      ${hub}`, dim: true });
   metaLines.push({ text: `wall ${formatMinutes(row.wallMs)}   work ${formatMinutes(row.workMs)}   wait ${formatMinutes(row.waitingMs)}`, dim: false });
   metaLines.push({ text: `cost ${formatCost(row.cost)}${row.cacheHit !== undefined ? `   cache hit ${Math.round(row.cacheHit * 100)}%` : ""}`, dim: false });
   metaLines.push({ text: `subagents ${row.subagentCount}`, dim: false });
@@ -121,7 +132,7 @@ function DetailPanel({ row, width, height }: { row: TaskRow | undefined; width: 
         ))}
         {showIndicator && <Text color={theme.muted}>{`… ${hiddenCount} more lines`}</Text>}
         {metaLines.map((line, index) => (
-          <Text key={`meta-${index}`} dimColor={line.dim}>
+          <Text key={`meta-${index}`} dimColor={line.dim} wrap="truncate-end">
             {line.text}
           </Text>
         ))}
@@ -132,31 +143,59 @@ function DetailPanel({ row, width, height }: { row: TaskRow | undefined; width: 
 
 const KEY_HINTS = [
   { key: "↑↓", label: "select" },
-  { key: "a", label: "today/all" },
+  { key: "a", label: "reassign" },
+  { key: "A", label: "bulk" },
+  { key: "t", label: "today/all" },
   { key: "r", label: "refresh" },
-  { key: "esc", label: "clear filter" },
   { key: "1-4", label: "screens" },
   { key: "q", label: "quit" },
 ];
+
+/** With a project filter set, `esc` clears it; listed only then, so the footer stays on one line in narrower terminals. */
+const FILTERED_KEY_HINTS = [...KEY_HINTS.slice(0, 5), { key: "esc", label: "clear filter" }, ...KEY_HINTS.slice(5)];
 
 /** Below this main-content width, the detail panel stacks under the table instead of beside it. */
 const DETAIL_BREAKPOINT = 70;
 /** Rows the `Panel` chrome (top border line + bottom border line) and the `Table`'s own header line take, outside its data rows. */
 const TABLE_CHROME_ROWS = 3;
 
+/** Footer messages of the reassignment flow. */
+const ASKING_HUB = "asking the hub…";
+const REASSIGN_UNAVAILABLE = "reassignment is not available: no hub connection in this session";
+const NOTHING_UNASSIGNED = "no unassigned tasks on the hub in this view";
+
+function toTarget(row: TaskRow): ReassignTarget {
+  return { taskId: row.id, label: row.prompt };
+}
+
 /**
  * The Tasks screen: a table of tasks (via `domain/tasks-model.ts`, never
  * reimplemented here) with a `[ Task ]` detail panel for the selected row.
- * `a` toggles today/all, `r` reloads, `↑↓` move the selection. When
+ * `t` toggles today/all, `r` reloads, `↑↓` move the selection. When
  * `projectFilter` is set (via Today's `enter`), the table is restricted to
- * that project and `esc` clears it through `onClearFilter`. Never writes
- * anything to disk.
+ * that project and `esc` clears it through `onClearFilter`.
+ *
+ * `a` reassigns the selected task on the hub and `A` every task of the
+ * current view that is unassigned there: the screen asks the hub for the
+ * rows involved (`reassign.prepare`, a progress message in the footer
+ * meanwhile), then opens the picker (`domain/reassign-picker.ts`) as a
+ * panel over the content zone. The picker is a modal flow: while it is
+ * open (or the hub is being asked) every other key of the screen is inert.
+ * Nothing is written to disk; the hub is written only by `reassign.apply`,
+ * after the review step.
  */
-export function TasksScreen({ load, roots, version, columns, rows, focused = true, projectFilter, onClearFilter }: TasksScreenProps) {
+export function TasksScreen({ load, roots, version, columns, rows, focused = true, projectFilter, onClearFilter, reassign, onModalChange }: TasksScreenProps) {
   const allRef = useRef(false);
   const [all, setAll] = useState(false);
   const [model, setModel] = useState<TasksModel>(() => load({ all: false }));
   const [selected, setSelected] = useState(0);
+  const [picker, setPickerState] = useState<PickerState | undefined>(undefined);
+  const pickerRef = useRef<PickerState | undefined>(undefined);
+  const [asking, setAsking] = useState(false);
+  const askingRef = useRef(false);
+  const [note, setNote] = useState<string | undefined>(undefined);
+  /** The hub's assignment (by names) for the tasks asked about in this session, keyed by kankaku task id. */
+  const [hubAssignments, setHubAssignments] = useState<Record<string, string>>({});
 
   const visibleRows = useMemo(
     () => (projectFilter !== undefined ? model.rows.filter((row) => row.project === projectFilter) : model.rows),
@@ -164,11 +203,127 @@ export function TasksScreen({ load, roots, version, columns, rows, focused = tru
   );
 
   const maxRowsRef = useRef(0);
+  const pickerRowsRef = useRef(1);
+
+  const setPicker = (next: PickerState | undefined) => {
+    pickerRef.current = next;
+    setPickerState(next);
+  };
+
+  const modalOpen = asking || picker !== undefined;
+  useEffect(() => {
+    onModalChange?.(modalOpen);
+  }, [modalOpen]);
+
+  const rememberHubRows = (found: ReadonlyMap<string, HubRowSnapshot>, catalog: Parameters<typeof describeAssignment>[1]) => {
+    setHubAssignments((current) => {
+      const next = { ...current };
+      for (const [taskId, hubRow] of found) next[taskId] = describeAssignment(hubRow, catalog);
+      return next;
+    });
+  };
+
+  const startReassign = (mode: ReassignMode) => {
+    if (reassign === undefined) {
+      setNote(REASSIGN_UNAVAILABLE);
+      return;
+    }
+    const chosen = mode === "single" ? [visibleRows[Math.min(selected, Math.max(visibleRows.length - 1, 0))]] : visibleRows;
+    const targets = chosen.filter((row): row is TaskRow => row !== undefined).map(toTarget);
+    if (targets.length === 0) {
+      setNote("no tasks to reassign");
+      return;
+    }
+
+    askingRef.current = true;
+    setAsking(true);
+    setNote(ASKING_HUB);
+    void reassign
+      .prepare(targets.map((target) => target.taskId))
+      .then((prepared) => {
+        if (!prepared.ok) {
+          setNote(prepared.message);
+          return;
+        }
+        rememberHubRows(prepared.rows, prepared.catalog);
+        if (mode === "single" && !prepared.rows.has(targets[0]!.taskId)) {
+          setNote(NOT_ON_HUB);
+          return;
+        }
+        if (mode === "bulk" && eligibleForBulk(targets, prepared.rows, prepared.catalog).length === 0) {
+          setNote(NOTHING_UNASSIGNED);
+          return;
+        }
+        setNote(undefined);
+        setPicker(openPicker({ mode, catalog: prepared.catalog, targets, rows: prepared.rows }));
+      })
+      .catch((error: unknown) => setNote(error instanceof Error ? error.message : String(error)))
+      .finally(() => {
+        askingRef.current = false;
+        setAsking(false);
+      });
+  };
+
+  const startApply = (state: PickerState) => {
+    const plan = state.plan;
+    if (reassign === undefined || plan === undefined || !plan.ok) return;
+    const settle = (outcomes: RowOutcome[]) => {
+      const current = pickerRef.current ?? state;
+      setPicker(finishApplying(current, outcomes));
+      setHubAssignments((assignments) => {
+        const next = { ...assignments };
+        for (const line of plan.plan.lines) {
+          if (line.kind === "reassign" && outcomes.some((outcome) => outcome.taskId === line.taskId && outcome.status === "reassigned")) next[line.taskId] = line.to;
+        }
+        return next;
+      });
+    };
+    void reassign.apply(plan.plan).then(settle, (error: unknown) => {
+      const reason = error instanceof Error ? error.message : String(error);
+      settle(plan.plan.lines.filter((line) => line.kind === "reassign").map((line) => ({ taskId: line.taskId, status: "failed" as const, reason })));
+    });
+  };
+
+  const handlePickerKey = (current: PickerState, key: Parameters<Parameters<typeof useInput>[0]>[1]) => {
+    if (current.step === "applying") return;
+    const page = Math.max(pickerRowsRef.current, 1);
+    if (key.escape || key.leftArrow) {
+      setPicker(back(current));
+    } else if (key.return) {
+      const next = advance(current);
+      setPicker(next);
+      if (next !== undefined && next.step === "applying" && current.step === "review") startApply(next);
+    } else if (key.downArrow) {
+      setPicker(moveSelection(current, 1));
+    } else if (key.upArrow) {
+      setPicker(moveSelection(current, -1));
+    } else if (key.pageDown) {
+      setPicker(moveSelection(current, page));
+    } else if (key.pageUp) {
+      setPicker(moveSelection(current, -page));
+    } else if (key.home) {
+      setPicker(jumpSelection(current, "first"));
+    } else if (key.end) {
+      setPicker(jumpSelection(current, "last"));
+    }
+  };
 
   useInput(
     (input, key) => {
+      setNote(undefined);
+      if (askingRef.current) return;
+      const openPickerState = pickerRef.current;
+      if (openPickerState !== undefined) {
+        handlePickerKey(openPickerState, key);
+        return;
+      }
+
       const lastIndex = Math.max(visibleRows.length - 1, 0);
       if (input === "a") {
+        startReassign("single");
+      } else if (input === "A") {
+        startReassign("bulk");
+      } else if (input === "t") {
         const nextAll = !allRef.current;
         allRef.current = nextAll;
         setAll(nextAll);
@@ -204,10 +359,16 @@ export function TasksScreen({ load, roots, version, columns, rows, focused = tru
       sidebarItems={SCREENS}
       activeId="tasks"
       sidebarStats={[`tasks ${visibleRows.length}`, all ? "scope all" : "scope today"]}
-      keyHints={hintsFor("tasks", focused ? "main" : "sidebar", KEY_HINTS)}
+      keyHints={picker !== undefined ? pickerHints(picker) : hintsFor("tasks", focused ? "main" : "sidebar", projectFilter !== undefined ? FILTERED_KEY_HINTS : KEY_HINTS)}
+      {...(note !== undefined ? { footerNote: note } : {})}
       focus={focused ? "main" : "sidebar"}
     >
       {({ mainWidth, mainHeight }) => {
+        if (picker !== undefined) {
+          pickerRowsRef.current = pickerMaxRows(mainHeight);
+          return <ReassignPanel state={picker} width={mainWidth} height={mainHeight} />;
+        }
+
         const wide = mainWidth >= DETAIL_BREAKPOINT;
         const tableWidth = wide ? Math.floor(mainWidth * 0.62) : mainWidth;
         const detailWidth = wide ? Math.max(mainWidth - tableWidth - 1, 1) : mainWidth;
@@ -224,7 +385,7 @@ export function TasksScreen({ load, roots, version, columns, rows, focused = tru
             <Table columns={taskColumns(tableWidth)} rows={visibleRows} rowKey={(row) => row.id} cell={taskCell} selectedIndex={selected} emptyText="no tasks" maxRows={maxRows} />
           </Panel>
         );
-        const detail = <DetailPanel row={selectedRow} width={detailWidth} height={detailHeight} />;
+        const detail = <DetailPanel row={selectedRow} hub={selectedRow !== undefined ? hubAssignments[selectedRow.id] : undefined} width={detailWidth} height={detailHeight} />;
 
         return wide ? (
           <Box flexDirection="row">

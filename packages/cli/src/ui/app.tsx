@@ -8,6 +8,7 @@ import {
   moveSidebar,
   openProjectInTasks,
   screenForKey,
+  setModal,
   switchScreen,
 } from "../domain/nav-model.ts";
 import type { NavState } from "../domain/nav-model.ts";
@@ -23,6 +24,7 @@ import type { WizardActions } from "./setup/wizard-screen.tsx";
 import type { DashboardModel } from "../domain/dashboard-model.ts";
 import type { TasksModel } from "../domain/tasks-model.ts";
 import type { WizardFacts } from "../domain/setup-wizard.ts";
+import type { ReassignActions } from "../ports/reassign-actions.ts";
 
 export interface AppProps {
   roots: string[];
@@ -37,6 +39,8 @@ export interface AppProps {
   wizard?: { facts: WizardFacts; actions: WizardActions };
   /** Opens the app straight into the wizard (`kankaku setup` on a TTY, or the first-run hint) instead of the Dashboard. */
   startInWizard?: boolean;
+  /** The hub side of the Tasks screen's `a`/`A` reassignment; omitted when no hub is wired (the keys then say so). */
+  reassign?: ReassignActions;
 }
 
 /**
@@ -55,9 +59,12 @@ export interface AppProps {
  * to it, keeping focus on main; Tasks' own `esc` handling (gated the same
  * way as every other screen key, by its `focused` prop) clears that
  * filter — this hook only predicts whether that will happen, to decide
- * whether it should also move focus.
+ * whether it should also move focus. While the Tasks screen has its
+ * reassignment picker open (`NavState.modal`, reported through its
+ * `onModalChange`), only `q` is handled here: `esc`, `←`, `Tab` and `1`-`4`
+ * belong to the picker, so it can never be left half-way by accident.
  */
-export function App({ roots, version, loadToday, loadTasks, catalog, sync, dashboardActions, wizard, startInWizard }: AppProps) {
+export function App({ roots, version, loadToday, loadTasks, catalog, sync, dashboardActions, wizard, startInWizard, reassign }: AppProps) {
   const { exit } = useApp();
   const [nav, setNav] = useState<NavState>(INITIAL_NAV_STATE);
   const [showWizard, setShowWizard] = useState(startInWizard === true && wizard !== undefined);
@@ -68,6 +75,8 @@ export function App({ roots, version, loadToday, loadTasks, catalog, sync, dashb
         exit();
         return;
       }
+
+      if (nav.modal === true) return;
 
       const nextScreen = screenForKey(input);
       if (nextScreen !== undefined) {
@@ -127,6 +136,8 @@ export function App({ roots, version, loadToday, loadTasks, catalog, sync, dashb
           focused={focused}
           {...(nav.projectFilter !== undefined ? { projectFilter: nav.projectFilter } : {})}
           onClearFilter={() => setNav((state) => clearProjectFilter(state))}
+          onModalChange={(open) => setNav((state) => (state.modal === true) === open ? state : setModal(state, open))}
+          {...(reassign !== undefined ? { reassign } : {})}
         />
       )}
       {nav.screen === "catalog" && <CatalogScreen {...catalog} roots={roots} version={version} focused={focused} />}

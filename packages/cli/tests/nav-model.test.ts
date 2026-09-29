@@ -11,6 +11,7 @@ import {
   moveSidebar,
   openProjectInTasks,
   screenForKey,
+  setModal,
   switchScreen,
 } from "../src/domain/nav-model.ts";
 
@@ -123,4 +124,12 @@ test("hintsFor appends '← menu' to the screen's own hints when the main zone i
     { key: "r", label: "refresh" },
     { key: "←", label: "menu" },
   ]);
+});
+
+test("setModal marks the state modal and clears the mark again, keeping the rest", () => {
+  const state = { screen: "tasks" as const, focus: "main" as const, projectFilter: "kankaku" };
+  const open = setModal(state, true);
+  assert.deepEqual(open, { ...state, modal: true });
+  assert.deepEqual(setModal(open, false), state);
+  assert.equal("modal" in setModal(open, false), false);
 });
