@@ -64,7 +64,8 @@ export type PlanResult = { ok: true; plan: ReassignPlan } | { ok: false; error: 
 /** The result of one PATCH, in the order of the plan's `reassign` lines. */
 export type RowOutcome = { taskId: string; status: "reassigned" } | { taskId: string; status: "failed"; reason: string };
 
-const UNASSIGNED_LABEL = "unassigned";
+/** How the catalog's unassigned client is named in every user-facing string. */
+export const UNASSIGNED_LABEL = "unassigned";
 
 function unassignedClient(clients: Client[]): Client | undefined {
   return clients.find((client) => client.unassigned === true);

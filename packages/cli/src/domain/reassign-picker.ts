@@ -1,4 +1,4 @@
-import { ALREADY_ASSIGNED, NOT_ON_HUB, eligibleForBulk, planReassignment } from "./reassign-model.ts";
+import { ALREADY_ASSIGNED, NOT_ON_HUB, UNASSIGNED_LABEL, eligibleForBulk, planReassignment } from "./reassign-model.ts";
 import type {
   HubRowSnapshot,
   PlanLine,
@@ -54,7 +54,7 @@ export function openPicker(input: OpenPickerInput): PickerState {
 }
 
 function clientLabel(name: string, unassigned: boolean | undefined): string {
-  return unassigned === true ? "unassigned" : name;
+  return unassigned === true ? UNASSIGNED_LABEL : name;
 }
 
 /** The selectable options of a choosing step (`client`, `project`, `task`); empty on every other step. */
@@ -115,10 +115,13 @@ export function pickerRows(state: PickerState): PickerRow[] {
     for (const line of planLines) {
       if (line.kind === "unchanged") rows.push({ text: `unchanged · ${line.label}`, tone: "muted" });
       if (line.kind !== "reassign") continue;
+      if (state.step === "applying") {
+        rows.push({ text: `sending · ${line.label}` });
+        continue;
+      }
       const outcome = outcomeFor(state, line.taskId);
-      if (state.step === "applying" || outcome === undefined) {
-        rows.push({ text: state.step === "applying" ? `sending · ${line.label}` : `failed: no answer from the hub · ${line.label}`, ...(state.step === "applying" ? {} : { tone: "error" as const }) });
-      } else if (outcome.status === "reassigned") rows.push({ text: `reassigned · ${line.label}` });
+      if (outcome === undefined) rows.push({ text: `failed: no answer from the hub · ${line.label}`, tone: "error" });
+      else if (outcome.status === "reassigned") rows.push({ text: `reassigned · ${line.label}` });
       else rows.push({ text: `failed: ${outcome.reason} · ${line.label}`, tone: "error" });
     }
     return [...rows, ...skippedGroups(planLines)];
