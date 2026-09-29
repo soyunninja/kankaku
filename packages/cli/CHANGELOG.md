@@ -3,6 +3,15 @@
 All notable changes to kankaku (formerly kankaku-tui). The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 1.0.1 — 2026-09-29
+
+### Changed
+
+- Bundles `kankaku-claude` 1.0.1: every dollar a Claude Code session spends
+  now lands in a record (spend between two prompts goes to the next one),
+  and `/kankaku:status` shows how much of the session's total is recorded.
+  No change in this package's own code.
+
 ## 1.0.0 — 2026-09-29
 
 ### Added

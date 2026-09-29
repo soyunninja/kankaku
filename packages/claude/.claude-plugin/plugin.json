@@ -1,7 +1,7 @@
 {
   "name": "kankaku",
   "description": "Records how long Claude Code works on each of your prompts: wall time, waiting time, work time and cost, per prompt, in kankaku's worklog format.",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": {
     "name": "soyunninja"
   },
