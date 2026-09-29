@@ -3,7 +3,7 @@
 All notable changes to kankaku (formerly kankaku-tui). The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
-## Unreleased
+## 1.1.0 — 2026-09-29
 
 ### Added
 
