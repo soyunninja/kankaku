@@ -2,10 +2,11 @@ import { unlinkSync } from "node:fs";
 import { basename } from "node:path";
 import type { WorkRecord } from "kankaku-pi/domain";
 import { listStateFiles, resolveTargetFile } from "./paths.ts";
-import { readState } from "./session-state.ts";
+import { readState, type SessionState } from "./session-state.ts";
 import { readEventLog } from "./event-log.ts";
 import { splitPrompts, replayPrompt } from "./replay.ts";
-import { buildClaudeRecord } from "./record.ts";
+import { buildClaudeRecord, stampTokens } from "./record.ts";
+import { settleTranscripts } from "./transcript-settle.ts";
 import { readCost, deleteCost, type CostEnv } from "./cost-store.ts";
 import { settleCost } from "./cost-chain.ts";
 import type { RecordAssignment } from "./work-target.ts";
@@ -68,7 +69,13 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
         const core = replayPrompt(last, { settledAt, cost: settleCost(costNow?.totalUsd, state.promptOpen.costAtStart).cost });
         if (core) {
           const model = costNow?.model;
-          records.push(buildClaudeRecord(core, state, sessionId, model, input.resolveAssignment?.(state.cwd, sessionId)));
+          const transcript = settleSafely(state);
+          const version = transcript?.transcript.agentVersion ?? state.transcript?.agentVersion;
+          records.push(
+            buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, model, input.resolveAssignment?.(state.cwd, sessionId), {
+              ...(version !== undefined ? { agentVersion: version } : {}),
+            }),
+          );
         }
       }
     }
@@ -80,6 +87,15 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
   }
 
   return records;
+}
+
+/** A dead session's transcript is best-effort: any failure means a record without tokens, as before. */
+function settleSafely(state: SessionState): ReturnType<typeof settleTranscripts> {
+  try {
+    return settleTranscripts(state.transcript);
+  } catch {
+    return undefined;
+  }
 }
 
 function sessionIdFromStateFile(file: string): string | undefined {

@@ -2,6 +2,7 @@ import { unlinkSync } from "node:fs";
 import { resolvePaths, type ResolvedPaths } from "./paths.ts";
 import { appendEvent, readEventLog, dropSettledPrompts } from "./event-log.ts";
 import { readState, writeState, updateState, type SessionState } from "./session-state.ts";
+import { settleTranscripts, trackTranscriptAtSubmit, type SettledTranscripts } from "./transcript-settle.ts";
 import { resolveClaudePid, type PsInfo } from "./claude-pid.ts";
 import { splitPrompts, type PromptEvents } from "./prompts.ts";
 import { readCost, deleteCost, sweepStaleCostFiles } from "./cost-store.ts";
@@ -60,6 +61,7 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
         : { ts, event: "UserPromptSubmit", prompt };
       appendEvent(paths.eventsFile, event);
       const snapshot = readCost(deps.env, sessionId)?.totalUsd;
+      const transcriptPath = readString(raw.transcript_path);
       updateState(paths.stateFile, (state) => ({
         pid: state?.pid ?? 0,
         parentPid: state?.parentPid ?? 0,
@@ -68,7 +70,9 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
         // The chained baseline wins over the snapshot: spend since the last settle belongs to this prompt.
         promptOpen: { id: promptId ?? `${sessionId}:${ts}`, startedAt: ts, costAtStart: state?.costBaseline ?? snapshot },
         permissionOpen: null,
-        ...(state?.costBaseline !== undefined ? { costBaseline: state.costBaseline } : {}),
+        ...carriedOver(state),
+        // Stat only: the transcript's content is read at settle, never here.
+        ...withTranscript(trackTranscriptSafely(state, transcriptPath)),
       }));
       return;
     }
@@ -98,7 +102,7 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
         startedAt: state?.startedAt ?? ts,
         promptOpen: state?.promptOpen ?? null,
         permissionOpen: ts,
-        ...(state?.costBaseline !== undefined ? { costBaseline: state.costBaseline } : {}),
+        ...carriedOver(state),
       }));
       return;
     }
@@ -142,11 +146,17 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
 
 async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleHookDeps): Promise<void> {
   const { replayPrompt } = await import("./replay.ts");
-  const { buildClaudeRecord } = await import("./record.ts");
+  const { buildClaudeRecord, stampTokens } = await import("./record.ts");
   const { JsonlWorkLog } = await import("kankaku-pi/hub");
 
   const events = readEventLog(paths.eventsFile);
   const beforeStopTs = events.length >= 2 ? events[events.length - 2]!.ts : events[events.length - 1]?.ts ?? deps.now();
+
+  // Read what the transcript gained before waiting for the cost: only a
+  // prompt that is open has anything to settle, and the wait is pointless
+  // for a session that has no statusline.
+  const opened = readState(paths.stateFile);
+  const transcript = opened?.promptOpen ? settleSafely(opened, deps) : undefined;
 
   const deadline = deps.now() + STOP_COST_WAIT_MAX_MS;
   let cost = readCost(deps.env, sessionId);
@@ -169,7 +179,10 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   const core = replayPrompt(last, { cost: settled.cost });
   if (core) {
     const assignment = await assignmentResolver(paths, deps);
-    const record = buildClaudeRecord(core, state, sessionId, cost?.model, assignment(state.cwd, sessionId));
+    const version = agentVersionOf(transcript, state);
+    const record = buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, cost?.model, assignment(state.cwd, sessionId), {
+      ...(version !== undefined ? { agentVersion: version } : {}),
+    });
     const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
     log.append(record);
   }
@@ -179,6 +192,7 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
     promptOpen: null,
     permissionOpen: null,
     ...(settled.baseline !== undefined ? { costBaseline: settled.baseline } : {}),
+    ...withTranscript(transcript?.transcript),
   });
   const keep = events.slice(0, events.length - last.events.length);
   dropSettledPrompts(paths.eventsFile, keep);
@@ -240,7 +254,7 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
   const state = readState(paths.stateFile);
   if (state?.promptOpen) {
     const { replayPrompt } = await import("./replay.ts");
-    const { buildClaudeRecord } = await import("./record.ts");
+    const { buildClaudeRecord, stampTokens } = await import("./record.ts");
     const { JsonlWorkLog } = await import("kankaku-pi/hub");
     const events = readEventLog(paths.eventsFile);
     const prompts = splitPrompts(events);
@@ -248,11 +262,15 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
     if (last) {
       const costNow = readCost(deps.env, sessionId);
       const settled = settleCost(costNow?.totalUsd, state.promptOpen.costAtStart);
+      const transcript = settleSafely(state, deps);
       const core = replayPrompt(last, { settledAt: ts, cost: settled.cost });
       if (core) {
         const model = costNow?.model;
         const assignment = await assignmentResolver(paths, deps);
-        const record = buildClaudeRecord(core, state, sessionId, model, assignment(state.cwd, sessionId));
+        const version = agentVersionOf(transcript, state);
+        const record = buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, model, assignment(state.cwd, sessionId), {
+          ...(version !== undefined ? { agentVersion: version } : {}),
+        });
         const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
         log.append(record);
       }
@@ -318,6 +336,42 @@ async function syncHeavy(trigger: SyncTrigger, cwd: string, deps: HandleHookDeps
   } catch (error) {
     deps.stderr(`kankaku auto-sync: ${error instanceof Error ? error.message : String(error)}`);
   }
+}
+
+/** Everything that survives a state rewrite besides the fields the handler sets itself. */
+function carriedOver(state: SessionState | undefined): Pick<SessionState, "costBaseline" | "transcript" | "pending"> {
+  return {
+    ...(state?.costBaseline !== undefined ? { costBaseline: state.costBaseline } : {}),
+    ...(state?.transcript !== undefined ? { transcript: state.transcript } : {}),
+    ...(state?.pending !== undefined ? { pending: state.pending } : {}),
+  };
+}
+
+function withTranscript(transcript: SessionState["transcript"]): Pick<SessionState, "transcript"> {
+  return transcript !== undefined ? { transcript } : {};
+}
+
+/** The transcript bookkeeping never fails a hook: on any error the state keeps what it had. */
+function trackTranscriptSafely(state: SessionState | undefined, path: string | undefined): SessionState["transcript"] {
+  try {
+    return trackTranscriptAtSubmit(state?.transcript, path);
+  } catch {
+    return state?.transcript;
+  }
+}
+
+/** Reads what the transcript gained since the stored positions; any failure means "no tokens", as before this feature. */
+function settleSafely(state: SessionState, deps: HandleHookDeps): SettledTranscripts | undefined {
+  try {
+    return settleTranscripts(state.transcript);
+  } catch (error) {
+    deps.stderr(`kankaku: transcript: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
+function agentVersionOf(settled: SettledTranscripts | undefined, state: SessionState): string | undefined {
+  return settled?.transcript.agentVersion ?? state.transcript?.agentVersion;
 }
 
 function deleteSessionFiles(paths: ResolvedPaths): void {

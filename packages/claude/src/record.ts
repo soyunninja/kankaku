@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { WorkRecord, WorkRecordCore } from "kankaku-pi/domain";
 import type { SessionState } from "./session-state.ts";
+import type { TokenUsage } from "./transcript.ts";
 import type { RecordAssignment } from "./work-target.ts";
 
 /** `version` from a `package.json`, or `undefined` when unreadable — never guessed. */
@@ -20,6 +21,21 @@ const PLUGIN_VERSION = readPackageVersion(
   join(dirname(dirname(fileURLToPath(import.meta.url))), "package.json"),
 );
 
+export interface RecordExtras {
+  /** Claude Code's version, from the transcript. */
+  agentVersion?: string;
+}
+
+/**
+ * Stamps the four token counts read from the transcript onto a replayed
+ * record. The cost stays as the replay set it; without tokens the record is
+ * returned as it is.
+ */
+export function stampTokens(core: WorkRecordCore, tokens: TokenUsage | undefined): WorkRecordCore {
+  if (!tokens) return core;
+  return { ...core, usage: { ...core.usage, input: tokens.input, output: tokens.output, cacheRead: tokens.cacheRead, cacheWrite: tokens.cacheWrite } };
+}
+
 /**
  * Attaches the orchestrator metadata a replayed {@link WorkRecordCore}
  * needs to become a persistable {@link WorkRecord}. `assignment` carries the
@@ -32,9 +48,9 @@ const PLUGIN_VERSION = readPackageVersion(
  *
  * Also stamps who MEASURED the record (`agent`, `plugin`, `pluginVersion`),
  * so a worklog later synced by another tool (the `kankaku` CLI) keeps the
- * right identity. `agentVersion` is omitted: Claude Code passes its version
- * to no hook payload, and spawning `claude --version` from a hook is not
- * acceptable.
+ * right identity. `agentVersion` is stamped only when `extras` carries one,
+ * read from the session transcript (no hook payload carries it, and
+ * spawning `claude --version` from a hook is not acceptable); never guessed.
  */
 export function buildClaudeRecord(
   core: WorkRecordCore,
@@ -42,6 +58,7 @@ export function buildClaudeRecord(
   sessionId: string,
   model: string | undefined,
   assignment: RecordAssignment = {},
+  extras: RecordExtras = {},
 ): WorkRecord {
   const { target, legacyClient } = assignment;
   return {
@@ -55,6 +72,7 @@ export function buildClaudeRecord(
     agent: "claude-code",
     plugin: "kankaku-claude",
     ...(PLUGIN_VERSION !== undefined ? { pluginVersion: PLUGIN_VERSION } : {}),
+    ...(extras.agentVersion !== undefined ? { agentVersion: extras.agentVersion } : {}),
     ...(model ? { model: `anthropic/${model}` } : {}),
     ...(legacyClient !== undefined ? { client: legacyClient } : {}),
     ...(target !== undefined

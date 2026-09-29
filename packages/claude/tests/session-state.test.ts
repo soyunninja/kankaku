@@ -123,3 +123,38 @@ test("a state file without costBaseline stays valid, and costBaseline round-trip
   writeState(file, { pid: 1, parentPid: 2, cwd: "/r", startedAt: 3, promptOpen: null, permissionOpen: null, costBaseline: 1.25 });
   assert.equal(readState(file)?.costBaseline, 1.25);
 });
+
+test("transcript and pending round-trip, and a state file without them stays valid", () => {
+  const { dir, file } = tmpFile();
+  try {
+    const core = { schema: 1, id: "r1" } as unknown as import("kankaku-pi/domain").WorkRecordCore;
+    const state: SessionState = {
+      ...baseState(),
+      transcript: { path: "/t/s.jsonl", offsets: { "/t/s.jsonl": { bytes: 10, lastMessageId: "m1" } }, agentVersion: "1.0.0", entrypoint: "sdk-cli" },
+      pending: [{ core, costAtStart: 0 }],
+    };
+    writeState(file, state);
+    assert.deepEqual(readState(file), state);
+
+    writeState(file, baseState());
+    const plain = readState(file);
+    assert.equal(plain?.transcript, undefined);
+    assert.equal(plain?.pending, undefined);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a malformed transcript or pending field is dropped and the rest of the state survives", () => {
+  const { dir, file } = tmpFile();
+  try {
+    writeState(file, baseState());
+    writeFileSync(file, JSON.stringify({ ...baseState(), costBaseline: 1, transcript: { path: 5, offsets: [] }, pending: "nope" }));
+    assert.deepEqual(readState(file), { ...baseState(), costBaseline: 1 });
+
+    writeFileSync(file, JSON.stringify({ ...baseState(), transcript: { path: "/t.jsonl", offsets: { "/t.jsonl": { bytes: -1 } } } }));
+    assert.deepEqual(readState(file), baseState());
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
