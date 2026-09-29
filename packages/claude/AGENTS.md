@@ -70,8 +70,17 @@ extension has one. Instead:
   (`role`, `pid`, `parentPid`, `project`, `sessionId`, `mode`, `model`, plus the
   measuring identity `agent`, `plugin`, `pluginVersion`) to a replayed
   `WorkRecordCore`. Identity is stamped on every record so another syncer
-  (the TUI) cannot relabel it; `agentVersion` stays unset because no hook
-  payload carries Claude Code's version.
+  (the TUI) cannot relabel it. `agentVersion` and `costAllocated` come in as
+  `extras`; `agentVersion` is Claude Code's version read from the transcript
+  and stays unset when it is unknown. `stampTokens` puts the transcript token
+  counts on a replayed record.
+- `src/transcript.ts` — the transcript reader: pure `parseTranscriptChunk`,
+  `readTranscriptSince` (complete lines only, per-file byte bound),
+  `listSubagentTranscripts`, `statTranscriptSize`. Node builtins only.
+- `src/transcript-settle.ts` — session-level use of it: `trackTranscriptAtSubmit`
+  (stat only) and `settleTranscripts` (main + subagent files, shared bound).
+- `src/headless.ts` — `allocateCost` and `buildHeadlessRecords`, the records
+  of a finished `sdk-cli` session. Heavy path only.
 - `src/work-target.ts` — `resolveClaudeWorkTarget` (project `config.json` ids
   > cached catalog `repo_paths`, through the library's `resolveWorkTarget`),
   `RecordAssignment` and `formatTargetLine`. Imports `kankaku-pi`, so heavy
@@ -182,6 +191,30 @@ extension has one. Instead:
   subagent records, so none carries its own target (the task view inherits
   the orchestrator's). Assignment is create-only on the hub; never rewrite
   records already on disk.
+
+- **The transcript is an undocumented, changeable format: read it only to
+  measure, and only where a record is built.** Tokens, the version, the
+  entry point and the `cost-state` total are the only things taken from it;
+  never keep, log or copy message content. `PreToolUse`, `PostToolUse`,
+  `PermissionRequest`, `SubagentStart` and `SubagentStop` never read it, and
+  `UserPromptSubmit` only `stat`s it (`trackTranscriptAtSubmit`). Positions
+  (`state.transcript.offsets`) advance only at settle (`Stop`, `SessionEnd`
+  with an open prompt, recovery), so tokens between prompts land in the next
+  record; a settle reads at most `MAX_SETTLE_BYTES` (16 MiB) across all files
+  and, beyond it, skips to the end and stamps no tokens. Any failure in this
+  path is swallowed: the record is written as it would be without it.
+  Handlers that rebuild the state must carry `transcript` and `pending`
+  over (`carriedOver`). Tests use synthetic fixtures that copy only the
+  shapes; never put real transcript content in a fixture, test or doc.
+- **Headless sessions (`entrypoint: "sdk-cli"`) defer their record.** `Stop`
+  moves the settled prompt into `state.pending` and writes nothing (and does
+  not wait for a statusline cost); `SessionEnd` and `recoverStaleSessions`
+  turn the pending list into records through `buildHeadlessRecords`: the last
+  `cost-state` through `settleCost`, shared by token totals when there are
+  several prompts (`costAllocated`). A `cost-state` with
+  `hasUnknownModelCost` is not used. The pending list is dropped from the
+  state right after the append, and the state files are deleted by
+  whichever path runs first, so a prompt is written once.
 
 ## Conventions (mirrored from kankaku)
 

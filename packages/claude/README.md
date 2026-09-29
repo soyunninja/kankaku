@@ -17,7 +17,9 @@ One record per user prompt, appended to `<KANKAKU_DIR>/worklog.jsonl`:
   waiting on a permission dialog.
 - **Work time** — wall time minus waiting time.
 - **Cost** — the prompt's share of the session's running `total_cost_usd`
-  (see "Limitations" below for how this is derived).
+  (see "How cost is derived" below).
+- **Tokens** — input, output, cache read and cache write tokens, read from
+  the session transcript (see "What is read from the transcript").
 
 Records are written in kankaku's own `WorkRecord` schema
 (`WORK_RECORD_SCHEMA = 1`), the exact one the kankaku pi extension writes to
@@ -28,9 +30,10 @@ manual and best-effort automatic hub sync through kankaku's public hub adapters 
 Every record carries the identity of who measured it: `agent: "claude-code"`,
 `plugin: "kankaku-claude"` and `pluginVersion` (this package's version).
 A worklog synced by another tool, such as the kankaku TUI, therefore keeps
-the right agent on the hub. `agentVersion` is left unset because Claude Code
-does not pass its version to hooks. Records written before this version carry
-no identity and are labelled by whichever tool syncs them first.
+the right agent on the hub. `agentVersion` is Claude Code's version, read
+from the session transcript; it is left unset when the transcript cannot be
+read, never guessed. Records written before this version carry no identity
+and are labelled by whichever tool syncs them first.
 
 ## Requirements
 
@@ -268,9 +271,9 @@ later sync does not move it.
 
 ## How cost is derived
 
-Claude Code hooks carry no cost. The only source is the statusline, whose
-`cost.total_cost_usd` is the running total of the session; the statusline
-command stores the latest value under your home directory (see "Where the
+Claude Code hooks carry no cost. For interactive sessions the only source is
+the statusline, whose `cost.total_cost_usd` is the running total of the
+session; the statusline command stores the latest value under your home directory (see "Where the
 files live").
 
 - **Per-prompt difference.** A prompt's cost is the session total when the
@@ -291,11 +294,87 @@ files live").
 - **Counter reset.** If the total is lower than the value the prompt is
   measured from, the counter was reset: the prompt's cost is the new total
   and the baseline restarts from it.
-- **Headless runs have no cost.** `claude -p` renders no statusline, so
-  there is no total: the record stays without cost (`costObserved` unset)
-  and the baseline does not move.
+- **Headless runs take their cost from the transcript.** `claude -p` renders
+  no statusline, so the cost comes from the transcript's `cost-state` line
+  instead (see "Headless runs" below).
 - `/kankaku:status` shows `recorded $X of $Y` per live session so a gap is
   visible.
+
+## What is read from the transcript
+
+Every hook receives `transcript_path`, the JSON Lines file Claude Code keeps
+for the session. kankaku-claude reads it for three things, and nothing else:
+
+- **Tokens.** The `input_tokens`, `output_tokens`, `cache_read_input_tokens`
+  and `cache_creation_input_tokens` of the assistant messages become the
+  record's `usage.input`, `usage.output`, `usage.cacheRead` and
+  `usage.cacheWrite`, which is what makes `cache hit` appear for Claude Code
+  records in the `kankaku` CLI. Claude Code writes one message over several
+  lines, so each `message.id` is counted once.
+- **The version.** The `version` of the first line read becomes the record's
+  `agentVersion`.
+- **For headless runs, the cost.** See "Headless runs" below.
+
+Only numbers, the version and the entry point (`cli` or `sdk-cli`) are taken
+from a line; prompts, answers, tool inputs and outputs are never kept, copied
+or sent anywhere. Subagents do not appear in the session's transcript: each
+has its own file under `<session id>/subagents/`, and those files are read
+too, so the record of a prompt includes its subagents' tokens.
+
+How it is read:
+
+- **Only what is new.** The session state keeps a read position per
+  transcript file. `UserPromptSubmit` only records the current size of each
+  file (a `stat`, no read) so a session that already existed does not read
+  its history; `Stop`, `SessionEnd` with an open prompt and crash recovery
+  read the bytes after the position, count them and advance it. A subagent
+  file that appears later is read from its start, and a partial last line is
+  left for the next read.
+- **Tokens between two prompts are not lost.** Positions only advance when a
+  record is settled, so tokens spent after `Stop` and before the next
+  settle (a background subagent that keeps running) land in the next record
+  of the session, the same rule as cost.
+- **A bound per settle.** At most 16 MiB of transcript is read per settle,
+  across all files. If a settle finds more new content than that, it is
+  skipped without counting and the record simply has no tokens; the hook
+  never risks its timeout on a huge file.
+- **Hooks that build no record read nothing.** `PreToolUse`, `PostToolUse`,
+  `PermissionRequest`, `SubagentStart` and `SubagentStop` never touch the
+  transcript, and `UserPromptSubmit` only `stat`s it.
+
+The transcript format is internal and undocumented and may change with any
+Claude Code release. kankaku-claude therefore treats every part of it as
+optional: a missing or unreadable file, a line it does not understand, or a
+field of an unexpected type is ignored, and the record is written exactly as
+it was before this existed, without the tokens or the version. It never makes
+a hook fail.
+
+### Headless runs
+
+A session whose transcript says `entrypoint: "sdk-cli"` (a `claude -p` run)
+has no statusline. Claude Code appends a `cost-state` line with the session's
+total cost to the transcript only after the last `Stop`, so for these
+sessions:
+
+1. `Stop` does not write the record. The settled prompt (times, waiting and
+   tokens are final) is kept in the session state as pending.
+2. `SessionEnd` reads the last `cost-state`, applies the same chained
+   baseline as the statusline cost, and appends the record with the cost and
+   `costObserved`. If `SessionEnd` never runs, crash recovery writes the
+   pending records the next time another session starts, reading the
+   transcript then. Either way each prompt is written exactly once.
+3. With no `cost-state`, or one flagged `hasUnknownModelCost` (the total is
+   then not reliable), the records are written without cost.
+
+**Attribution.** A session with one prompt gets the whole cost. When a
+headless session ran several prompts, the total is shared in proportion to
+each prompt's token total (equal shares when all are zero), in whole
+micro-dollars with the remainder on the last prompt, so the shares add up to
+the session cost exactly. Those records carry `costAllocated: true`: the cost
+is a share, not a measured difference. The marker stays in the local
+worklog and is not sent to the hub. Interactive sessions (entry point `cli`,
+or one that cannot be read) are unchanged: the record is written at `Stop`
+with the statusline cost.
 
 ## Where the files live
 
@@ -326,8 +405,10 @@ If Claude Code's process is killed mid-prompt (or mid-session), the next
 session's `SessionStart` hook scans for other sessions' state files whose
 process is no longer alive. A dead session with an open prompt is replayed
 and appended as one `status: "interrupted"` record before its files are
-deleted; a dead session with no open prompt just has its files deleted. This
-also runs for the current session's own leftover state at `SessionEnd`.
+deleted; a dead session with no open prompt just has its files deleted. A
+dead headless session that still holds pending prompts gets their records
+written, with the cost from its transcript. This also runs for the current
+session's own leftover state at `SessionEnd`.
 
 An interrupted prompt is closed at its last recorded activity — the
 timestamp of the last event logged for it, or its own start when nothing
@@ -340,15 +421,18 @@ still open is closed at that same instant.
 - **`turns` is always 1 per run.** Claude Code hooks give no way to observe
   provider-level retries/turns inside one run; every replayed run reports
   exactly one turn.
-- **No token counts.** Hooks never carry input/output/cache token numbers,
-  only the statusline's aggregate `total_cost_usd`; per-record `usage` token
-  fields stay at zero, cost is the only populated figure.
+- **Token counts come from an undocumented file.** Hooks carry no token
+  numbers; they are read from the session transcript, whose format can
+  change with any Claude Code release. When it cannot be read or understood
+  the record has zero tokens, and a settle that finds more than 16 MiB of
+  new transcript skips it. See "What is read from the transcript".
 - **Cost is a per-prompt delta of the session total, from the statusline,
   and needs the manual setup step.** See "How cost is derived". Spend that
   lands between two prompts (a late statusline refresh, a background
   subagent still running) is attributed to the next record of the session,
-  not lost. Headless `claude -p` runs have no statusline, so their records
-  carry no cost.
+  not lost. Headless `claude -p` runs have no statusline; their cost comes
+  from the transcript at `SessionEnd`, and is shared between prompts when
+  there are several (see "Headless runs").
 - **A permission wait ends at the next hook event, not when you actually
   click.** There is no documented hook that fires the moment you answer a
   permission dialog, so the waiting span closes at whatever hook fires next

@@ -4,6 +4,25 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **Tokens on every record.** The input, output, cache read and cache write
+  tokens are read from the session transcript (and from each subagent's
+  transcript), so `cache hit` now appears for Claude Code records. Only new
+  bytes are read at each settle, at most 16 MiB; `UserPromptSubmit` only
+  `stat`s the files and the other hooks read nothing.
+- **`agentVersion`.** Claude Code's version, taken from the transcript.
+- **Cost for headless runs.** A `claude -p` session keeps each settled prompt
+  pending and writes its record at `SessionEnd` (or in crash recovery) with
+  the transcript's `cost-state` cost, through the same chained baseline as the
+  statusline cost. With several prompts the cost is shared in proportion to
+  their tokens and each record carries `costAllocated`, kept local and never
+  sent to the hub.
+- Any surprise in the (undocumented) transcript format leaves the record as it
+  was before: written, without tokens, version or cost, and no hook fails.
+
 ## 1.2.0 — 2026-09-29
 
 No changes in this package's code; released in lockstep with kankaku 1.2.0.
