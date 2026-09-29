@@ -445,13 +445,72 @@ the hub has no credentials — in which case `c`/`s`/`S` do nothing.
 - **Tasks** — a table (time, project, work, cost, prompt) with a
   highlighted row on the left, and a `[ Task ]` detail panel on the right
   showing the selected row's full prompt, client, project, hub task,
-  wall/work/wait time, cost, cache hit and subagent count.
+  wall/work/wait time, cost, cache hit and subagent count. `a` and `A`
+  reassign hub rows (see "Reassigning from the Tasks screen" below).
 - **Catalog** — `[ Clients ]` on the left; the selected client's
   `[ Projects ]`, with open/doing hub task counts, on the right. The
   Clients panel header shows the cache's age and a `(stale)` flag.
 - **Sync** — one card per project in a wrapping grid; the selected card is
   highlighted, and each action's result line shows inside its card while
   it runs and once it settles.
+
+### Reassigning from the Tasks screen
+
+Sync never changes the assignment of a row that is already on the hub
+(it stays create-only, so a reassignment made anywhere is never undone by
+a later sync). The Tasks screen is the explicit way to change it from
+kankaku: with the content zone focused, `a` reassigns the selected task
+and `A` reassigns every task of the current view (the project filter and
+the today/all scope) whose hub row is on the unassigned client.
+
+Before anything opens, kankaku asks the hub for the rows involved (the
+footer shows `asking the hub…`) and refreshes the catalog. If the hub is
+not configured, rejects the credentials or cannot be reached, the footer
+says so and nothing opens; so does `a` on a task that is not on the hub
+yet (`not on the hub yet — sync first`) and `A` when no task of the view
+is unassigned there.
+
+The picker is a panel over the content zone with its own footer hints:
+
+1. **Client** — the active clients, with the unassigned client last, as
+   `unassigned`.
+2. **Project** — the client's active projects, plus `no project`.
+3. **Task** — the project's tasks that are not done, plus `no task`.
+   Skipped when `no project` was chosen.
+4. **Review** — one line per row, `current → new` by names, the count of
+   rows that will change and what will not be touched. `enter` applies.
+5. **Result** — one line per row (`reassigned`, `unchanged`, or
+   `failed: <reason>`); a failure never stops the remaining rows. `enter`
+   or `esc` returns to the list, which then shows the hub's assignment
+   (`hub …`) in the detail panel next to the local one, for the rows asked
+   about in this session.
+
+`↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move inside a step, `enter`
+advances and `esc` (or `←`) goes back one step, closing the picker at the
+first. While the picker is open, the screen's other keys and the app's
+own `esc`/`←`/`Tab`/`1`-`4` are inert; `q` still quits.
+
+What it does and does not do:
+
+- Each changed row gets one `PATCH` of `{ client, project, task }` (an
+  empty relation is sent as `""`). Nothing else is written: not
+  `legacy_client_label`, not any measurement field.
+- The selection is checked against the catalog before any request: the
+  project must belong to the client, the task to the project, all
+  active, the task not done. The picker cannot build an inconsistent
+  choice, and the planner rejects one anyway (the hub itself only checks
+  that each id exists).
+- `A` only ever touches rows that are on the unassigned client on the
+  hub; a row that already has a real assignment is never changed by it.
+  Use `a` on that task to move it deliberately.
+- The local worklog is never rewritten; the Tasks screen keeps showing
+  the local assignment. After a reassignment the hub's assignment is shown
+  next to it for the rows asked about in this session.
+- Tasks that are not on the hub yet must be synced first (Sync screen or
+  `kankaku sync`).
+- The hub keeps no record of who reassigned a row or when. The
+  service account must be allowed to update `task_entries` (the hub's
+  `owner` and `service` roles are).
 
 ## Keys (TUI)
 
@@ -488,9 +547,11 @@ jump to the first/last row.
   (filtered to it), `r` refresh; the Quick actions panel additionally
   takes `c` (refresh catalog), `s` (sync all projects) and `S` (full sync
   all) — one at a time, ignored while another is running.
-- **Tasks** — `a` toggle today/all, `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End`
-  move the selection, `r` refresh, `esc` clears a project filter set from
-  Dashboard.
+- **Tasks** — `t` toggle today/all (it was `a` before 1.2.0),
+  `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the selection, `r` refresh,
+  `a` reassign the selected task on the hub, `A` reassign every task of
+  the view that is unassigned on the hub (both open the picker, see above),
+  `esc` clears a project filter set from Dashboard.
 - **Catalog** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the client
   selection, `r` refresh from the hub.
 - **Sync** — `↑`/`↓`/`PageUp`/`PageDown`/`Home`/`End` move the selection,
@@ -502,4 +563,6 @@ The TUI never writes to disk on its own — Dashboard, Tasks and read-only
 Catalog views write nothing at all; Catalog's `refresh`, Sync's
 `s`/`f`/`S` and Dashboard's Quick actions `c`/`s`/`S` write only through
 kankaku's own adapters (`CachedCatalog`, `SyncStateStore`, the hub
-itself), exactly as kankaku's own sync paths do.
+itself), exactly as kankaku's own sync paths do. Tasks' `a`/`A` write
+nothing to disk either (apart from the catalog cache refresh): they change
+the hub's rows only, after the picker's Review step.

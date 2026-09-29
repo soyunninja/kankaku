@@ -14,12 +14,33 @@ formatting or sync-planning logic.
 - `src/domain/` is pure: no I/O, no Ink, no React, no `Date.now()`.
   `nav-model.ts` (the four screens, the tab bar, and `NavState` — the
   active screen plus an optional Tasks `projectFilter`, set by
-  `openProjectInTasks` and cleared by `clearProjectFilter`), `today-model.ts`,
+  `openProjectInTasks` and cleared by `clearProjectFilter`, and an optional
+  `modal` flag, set by `setModal` while the Tasks screen's reassignment
+  picker is open), `today-model.ts`,
   `tasks-model.ts` (rows from kankaku's own `buildTasks`, truncated and
   full prompt, waiting time, cache hit and subagent count, newest first),
   `catalog-model.ts` (clients → active projects with open/doing hub-task
   counts, age/staleness from an injected `now`), `sync-model.ts` (rows
   from kankaku's `SyncStatusSnapshot`, one per project) and
+  `reassign-model.ts` (the Tasks screen's reassignment planner:
+  `planReassignment` validates a `{ clientId, projectId?, hubTaskId? }`
+  selection against the catalog — client active, project active and of
+  that client, task of that project and not done — and rejects the whole
+  plan with a message on any inconsistency, never returning a payload for
+  it; otherwise it returns one line per asked task: `reassign` (names
+  `from` → `to` plus the `{ client, project, task }` payload, `""` for an
+  empty relation), `unchanged` (the row already has exactly that
+  assignment) or `skipped` (`not on the hub yet — sync first`, or, in
+  `bulk` mode, `already assigned` for a row not on the catalog's
+  unassigned client); `describeAssignment` and `eligibleForBulk` are
+  shared with the UI; user-facing strings carry names, never ids),
+  `reassign-picker.ts` (the picker's state machine: steps client →
+  project → task → review → applying → result, options per step from the
+  catalog, the task step skipped for `no project`, wrap-free
+  `moveSelection`/`jumpSelection`, `advance`/`back` returning `undefined`
+  when the picker closes, the review plan computed by `advance`, plus the
+  heading, list rows and footer hints of every step — the list itself is
+  windowed by `ui/components/table.tsx`, which uses `list-window.ts`),
   `dashboard-model.ts` (the Dashboard screen's model: today's
   total/per-project rows reused from `today-model.ts#buildTodayRows` with
   an added `share`, a 7-point last-7-days work/cost series via kankaku's
@@ -86,7 +107,8 @@ formatting or sync-planning logic.
   than read from `node:os`). No I/O — every caller
   (`ui/setup/wizard-screen.tsx`, `cli.tsx`) reads the real files and
   passes plain facts in, exactly like `setup-plan.ts`.
-- `src/ports/` holds interfaces only (`ProjectSource` and `Prompter` —
+- `src/ports/` holds interfaces only (`ReassignActions` — the Tasks
+  screen's hub side, `prepare` and `apply`, neither throwing; `ProjectSource` and `Prompter` —
   `confirm`/`text`/`secret`, injected into `kankaku setup`'s interactive
   prompts so a scripted fake can drive it in tests; `--yes` never calls it
   at all).
@@ -103,7 +125,7 @@ formatting or sync-planning logic.
   segments joined with `/`; never throws on an unreadable or missing
   directory), `worklog-reader.ts` (kankaku's `JsonlWorkLog`),
   `app-info.ts` (`readOwnVersion`, this package's own version for the
-  header bar), `package-versions.ts` (`readCarriedVersions`, the versions of `kankaku-pi`/`kankaku-claude`/`kankaku-hub` for `kankaku --version`, text from `domain/version-info.ts`), and `hub.ts` — credentials (`resolveHub`, wrapping kankaku's
+  header bar), `package-versions.ts` (`readCarriedVersions`, the versions of `kankaku-pi`/`kankaku-claude`/`kankaku-hub` for `kankaku --version`, text from `domain/version-info.ts`), `hub-reassign.ts` (the hub side of the Tasks screen's `a`/`A`, through the published `kankaku-pi/hub` client so auth, the 401 re-auth and the per-request time bound are the client's own: `fetchHubRows` finds `task_entries` rows by `task_id` in chunks of 30 with the exported `escapeFilterValue` and maps them by kankaku task id, tolerating empty relations; `applyReassignment` sends one `PATCH /api/collections/task_entries/records/<rowId>` per `reassign` line with exactly `{ client, project, task }` — `""` for an empty relation, never `legacy_client_label` or any measurement field — one row after the other, a failure recorded per row (`describeHubError` gives a plain reason, no URL or id) without stopping the rest; `createReassignActions` builds the `ports/reassign-actions.ts` `ReassignActions` the UI receives: `prepare` reads the rows and refreshes the catalog under one overall bound, `apply` patches and then refreshes the catalog; sync stays create-only, this is the only path that changes an existing row's assignment), and `hub.ts` — credentials (`resolveHub`, wrapping kankaku's
   `resolveHubCredentials`), the disk-backed catalog (`createCatalog`/
   `refreshCatalog`, kankaku's `CachedCatalog`), no-network status
   (`computeProjectSyncStatus`, kankaku's `computeSyncStatus`) and a
@@ -221,8 +243,19 @@ formatting or sync-planning logic.
   `actions.localHub !== undefined`) threads through `quickActionsFor`/
   `hubPanelRows`/`quickActionsPanelRows` so the panel heights only grow
   when a local hub is actually configured, keeping every existing
-  no-local-hub layout byte-for-byte unchanged), `tasks-screen.tsx` (table left,
-  `[ Task ]` detail panel right), `catalog-screen.tsx` (`[ Clients ]`
+  no-local-hub layout byte-for-byte unchanged), `reassign-panel.tsx` (the reassignment picker drawn as one fixed-height `Panel` over the Tasks content zone: two heading lines and a windowed `Table`, so a long list scrolls inside it) and `tasks-screen.tsx` (table left,
+  `[ Task ]` detail panel right; `t` toggles today/all, `a` reassigns the
+  selected task and `A` every task of the view that is unassigned on the
+  hub, through its `reassign` prop (`ReassignActions`) — `prepare` first,
+  a progress message in the footer meanwhile (`Layout`'s `footerNote`,
+  which replaces the key hints on the same one-line footer), then the
+  picker; the picker is modal: while it is open or the hub is being asked,
+  every other key of the screen is inert and `onModalChange` tells
+  `app.tsx` to set `NavState.modal`, under which the app-level
+  `esc`/`←`/`Tab`/`1`-`4` do nothing and only `q` still quits; the hub's
+  assignment for the rows asked about shows as a `hub …` line in the
+  detail panel; `esc clear filter` is in the footer hints only while a
+  filter is set, so the line stays within 100 columns), `catalog-screen.tsx` (`[ Clients ]`
   left, the selected client's `[ Projects ]` right), `sync-screen.tsx`
   (one card per project in a wrapping grid). Every screen renders its own
   `Layout`, so it stays a self-contained, independently testable unit.
@@ -304,7 +337,7 @@ formatting or sync-planning logic.
   its writer, `install-local-hub` running `hub-manager/install.ts#installHub`
   via `buildHubManagerDeps`) build `<App>`'s `wizard` prop; both are used
   only from the real `renderApp`, exactly like
-  `dashboardActionsDeps`/`catalogScreenDeps`/`syncScreenDeps`. Do not put
+  `dashboardActionsDeps`/`catalogScreenDeps`/`syncScreenDeps`/`reassignScreenDeps` (the Tasks screen's `ReassignActions`, unavailable-with-a-reason when the hub has no credentials). Do not put
   logic there beyond this wiring.
 - Dependencies point inwards: adapters and ui import domain and ports;
   domain imports nothing outside `src/domain/` and `src/ports/`.

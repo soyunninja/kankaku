@@ -3,6 +3,30 @@
 All notable changes to kankaku (formerly kankaku-tui). The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- The Tasks screen can reassign hub rows. `a` reassigns the selected task
+  and `A` every task of the current view that is unassigned on the hub,
+  through a picker (client, project, task, review, result) shown over the
+  content zone. Each changed row gets one `PATCH` of `{ client, project,
+  task }` and nothing else; the selection is validated against the catalog
+  before any request; tasks not on the hub yet are reported as `not on the
+  hub yet — sync first`; a failing row does not stop the rest. Sync stays
+  create-only and the local worklog is never rewritten. After a
+  reassignment the detail panel shows the hub's assignment next to the
+  local one for the rows asked about in the session.
+- The footer can show a short status message in place of the key hints
+  (used while the hub is being asked).
+
+### Changed
+
+- The Tasks screen's today/all toggle moves from `a` to `t`, since `a` now
+  reassigns.
+- The Tasks footer hints list `a`, `A` and `t`; `esc clear filter` is shown
+  only while a project filter is set, to keep the footer on one line.
+
 ## 1.1.0 — 2026-09-29
 
 ### Added

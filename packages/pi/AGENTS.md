@@ -265,7 +265,8 @@ lives, the four core flows, how to run and release, and the gotchas.
   longer matches is dropped, never linked across projects). Sync sends
   `task_entries.task` on create only, exactly like `client`/`project` (see
   `domain/hub-entry.ts#resolveTaskAssignment`) — a reassignment made in the
-  hub's web app is never undone by a later sync.
+  hub's web app, or explicitly from the `kankaku` CLI's Tasks screen, is
+  never undone by a later sync.
 - Hub sync (phase 2, `domain/hub-entry.ts`, `domain/sync-plan.ts`,
   `adapters/sync-runner.ts`) uploads `buildTasks` output — the aggregation
   rule (D6 in `kankaku-pocketbase-proposal.md`) is never re-implemented
@@ -323,9 +324,12 @@ lives, the four core flows, how to run and release, and the gotchas.
 - Task assignment (`client`/`project`/`task`/`legacy_client_label` on a
   `task_entries` row) is **create-only**: `domain/hub-entry.ts`'s
   `buildTaskEntryUpdatePayload` must never include those fields, so a
-  re-sync can never undo a reassignment made directly in the hub's web app.
-  Only `buildTaskEntryCreatePayload` sends them, exactly once, when the row
-  does not exist yet. See README "Hub (PocketBase)" > "Sync" > "Assignment
+  re-sync can never undo a reassignment made directly in the hub's web app
+  or from the `kankaku` CLI's Tasks screen (`a`/`A`, the only kankaku path
+  that changes an existing row's assignment, explicit and user-driven; it
+  PATCHes `{ client, project, task }` and nothing else, from the CLI
+  package, never from this one). Only `buildTaskEntryCreatePayload` sends
+  them, exactly once, when the row does not exist yet. See README "Hub (PocketBase)" > "Sync" > "Assignment
   is create-only".
 - `agent`/`agent_version`/`plugin`/`plugin_version`/`waiting_quality`/
   `cost_quality`/`subagent_linkage` on a `task_entries` row are

@@ -1043,24 +1043,27 @@ a background subagent that settles long after its orchestrator, and after
 the directory has otherwise gone quiet.
 
 **Assignment is create-only.** You (or whoever reassigns work in the hub's
-web app) can move a task from one client/project to another directly in
-PocketBase — for example, moving a "Sin determinar" row to its real
-client once you have identified it. A later re-sync of that same task
+web app, or explicitly from the `kankaku` CLI's Tasks screen) can move a
+task from one client/project to another directly in PocketBase — for
+example, moving a "Sin determinar" row to its real client once you have
+identified it. A later re-sync of that same task
 **must never undo that**: on create kankaku sends the full row, including
 `client`/`project`/`task`/`legacy_client_label`; on every subsequent update
 it sends measurement fields only (`wall_ms`, `cost`, `status`, ...) and
 never touches assignment fields again. `task` (the linked `tasks` relation)
 is create-only for the exact same reason: reassigning which task a row
-belongs to in the web app is never undone by a later sync. If you need
-kankaku itself to change a task's assignment, do it in the web app, not by
-re-syncing.
+belongs to in the web app is never undone by a later sync. Sync itself
+never changes an assignment, so to have kankaku change one, do it
+explicitly: in the web app, or from the `kankaku` CLI's Tasks screen
+(`a` for the selected task, `A` for every unassigned one in the view), not
+by re-syncing.
 
 **Historical ("Sin determinar") records.** A record with no `clientId`, or
 whose `clientId` no longer resolves in the catalog, is routed to the hub's
 "Sin determinar" (unassigned) client, carrying its old free-text `client`
 label (or `clientName`) forward as `legacy_client_label` — the exact
 mechanism that lets you bulk-reassign "everything that said `cjamar`" once,
-in the web app, from the unassigned queue.
+in the web app, from the unassigned queue (or from the CLI's Tasks screen).
 
 **Agent and measurement quality.** Every `task_entries` row also carries
 who produced it and how well each figure was measured, so the hub can

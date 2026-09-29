@@ -263,7 +263,8 @@ Code process and takes the session state of this project whose `pid` matches
 scripting); it wins over the process lookup. Overriding the client or project
 from Claude Code is not supported yet. Assignment is create-only
 on the hub: a row already uploaded as unassigned stays that way until it is
-reassigned in the web app; a later sync does not move it.
+reassigned in the web app or from the `kankaku` CLI's Tasks screen; a
+later sync does not move it.
 
 ## How cost is derived
 
