@@ -176,3 +176,81 @@ test("recoverStaleSessions replays a pid <= 0 session's open prompt when cwd is 
     teardown(dirs);
   }
 });
+
+const MINUTE = 60_000;
+const HOUR = 60 * MINUTE;
+
+test("recoverStaleSessions closes an interrupted prompt at its last recorded event, never at recovery time", () => {
+  const dirs = setup();
+  try {
+    const stateFile = join(dirs.claudeDir, "hung.state.json");
+    const eventsFile = join(dirs.claudeDir, "hung.events.jsonl");
+    const start = 1_000_000;
+    writeState(stateFile, baseState({ pid: 9999, promptOpen: { id: "p1", startedAt: start, costAtStart: undefined } }));
+    appendEvent(eventsFile, { ts: start, event: "UserPromptSubmit", prompt: "hung" });
+    appendEvent(eventsFile, { ts: start + 2 * MINUTE, event: "PreToolUse", toolUseId: "t1", toolName: "Bash", toolInput: {} });
+
+    const records = recoverStaleSessions({
+      claudeDir: dirs.claudeDir,
+      currentSessionId: "current",
+      isAlive: () => false,
+      now: start + 14 * HOUR,
+      env: dirs.env,
+    });
+
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.status, "interrupted");
+    assert.equal(records[0]?.wallMs, 2 * MINUTE);
+    assert.equal(records[0]?.waitingMs + records[0]!.workMs, 2 * MINUTE);
+  } finally {
+    teardown(dirs);
+  }
+});
+
+test("recoverStaleSessions closes a still-open waiting span at the last recorded event", () => {
+  const dirs = setup();
+  try {
+    const stateFile = join(dirs.claudeDir, "waiting.state.json");
+    const eventsFile = join(dirs.claudeDir, "waiting.events.jsonl");
+    const start = 2_000_000;
+    writeState(stateFile, baseState({ pid: 9999, promptOpen: { id: "p1", startedAt: start, costAtStart: undefined } }));
+    appendEvent(eventsFile, { ts: start, event: "UserPromptSubmit", prompt: "needs approval" });
+    appendEvent(eventsFile, { ts: start + MINUTE, event: "PermissionRequest", toolUseId: "t1", toolName: "Bash" });
+
+    const records = recoverStaleSessions({
+      claudeDir: dirs.claudeDir,
+      currentSessionId: "current",
+      isAlive: () => false,
+      now: start + 14 * HOUR,
+      env: dirs.env,
+    });
+
+    assert.equal(records.length, 1);
+    assert.equal(records[0]?.wallMs, MINUTE);
+    assert.equal(records[0]?.waitingMs, 0);
+  } finally {
+    teardown(dirs);
+  }
+});
+
+test("recoverStaleSessions closes a prompt with no follow-up event at its own start", () => {
+  const dirs = setup();
+  try {
+    const stateFile = join(dirs.claudeDir, "lonely.state.json");
+    const eventsFile = join(dirs.claudeDir, "lonely.events.jsonl");
+    writeState(stateFile, baseState({ pid: 9999, promptOpen: { id: "p1", startedAt: 3000, costAtStart: undefined } }));
+    appendEvent(eventsFile, { ts: 3000, event: "UserPromptSubmit", prompt: "nothing after" });
+
+    const records = recoverStaleSessions({
+      claudeDir: dirs.claudeDir,
+      currentSessionId: "current",
+      isAlive: () => false,
+      now: 3000 + 14 * HOUR,
+      env: dirs.env,
+    });
+
+    assert.equal(records[0]?.wallMs, 0);
+  } finally {
+    teardown(dirs);
+  }
+});

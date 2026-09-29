@@ -12,6 +12,7 @@ export interface RecoverStaleSessionsInput {
   claudeDir: string;
   currentSessionId: string;
   isAlive: (pid: number) => boolean;
+  /** Fallback close time, used only when a prompt has no usable event timestamp. */
   now: number;
   env: CostEnv;
 }
@@ -52,7 +53,12 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
       const prompts = splitPrompts(events);
       const last = prompts[prompts.length - 1];
       if (last && last.open) {
-        const core = replayPrompt(last, { settledAt: input.now });
+        // Close at the prompt's last recorded activity, never at recovery
+        // time (which is the next session start, possibly hours later).
+        // `now` is only a fallback when no usable timestamp exists.
+        const lastTs = last.events[last.events.length - 1]?.ts;
+        const settledAt = typeof lastTs === "number" && Number.isFinite(lastTs) ? lastTs : input.now;
+        const core = replayPrompt(last, { settledAt });
         if (core) {
           const model = readCost(input.env, sessionId)?.model;
           records.push(buildClaudeRecord(core, state, sessionId, model));
