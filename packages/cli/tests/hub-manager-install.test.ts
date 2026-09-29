@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, statSync, appendFileSync } from "node:fs";
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync, statSync, appendFileSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { installHub, startHub, stopHub, hubStatus, upgradeHub, hubLogs } from "../src/adapters/hub-manager/install.ts";
@@ -237,6 +237,8 @@ test("installHub: fresh install downloads pocketbase, copies app files, provisio
       "write hub.json": "done",
       "start hub": "done",
       "provision accounts": "done",
+      "write service.json": "done",
+      "sync credentials": "done",
     });
 
     assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "bin", "pocketbase")), true);
@@ -258,6 +260,10 @@ test("installHub: fresh install downloads pocketbase, copies app files, provisio
     const credentials = JSON.parse(readFileSync(join(homeDir, ".kankaku", "credentials.json"), "utf8"));
     assert.equal(credentials.url, "http://127.0.0.1:8090");
     assert.equal(credentials.email, "kankaku-sync@kankaku.local");
+
+    const serviceFile = join(homeDir, ".kankaku", "hub", "service.json");
+    assert.equal(statSync(serviceFile).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(readFileSync(serviceFile, "utf8")), { url: "http://127.0.0.1:8090", email: credentials.email, password: credentials.password });
 
     assert.equal(spawnCalls.length, 1); // the server is left running, never stopped by install
   } finally {
@@ -286,6 +292,8 @@ test("installHub: re-running with everything present reports every step unchange
       "install app files": "unchanged",
       "write hub.json": "unchanged",
       "provision accounts": "unchanged",
+      "write service.json": "unchanged",
+      "sync credentials": "unchanged",
     });
     assert.equal(fetchCalls.length, 0);
     assert.equal(runnerCalls.length, 0);
@@ -355,12 +363,159 @@ test("installHub: refuses to provision accounts when another process already ans
       "write hub.json": "done",
       "start hub": "done",
       "provision accounts": "done",
+      "write service.json": "done",
+      "sync credentials": "done",
     });
     assert.equal(retrySpawnCalls.length, 1);
 
     const hubJsonAfterRetry = JSON.parse(readFileSync(join(homeDir, ".kankaku", "hub", "hub.json"), "utf8"));
     assert.equal(hubJsonAfterRetry.port, 8091);
     assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "accounts.json")), true);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+const SERVICE_EMAIL = "kankaku-sync@kankaku.local";
+const OTHER_HUB_CREDENTIALS = JSON.stringify({ url: "https://hub.example.com", email: "me@example.com", password: "real-hub-password" }, null, 2);
+
+function credentialsPathFor(homeDir: string): string {
+  return join(homeDir, ".kankaku", "credentials.json");
+}
+
+/** Writes `credentials.json` with a fixed, old mtime so a later rewrite is detectable. */
+function seedCredentials(homeDir: string, body: string): number {
+  mkdirSync(join(homeDir, ".kankaku"), { recursive: true });
+  writeFileSync(credentialsPathFor(homeDir), body);
+  const old = new Date("2026-01-01T00:00:00.000Z");
+  utimesSync(credentialsPathFor(homeDir), old, old);
+  return statSync(credentialsPathFor(homeDir)).mtimeMs;
+}
+
+test("installHub: credentials.json pointing at another hub is left byte-for-byte untouched; service.json still holds the local service account and the report says how to switch", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const mtimeBefore = seedCredentials(homeDir, OTHER_HUB_CREDENTIALS);
+    const { deps } = baseDeps(homeDir, packageDir, zip);
+
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.equal(report.ok, true);
+    assert.equal(readFileSync(credentialsPathFor(homeDir), "utf8"), OTHER_HUB_CREDENTIALS);
+    assert.equal(statSync(credentialsPathFor(homeDir)).mtimeMs, mtimeBefore);
+    assert.equal(existsSync(`${credentialsPathFor(homeDir)}.bak`), false);
+
+    const service = JSON.parse(readFileSync(join(homeDir, ".kankaku", "hub", "service.json"), "utf8"));
+    assert.equal(service.url, "http://127.0.0.1:8090");
+    assert.equal(service.email, SERVICE_EMAIL);
+    assert.equal(typeof service.password, "string");
+
+    const step = report.steps.find((s) => s.step === "sync credentials");
+    assert.deepEqual(step, {
+      step: "sync credentials",
+      outcome: "unchanged",
+      detail: "this machine syncs to https://hub.example.com; run 'kankaku hub use' to switch to the local hub",
+    });
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("installHub: credentials.json that already points at this local hub (same host and port) is rewritten with the service account", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    seedCredentials(homeDir, JSON.stringify({ url: "http://localhost:8090", email: "old@example.test", password: "old" }));
+    const { deps } = baseDeps(homeDir, packageDir, zip);
+
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.equal(report.ok, true);
+    const credentials = JSON.parse(readFileSync(credentialsPathFor(homeDir), "utf8"));
+    assert.equal(credentials.url, "http://127.0.0.1:8090");
+    assert.equal(credentials.email, SERVICE_EMAIL);
+    assert.deepEqual(report.steps.find((s) => s.step === "sync credentials"), { step: "sync credentials", outcome: "done", detail: "points at http://127.0.0.1:8090" });
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("installHub: with no credentials.json the fresh install writes one and says it points at the local hub", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const { deps } = baseDeps(homeDir, packageDir, zip);
+
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.deepEqual(report.steps.find((s) => s.step === "sync credentials"), { step: "sync credentials", outcome: "done", detail: "points at http://127.0.0.1:8090" });
+    assert.equal(statSync(credentialsPathFor(homeDir)).mode & 0o777, 0o600);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+/** Turns a finished install into what an older version left behind: no service.json. */
+function makeLegacyInstall(homeDir: string): void {
+  rmSync(join(homeDir, ".kankaku", "hub", "service.json"), { force: true });
+}
+
+test("installHub: re-run on an install made before service.json existed recovers the service account from a credentials.json that points at the local hub", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const { deps: firstDeps } = baseDeps(homeDir, packageDir, zip);
+    await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, firstDeps);
+    const original = JSON.parse(readFileSync(join(homeDir, ".kankaku", "hub", "service.json"), "utf8"));
+    makeLegacyInstall(homeDir);
+
+    const { deps } = baseDeps(homeDir, packageDir, zip);
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.equal(report.ok, true);
+    assert.equal(report.steps.find((s) => s.step === "write service.json")?.outcome, "done");
+    assert.deepEqual(JSON.parse(readFileSync(join(homeDir, ".kankaku", "hub", "service.json"), "utf8")), original);
+  } finally {
+    rmSync(homeDir, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("installHub: re-run on an older install whose service password is nowhere to be found says so plainly, invents nothing and leaves credentials.json alone", async () => {
+  const homeDir = makeDir();
+  const packageDir = makeDir();
+  try {
+    const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+    writePackage(packageDir, "0.2.0", "0.40.4", zip);
+    const { deps: firstDeps } = baseDeps(homeDir, packageDir, zip);
+    await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, firstDeps);
+    makeLegacyInstall(homeDir);
+    const mtimeBefore = seedCredentials(homeDir, OTHER_HUB_CREDENTIALS);
+
+    const { deps } = baseDeps(homeDir, packageDir, zip);
+    const report = await installHub({ ownerEmail: "owner@example.test", ownerPassword: "s3cret" }, deps);
+
+    assert.equal(report.ok, true);
+    assert.equal(existsSync(join(homeDir, ".kankaku", "hub", "service.json")), false);
+    const step = report.steps.find((s) => s.step === "write service.json");
+    assert.equal(step?.outcome, "unchanged");
+    assert.match(step?.detail ?? "", /not recoverable/);
+    assert.equal(report.steps.some((s) => s.step === "sync credentials"), false);
+    assert.equal(readFileSync(credentialsPathFor(homeDir), "utf8"), OTHER_HUB_CREDENTIALS);
+    assert.equal(statSync(credentialsPathFor(homeDir)).mtimeMs, mtimeBefore);
   } finally {
     rmSync(homeDir, { recursive: true, force: true });
     rmSync(packageDir, { recursive: true, force: true });

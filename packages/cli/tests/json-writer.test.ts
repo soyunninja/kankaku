@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, chmodSync, statSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { backupOnce } from "../src/adapters/setup/json-writer.ts";
+import { backupOnce, writeJsonAtomic } from "../src/adapters/setup/json-writer.ts";
 
 function makeDir(): string {
   return mkdtempSync(join(tmpdir(), "kankaku-cli-json-writer-"));
@@ -64,6 +64,19 @@ test("backupOnce: still a no-op (no backup written) when the source file does no
     backupOnce(join(dir, "missing.json"));
     assert.equal(statSync(dir).isDirectory(), true); // nothing thrown, nothing created
   } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("writeJsonAtomic: with a file mode the temp file is created with it, so no wider mode ever exists (even under umask 0)", () => {
+  const dir = makeDir();
+  const previousUmask = process.umask(0);
+  try {
+    const filePath = join(dir, "service.json");
+    writeJsonAtomic(filePath, { a: 1 }, undefined, 0o600);
+    assert.equal(statSync(filePath).mode & 0o777, 0o600);
+  } finally {
+    process.umask(previousUmask);
     rmSync(dir, { recursive: true, force: true });
   }
 });

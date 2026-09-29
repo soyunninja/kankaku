@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runCli } from "../src/cli.tsx";
+import { buildWizardActions, runCli } from "../src/cli.tsx";
+import { createWizardState, setHubField, setHubMode } from "../src/domain/setup-wizard.ts";
 import type { CliDeps } from "../src/cli.tsx";
 import type { HubManagerDeps } from "../src/adapters/hub-manager/install.ts";
 import type { ScriptRunner, ScriptRunResult } from "../src/ports/script-runner.ts";
@@ -253,7 +254,7 @@ test("hub status: not installed", async () => {
   try {
     const lines: string[] = [];
     await runCli(["hub", "status"], baseDeps(home, { stdout: (text) => lines.push(text) }));
-    assert.deepEqual(lines, ["local hub: not installed"]);
+    assert.deepEqual(lines, ["local hub: not installed", "sync: not configured"]);
   } finally {
     rmSync(home, { recursive: true, force: true });
   }
@@ -300,5 +301,165 @@ test("hub --help (no subcommand at all still reaches the App); the usage line do
     assert.match(usage, /hub logs \[-n N\]/);
   } finally {
     rmSync(home, { recursive: true, force: true });
+  }
+});
+
+const OTHER_HUB = JSON.stringify({ url: "https://hub.example.com", email: "me@example.com", password: "real-hub-password" }, null, 2);
+
+function seedCredentials(home: string, body: string): number {
+  mkdirSync(join(home, ".kankaku"), { recursive: true });
+  const file = join(home, ".kankaku", "credentials.json");
+  writeFileSync(file, body, { mode: 0o600 });
+  const old = new Date("2026-01-01T00:00:00.000Z");
+  utimesSync(file, old, old);
+  return statSync(file).mtimeMs;
+}
+
+/** Runs `kankaku hub install` with flags against fakes; returns what it printed and its exit code. */
+async function runInstall(home: string, packageDir: string, zip: Buffer): Promise<{ output: string; exitCode: number | undefined }> {
+  const lines: string[] = [];
+  let exitCode: number | undefined;
+  const state: ServerState = { listening: false };
+  await runCli(
+    ["hub", "install", "--owner-email", "owner@example.test", "--owner-password", "s3cret"],
+    baseDeps(home, { fetch: fakeFetch(zip, state), hubManager: fakeHubManager(packageDir, zip, state), stdout: (text) => lines.push(text), exit: (code) => (exitCode = code) }),
+  );
+  return { output: lines.join("\n"), exitCode };
+}
+
+async function runHub(home: string, args: string[]): Promise<{ lines: string[]; errors: string[]; exitCode: number | undefined }> {
+  const lines: string[] = [];
+  const errors: string[] = [];
+  let exitCode: number | undefined;
+  await runCli(["hub", ...args], baseDeps(home, { stdout: (text) => lines.push(text), stderr: (text) => errors.push(text), exit: (code) => (exitCode = code) }));
+  return { lines, errors, exitCode };
+}
+
+test("hub install: credentials.json for another hub is untouched (bytes and mtime), service.json exists, the report says how to switch", async () => {
+  const home = makeHome();
+  const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+  const packageDir = makePackageDir(zip);
+  try {
+    const mtime = seedCredentials(home, OTHER_HUB);
+    const { output, exitCode } = await runInstall(home, packageDir, zip);
+
+    assert.equal(exitCode, undefined);
+    assert.match(output, /^sync credentials: unchanged \(this machine syncs to https:\/\/hub\.example\.com; run 'kankaku hub use' to switch to the local hub\)$/m);
+    const file = join(home, ".kankaku", "credentials.json");
+    assert.equal(readFileSync(file, "utf8"), OTHER_HUB);
+    assert.equal(statSync(file).mtimeMs, mtime);
+    assert.equal(statSync(join(home, ".kankaku", "hub", "service.json")).mode & 0o777, 0o600);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("hub use: points credentials.json at the local hub, prints the previous url, keeps a 0600 .bak; a second run is unchanged", async () => {
+  const home = makeHome();
+  const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+  const packageDir = makePackageDir(zip);
+  try {
+    seedCredentials(home, OTHER_HUB);
+    await runInstall(home, packageDir, zip);
+
+    const first = await runHub(home, ["use"]);
+    assert.equal(first.exitCode, undefined);
+    assert.deepEqual(first.lines, ["sync now points at http://127.0.0.1:8090 (was https://hub.example.com)"]);
+    const credentials = JSON.parse(readFileSync(join(home, ".kankaku", "credentials.json"), "utf8"));
+    assert.equal(credentials.url, "http://127.0.0.1:8090");
+    assert.equal(readFileSync(join(home, ".kankaku", "credentials.json.bak"), "utf8"), OTHER_HUB);
+    assert.equal(statSync(join(home, ".kankaku", "credentials.json.bak")).mode & 0o777, 0o600);
+    assert.equal(statSync(join(home, ".kankaku", "credentials.json")).mode & 0o777, 0o600);
+
+    const second = await runHub(home, ["use"]);
+    assert.equal(second.exitCode, undefined);
+    assert.deepEqual(second.lines, ["sync credentials: unchanged (already points at http://127.0.0.1:8090)"]);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+test("hub use: no local hub installed is an error (exit 1) that says how to install", async () => {
+  const home = makeHome();
+  try {
+    const result = await runHub(home, ["use"]);
+    assert.equal(result.exitCode, 1);
+    assert.match(result.errors.join(""), /^kankaku hub use: no local hub is installed; run: kankaku hub install/);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("hub use: an install without service.json is an error (exit 1) that says to run install again, and credentials.json is untouched", async () => {
+  const home = makeHome();
+  const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+  const packageDir = makePackageDir(zip);
+  try {
+    seedCredentials(home, OTHER_HUB);
+    await runInstall(home, packageDir, zip);
+    rmSync(join(home, ".kankaku", "hub", "service.json"));
+
+    const result = await runHub(home, ["use"]);
+
+    assert.equal(result.exitCode, 1);
+    assert.match(result.errors.join(""), /service\.json.*kankaku hub install/);
+    assert.equal(readFileSync(join(home, ".kankaku", "credentials.json"), "utf8"), OTHER_HUB);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
+  }
+});
+
+function writeHubJson(home: string, port: number): void {
+  mkdirSync(join(home, ".kankaku", "hub"), { recursive: true });
+  writeFileSync(join(home, ".kankaku", "hub", "hub.json"), JSON.stringify({ port, appVersion: "0.2.0", pocketbaseVersion: "0.40.4", installedAt: "2026-09-29T00:00:00.000Z" }));
+}
+
+test("hub status: appends where this machine syncs - the local hub, another url, or nowhere", async () => {
+  const home = makeHome();
+  try {
+    writeHubJson(home, 8090);
+    assert.equal((await runHub(home, ["status"])).lines.at(-1), "sync: not configured");
+
+    seedCredentials(home, OTHER_HUB);
+    assert.equal((await runHub(home, ["status"])).lines.at(-1), "sync: https://hub.example.com");
+
+    seedCredentials(home, JSON.stringify({ url: "http://127.0.0.1:8090", email: "a@b.c", password: "pw" }));
+    const local = await runHub(home, ["status"]);
+    assert.equal(local.lines.length, 2);
+    assert.match(local.lines[0]!, /^local hub: stopped/);
+    assert.equal(local.lines[1], "sync: local hub");
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("wizard install-local-hub: credentials for another hub stay put and the result detail says so", async () => {
+  const home = makeHome();
+  const zip = buildZip("pocketbase", Buffer.from("#!/bin/sh\necho pb\n"));
+  const packageDir = makePackageDir(zip);
+  try {
+    seedCredentials(home, OTHER_HUB);
+    const state: ServerState = { listening: false };
+    const deps = baseDeps(home, { fetch: fakeFetch(zip, state), hubManager: fakeHubManager(packageDir, zip, state) });
+    const facts = {
+      agentFacts: { pi: undefined, gentleShell: undefined, claudeCode: undefined, codex: undefined, opencode: undefined },
+      hub: { credentialsPresent: true, url: "https://hub.example.com", email: "me@example.com", password: "real-hub-password", credentialsPath: join(home, ".kankaku", "credentials.json") },
+      roots: { current: undefined, defaultRoots: [home], path: join(home, ".kankaku", "tui.json") },
+      homeDir: home,
+    };
+    let wizard = setHubMode(createWizardState(facts), "local");
+    wizard = setHubField(setHubField(wizard, "ownerEmail", "owner@example.test"), "ownerPassword", "s3cret");
+
+    const result = await buildWizardActions(deps, undefined).apply({ kind: "install-local-hub", file: "http://127.0.0.1:8090", label: "install" }, wizard);
+
+    assert.equal(result.outcome, "started");
+    assert.match(result.detail ?? "", /sync credentials: unchanged \(this machine syncs to https:\/\/hub\.example\.com; run 'kankaku hub use' to switch to the local hub\)/);
+    assert.equal(readFileSync(join(home, ".kankaku", "credentials.json"), "utf8"), OTHER_HUB);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+    rmSync(packageDir, { recursive: true, force: true });
   }
 });

@@ -45,12 +45,13 @@ import { createChildProcessRunner } from "./adapters/setup/child-process-runner.
 import { createReadlinePrompter } from "./adapters/setup/readline-prompter.ts";
 import type { Prompter } from "./ports/prompter.ts";
 import type { WizardActions } from "./ui/setup/wizard-screen.tsx";
-import { hubLayout, parseHubConfig } from "./domain/local-hub-model.ts";
+import { describeSyncTarget, hubLayout, parseHubConfig } from "./domain/local-hub-model.ts";
 import type { HubStatus } from "./domain/local-hub-model.ts";
 import { hubLogs, hubStatus, installHub, startHub, stopHub, upgradeHub } from "./adapters/hub-manager/install.ts";
 import type { HubManagerDeps } from "./adapters/hub-manager/install.ts";
 import { isAlive, readPid, startDetached } from "./adapters/hub-manager/process.ts";
 import { locateHubPackage } from "./adapters/hub-manager/package.ts";
+import { useLocalHub } from "./adapters/hub-manager/credentials.ts";
 
 export interface CliDeps {
   homeDir: string;
@@ -76,7 +77,7 @@ export interface CliDeps {
 }
 
 const USAGE =
-  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run] [--from-checkout <dir>] [--claude-plugin-dir <dir>]|doctor|hub install [--port N] [--owner-email E] [--owner-password P]|hub start|hub stop|hub status|hub upgrade|hub logs [-n N]] [--roots a,b] [--theme name]\n";
+  "usage: kankaku [today|tasks [--all]|catalog [refresh]|sync [status|all] [--project <dir>]|setup [--yes] [--dry-run] [--from-checkout <dir>] [--claude-plugin-dir <dir>]|doctor|hub install [--port N] [--owner-email E] [--owner-password P]|hub use|hub start|hub stop|hub status|hub upgrade|hub logs [-n N]] [--roots a,b] [--theme name]\n";
 
 /** Load today's model for `roots`: discover projects, read their worklogs, build rows. */
 export function loadToday(roots: string[]): TodayModel {
@@ -396,8 +397,10 @@ async function performLocalHubInstallFromCheckout(checkout: string, deps: CliDep
  * `--claude-plugin-dir`/`KANKAKU_CLAUDE_PLUGIN_DIR` — see
  * `runCli`/`resolveClaudePluginOverride`), never from wizard state.
  * `install-local-hub` runs the real `hub-manager/install.ts#installHub`
- * (which writes `accounts.json` and `~/.kankaku/credentials.json`
- * itself), reporting every install step in the result detail. Never
+ * (which writes `accounts.json` and `service.json`, and
+ * `~/.kankaku/credentials.json` only when none exists or it already
+ * points at the local hub), reporting every install step in the result
+ * detail - the `sync credentials` step with its own explanation. Never
  * throws: any adapter failure becomes an `"error"` outcome instead.
  */
 async function applyWizardAction(action: WizardAction, state: WizardState, deps: CliDeps, claudePluginOverride: string | undefined): Promise<ApplyResult> {
@@ -430,7 +433,7 @@ async function applyWizardAction(action: WizardAction, state: WizardState, deps:
       }
       case "install-local-hub": {
         const report = await installHub({ ownerEmail: state.hub.ownerEmail, ownerPassword: state.hub.ownerPassword }, buildHubManagerDeps(deps));
-        const detail = report.steps.map((step) => `${step.step}: ${step.outcome}`).join("; ");
+        const detail = report.steps.map((step) => `${step.step}: ${step.outcome}${step.step === "sync credentials" && step.detail ? ` (${step.detail})` : ""}`).join("; ");
         if (!report.ok) return { action, outcome: "error", detail };
         return { action, outcome: "started", detail: `${detail} — running at ${report.url}` };
       }
@@ -504,6 +507,23 @@ function formatHubStatusLine(status: HubStatus, pocketbaseVersion: string | unde
   const label = status.state === "unhealthy" ? "unhealthy" : "running";
   const pbPart = pocketbaseVersion ? ` (PocketBase ${pocketbaseVersion})` : "";
   return `local hub: ${label}${status.version ? ` ${status.version}` : ""}${pbPart} at ${status.url} · pb_data ${formatBytes(pbDataBytes)}`;
+}
+
+/** The URL this machine's sync resolves to (`resolveHub`: environment first, then `~/.kankaku/credentials.json`), or `undefined` when none is configured. */
+function syncCredentialsUrl(deps: CliDeps): string | undefined {
+  const hub = resolveHub({ env: deps.env ?? {}, homeDir: () => deps.homeDir });
+  return hub.ok ? hub.credentials.url : undefined;
+}
+
+/** The installed local hub's URL from `hub.json`'s port, or `undefined` when it is not installed. */
+function localHubUrl(deps: CliDeps): string | undefined {
+  const layout = hubLayout(deps.homeDir);
+  if (!existsSync(layout.hubJson)) return undefined;
+  try {
+    return `http://127.0.0.1:${parseHubConfig(JSON.parse(readFileSync(layout.hubJson, "utf8"))).port}`;
+  } catch {
+    return undefined;
+  }
 }
 
 /** `-n <count>`'s value, defaulting to 50 when absent or not a positive integer. */
@@ -589,6 +609,22 @@ async function runHubCommand(args: string[], deps: CliDeps): Promise<void> {
       }
     }
     deps.stdout(formatHubStatusLine(status, pocketbaseVersion, dirSizeBytes(layout.pbData)));
+    deps.stdout(`sync: ${describeSyncTarget(syncCredentialsUrl(deps), localHubUrl(deps))}`);
+    return;
+  }
+
+  if (sub === "use") {
+    const result = useLocalHub(deps.homeDir);
+    if (!result.ok) {
+      deps.stderr(`kankaku hub use: ${result.error}\n`);
+      deps.exit(1);
+      return;
+    }
+    deps.stdout(
+      result.changed
+        ? `sync now points at ${result.url} (was ${result.previousUrl ?? "not configured"})`
+        : `sync credentials: unchanged (already points at ${result.url})`,
+    );
     return;
   }
 

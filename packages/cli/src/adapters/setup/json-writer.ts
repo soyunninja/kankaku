@@ -59,10 +59,15 @@ export function backupOnce(filePath: string): void {
   if (sourceIsOwnerOnly) tightenBestEffort(backupPath);
 }
 
-/** Write `value` as 2-space-indented JSON to `filePath` via tmp file + rename, creating the parent directory when missing. */
-export function writeJsonAtomic(filePath: string, value: unknown, dirMode?: number): void {
+/**
+ * Write `value` as 2-space-indented JSON to `filePath` via tmp file + rename,
+ * creating the parent directory when missing. With `fileMode` the temp file
+ * is created with that mode from the first byte, so a secret is never
+ * readable through a wider mode, not even for the instant before a chmod.
+ */
+export function writeJsonAtomic(filePath: string, value: unknown, dirMode?: number, fileMode?: number): void {
   mkdirSync(dirname(filePath), dirMode !== undefined ? { recursive: true, mode: dirMode } : { recursive: true });
   const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, JSON.stringify(value, null, 2));
+  writeFileSync(tmp, JSON.stringify(value, null, 2), fileMode !== undefined ? { mode: fileMode } : {});
   renameSync(tmp, filePath);
 }

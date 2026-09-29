@@ -14,16 +14,21 @@ import {
   classifyStatus,
   generatePassword,
   hubLayout,
+  credentialsKeptDetail,
   parseHubConfig,
+  sameHubUrl,
   serveArgs,
+  shouldWriteCredentials,
 } from "../../domain/local-hub-model.ts";
-import type { HubAccounts, HubConfig, HubLayout, HubStatus } from "../../domain/local-hub-model.ts";
+import type { HubAccounts, HubConfig, HubLayout, HubStatus, ServiceAccount } from "../../domain/local-hub-model.ts";
 import { locateHubPackage } from "./package.ts";
 import type { LocateHubPackageResult } from "./package.ts";
 import { downloadPocketBase } from "./download.ts";
 import { isAlive, readPid, stopProcess, waitForHealth } from "./process.ts";
 import { createUser, upsertSuperuser } from "./accounts.ts";
-import { writeHubCredentials } from "../setup/hub.ts";
+import { credentialsPath, writeHubCredentials } from "../setup/hub.ts";
+import { readJsonObjectOrEmpty } from "../setup/json-writer.ts";
+import { readCredentialsUrl, readServiceAccount, writeServiceAccount } from "./credentials.ts";
 import type { ScriptRunner } from "../../ports/script-runner.ts";
 
 const OWNER_DIR_MODE = 0o700;
@@ -170,6 +175,53 @@ function healthFailureDetail(layout: HubLayout, exitedEarly: boolean): string {
 }
 
 /**
+ * Stores the local hub's service account in `service.json` (always) and
+ * decides what happens to `~/.kankaku/credentials.json`: written only when
+ * none exists or it already points at this local hub, otherwise left
+ * byte-for-byte untouched with a step saying how to switch (`kankaku hub
+ * use`). Returns the two report steps.
+ */
+function storeServiceAccount(homeDir: string, account: ServiceAccount, recoveredFrom?: string): HubStepReport[] {
+  const serviceResult = writeServiceAccount(homeDir, account);
+  const steps: HubStepReport[] = [
+    { step: "write service.json", outcome: serviceResult.changed ? "done" : "unchanged", ...(recoveredFrom ? { detail: recoveredFrom } : {}) },
+  ];
+  const existingUrl = readCredentialsUrl(homeDir);
+  if (!shouldWriteCredentials(existingUrl, account.url)) {
+    steps.push({ step: "sync credentials", outcome: "unchanged", detail: credentialsKeptDetail(existingUrl!) });
+    return steps;
+  }
+  const written = writeHubCredentials(homeDir, account);
+  steps.push({ step: "sync credentials", outcome: written.changed ? "done" : "unchanged", detail: `points at ${account.url}` });
+  return steps;
+}
+
+/**
+ * Re-run on an install that already has accounts: `service.json` is kept up
+ * to date when it exists (its url follows the recorded port); an install
+ * made before `service.json` existed gets it back only when the service
+ * password is still known - it is in `credentials.json` (email and url are
+ * the local hub's). When it is not recoverable, says so and invents nothing.
+ */
+function ensureServiceAccount(homeDir: string, url: string): HubStepReport[] {
+  const stored = readServiceAccount(homeDir);
+  if (stored) return storeServiceAccount(homeDir, { ...stored, url });
+
+  const credentials = readJsonObjectOrEmpty(credentialsPath(homeDir));
+  const { url: credentialsUrl, email, password } = credentials;
+  if (email === SERVICE_EMAIL && typeof password === "string" && password !== "" && typeof credentialsUrl === "string" && sameHubUrl(credentialsUrl, url)) {
+    return storeServiceAccount(homeDir, { url, email: SERVICE_EMAIL, password }, "recovered from credentials.json");
+  }
+  return [
+    {
+      step: "write service.json",
+      outcome: "unchanged",
+      detail: "the service account's password is not recoverable: it was not stored by the version that installed this hub and credentials.json does not hold it; none was invented",
+    },
+  ];
+}
+
+/**
  * Installs (or, run again, verifies) the local hub under
  * `~/.kankaku/hub`: locates the `kankaku-hub` package, creates the layout
  * directories (root created 0700, never chmod'd again once it exists —
@@ -178,8 +230,10 @@ function healthFailureDetail(layout: HubLayout, exitedEarly: boolean): string {
  * package's migrations/hooks/public into `app/<version>/`, writes
  * `hub.json`, and — only the first time, when `accounts.json` doesn't
  * exist yet — provisions the superuser and the owner/service application
- * users, then leaves the server running. Idempotent: re-running with
- * everything already present reports every step `unchanged` and touches
+ * users, then leaves the server running. The service account always goes
+ * to `service.json`; `credentials.json` is written only when none exists
+ * or it already points at this hub (see `storeServiceAccount`). Idempotent:
+ * re-running with everything already present reports every step `unchanged` and touches
  * neither the process nor the accounts. Never throws; a failing step
  * stops the sequence and is reported as `error`.
  */
@@ -244,6 +298,7 @@ export async function installHub(options: InstallHubOptions, deps: HubManagerDep
   const accountsExist = existsSync(layout.accountsJson);
   if (accountsExist) {
     steps.push({ step: "provision accounts", outcome: "unchanged" });
+    steps.push(...ensureServiceAccount(deps.homeDir, baseUrlFor(port)));
     return { ok: true, steps, url: baseUrlFor(port) };
   }
 
@@ -272,12 +327,13 @@ export async function installHub(options: InstallHubOptions, deps: HubManagerDep
     const servicePassword = generatePassword(deps.randomBytes);
     await createUser(url, superuser, { email: SERVICE_EMAIL, password: servicePassword, role: "service" }, deps.fetch);
 
+    // The service password is stored before accounts.json marks the accounts as provisioned: a crash in between must never leave a password nobody has.
+    const serviceSteps = storeServiceAccount(deps.homeDir, { url, email: SERVICE_EMAIL, password: servicePassword });
     const accounts: HubAccounts = { superuserEmail: SUPERUSER_EMAIL, superuserPassword, ownerEmail: options.ownerEmail };
     writeFileSync(layout.accountsJson, JSON.stringify(accounts, null, 2));
     chmodSync(layout.accountsJson, OWNER_FILE_MODE);
-    writeHubCredentials(deps.homeDir, { url, email: SERVICE_EMAIL, password: servicePassword });
 
-    steps.push({ step: "provision accounts", outcome: "done" });
+    steps.push({ step: "provision accounts", outcome: "done" }, ...serviceSteps);
     return { ok: true, steps, url };
   } catch (error) {
     steps.push({ step: "provision accounts", outcome: "error", detail: message(error) });

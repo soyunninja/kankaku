@@ -159,6 +159,41 @@ test("Review step: lists the plan's label and file, Roots step renders along the
   assert.equal(frame.includes("/home/.pi/agent/settings.json"), true);
 });
 
+async function reviewWithLocalHub(facts: WizardFacts): Promise<string> {
+  const { actions } = fakeActions();
+  const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={120} rows={24} />);
+  stdin.write("\r"); // agents -> hub
+  await nextTick();
+  stdin.write(facts.hub.credentialsPresent ? "\u001B[B" : "\u001B[A"); // existing -> local (down), or skip -> local (up)
+  await nextTick();
+  stdin.write("\t");
+  await nextTick();
+  stdin.write("owner@example.com");
+  await nextTick();
+  stdin.write("\t");
+  await nextTick();
+  stdin.write("s3cret");
+  await nextTick();
+  stdin.write("\r"); // hub -> roots
+  await nextTick();
+  stdin.write("\r"); // roots -> review
+  await nextTick();
+  return lastFrame() ?? "";
+}
+
+test("Review step (install locally): says the sync credentials move to the local hub when none exist", async () => {
+  const frame = await reviewWithLocalHub(baseFacts());
+  assert.equal(frame.includes("Setup · Review"), true);
+  assert.equal(frame.includes("sync credentials → the local hub"), true);
+});
+
+test("Review step (install locally): says the sync credentials stay on the existing hub and how to switch later", async () => {
+  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://hub.example.com", email: "a@b.c", password: "pw", credentialsPath: "/home/.kankaku/credentials.json" } });
+  const frame = await reviewWithLocalHub(facts);
+  assert.equal(frame.includes("Setup · Review"), true);
+  assert.equal(frame.includes("sync credentials stay on https://hub.example.com (switch later with kankaku hub use)"), true);
+});
+
 test("Apply step: runs every planned action through actions.apply in order and shows results; Done -> onDone on Enter", async () => {
   const facts = baseFacts({ agentFacts: { ...baseAgentFacts(), pi: { settingsPath: "/home/.pi/agent/settings.json", packages: [] } } });
   const { actions, calls } = fakeActions();

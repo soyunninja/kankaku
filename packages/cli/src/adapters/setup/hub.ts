@@ -44,7 +44,7 @@ export function writeHubCredentials(homeDir: string, credentials: HubCredentials
   if (unchanged) return { changed: false };
 
   backupOnce(filePath);
-  writeJsonAtomic(filePath, { ...existing, url: credentials.url, email: credentials.email, password: credentials.password });
+  writeJsonAtomic(filePath, { ...existing, url: credentials.url, email: credentials.email, password: credentials.password }, undefined, OWNER_FILE_MODE);
   chmodSync(filePath, OWNER_FILE_MODE);
   return { changed: true };
 }

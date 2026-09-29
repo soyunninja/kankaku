@@ -411,7 +411,25 @@ test("planFromWizard: install-local-hub in local mode at the default port", () =
     kind: "install-local-hub",
     file: url,
     label: `install a local hub at ${url}`,
+    note: "sync credentials → the local hub",
   });
+});
+
+test("planFromWizard: install-local-hub says the credentials move to the local hub when this machine has none or already syncs to it", () => {
+  const none = baseFacts();
+  assert.equal(planFromWizard(setHubMode(createWizardState(none), "local"), none).find((a) => a.kind === "install-local-hub")?.note, "sync credentials → the local hub");
+
+  const same = baseFacts({ hub: { credentialsPresent: true, url: "http://localhost:8090", email: "a@b.c", password: "pw", credentialsPath: "/home/.kankaku/credentials.json" } });
+  assert.equal(planFromWizard(setHubMode(createWizardState(same), "local"), same).find((a) => a.kind === "install-local-hub")?.note, "sync credentials → the local hub");
+});
+
+test("planFromWizard: install-local-hub says the credentials stay on the existing hub, and how to switch later", () => {
+  const facts = baseFacts({ hub: { credentialsPresent: true, url: "https://hub.example.com", email: "a@b.c", password: "pw", credentialsPath: "/home/.kankaku/credentials.json" } });
+  const plan = planFromWizard(setHubMode(createWizardState(facts), "local"), facts);
+  assert.equal(
+    plan.find((a) => a.kind === "install-local-hub")?.note,
+    "sync credentials stay on https://hub.example.com (switch later with kankaku hub use)",
+  );
 });
 
 test("planFromWizard: no hub action in skip mode", () => {

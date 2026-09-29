@@ -128,6 +128,8 @@ export interface HubLayout {
   currentFile: string;
   hubJson: string;
   accountsJson: string;
+  /** The local hub's service account (`{ url, email, password }`, 0600), always written by install; `credentials.json` is only derived from it. */
+  serviceJson: string;
   pidFile: string;
   logFile: string;
 }
@@ -148,6 +150,7 @@ export function hubLayout(homeDir: string): HubLayout {
     currentFile: joinPath(root, "current"),
     hubJson: joinPath(root, "hub.json"),
     accountsJson: joinPath(root, "accounts.json"),
+    serviceJson: joinPath(root, "service.json"),
     pidFile: joinPath(root, "pid"),
     logFile: joinPath(root, "hub.log"),
   };
@@ -250,4 +253,52 @@ export function generatePassword(randomBytes: (n: number) => Uint8Array, length 
     password += PASSWORD_ALPHABET[bytes[i]! % PASSWORD_ALPHABET.length];
   }
   return password;
+}
+
+/** Persisted at `hubLayout(...).serviceJson` (0600): the local hub's service account, in the same shape as `credentials.json`. */
+export interface ServiceAccount {
+  url: string;
+  email: string;
+  password: string;
+}
+
+/** Narrows `json` to a `ServiceAccount` (three non-empty strings), or `undefined` when it is anything else. */
+export function parseServiceAccount(json: unknown): ServiceAccount | undefined {
+  if (!json || typeof json !== "object" || Array.isArray(json)) return undefined;
+  const record = json as Record<string, unknown>;
+  const { url, email, password } = record;
+  if (typeof url !== "string" || url === "" || typeof email !== "string" || email === "" || typeof password !== "string" || password === "") return undefined;
+  return { url, email, password };
+}
+
+function hostAndPort(url: string): string | undefined {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname === "localhost" ? "127.0.0.1" : parsed.hostname;
+    return `${parsed.protocol}//${host}:${parsed.port}`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Whether two hub URLs name the same scheme, host and port (`localhost` and `127.0.0.1` are the same host; a trailing slash or path is ignored). An unparsable URL never matches. */
+export function sameHubUrl(a: string, b: string): boolean {
+  const left = hostAndPort(a);
+  return left !== undefined && left === hostAndPort(b);
+}
+
+/** Install may write `~/.kankaku/credentials.json` only when none exists, or when it already points at this local hub. */
+export function shouldWriteCredentials(existingUrl: string | undefined, localUrl: string): boolean {
+  return existingUrl === undefined || sameHubUrl(existingUrl, localUrl);
+}
+
+/** The `sync credentials` step's detail when install leaves `credentials.json` alone. */
+export function credentialsKeptDetail(existingUrl: string): string {
+  return `this machine syncs to ${existingUrl}; run 'kankaku hub use' to switch to the local hub`;
+}
+
+/** Where this machine's sync points, for `kankaku hub status`: `local hub`, the other hub's URL, or `not configured`. */
+export function describeSyncTarget(credentialsUrl: string | undefined, localUrl: string | undefined): string {
+  if (credentialsUrl === undefined) return "not configured";
+  return localUrl !== undefined && sameHubUrl(credentialsUrl, localUrl) ? "local hub" : credentialsUrl;
 }

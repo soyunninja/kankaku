@@ -8,6 +8,11 @@ import {
   parseHubConfig,
   classifyStatus,
   generatePassword,
+  sameHubUrl,
+  parseServiceAccount,
+  shouldWriteCredentials,
+  credentialsKeptDetail,
+  describeSyncTarget,
 } from "../src/domain/local-hub-model.ts";
 import type { HubManifest, HubConfig } from "../src/domain/local-hub-model.ts";
 
@@ -135,6 +140,7 @@ test("hubLayout: builds every path under <homeDir>/.kankaku/hub", () => {
   assert.equal(layout.currentFile, "/home/alice/.kankaku/hub/current");
   assert.equal(layout.hubJson, "/home/alice/.kankaku/hub/hub.json");
   assert.equal(layout.accountsJson, "/home/alice/.kankaku/hub/accounts.json");
+  assert.equal(layout.serviceJson, "/home/alice/.kankaku/hub/service.json");
   assert.equal(layout.pidFile, "/home/alice/.kankaku/hub/pid");
   assert.equal(layout.logFile, "/home/alice/.kankaku/hub/hub.log");
 });
@@ -220,4 +226,42 @@ test("generatePassword: is deterministic under an injected RNG", () => {
 test("generatePassword: honors a custom length", () => {
   const rng = (n: number) => Uint8Array.from({ length: n }, (_, i) => i);
   assert.equal(generatePassword(rng, 12).length, 12);
+});
+
+test("sameHubUrl: same host and port, localhost and 127.0.0.1 alike, trailing slash ignored", () => {
+  assert.equal(sameHubUrl("http://127.0.0.1:8090", "http://127.0.0.1:8090"), true);
+  assert.equal(sameHubUrl("http://127.0.0.1:8090/", "http://127.0.0.1:8090"), true);
+  assert.equal(sameHubUrl("http://localhost:8090", "http://127.0.0.1:8090"), true);
+  assert.equal(sameHubUrl("http://127.0.0.1:8091", "http://127.0.0.1:8090"), false);
+  assert.equal(sameHubUrl("https://hub.example.com", "http://127.0.0.1:8090"), false);
+  assert.equal(sameHubUrl("not a url", "http://127.0.0.1:8090"), false);
+});
+
+test("parseServiceAccount: accepts { url, email, password }, rejects anything else", () => {
+  assert.deepEqual(parseServiceAccount({ url: "http://127.0.0.1:8090", email: "a@b.c", password: "pw", extra: 1 }), { url: "http://127.0.0.1:8090", email: "a@b.c", password: "pw" });
+  assert.equal(parseServiceAccount({ url: "http://127.0.0.1:8090", email: "a@b.c" }), undefined);
+  assert.equal(parseServiceAccount({ url: "", email: "a@b.c", password: "pw" }), undefined);
+  assert.equal(parseServiceAccount(null), undefined);
+  assert.equal(parseServiceAccount([]), undefined);
+});
+
+test("shouldWriteCredentials: only when there is none yet, or it already points at the local hub", () => {
+  assert.equal(shouldWriteCredentials(undefined, "http://127.0.0.1:8090"), true);
+  assert.equal(shouldWriteCredentials("http://localhost:8090", "http://127.0.0.1:8090"), true);
+  assert.equal(shouldWriteCredentials("https://hub.example.com", "http://127.0.0.1:8090"), false);
+  assert.equal(shouldWriteCredentials("http://127.0.0.1:8091", "http://127.0.0.1:8090"), false);
+});
+
+test("credentialsKeptDetail: names the hub this machine syncs to and the command that switches", () => {
+  assert.equal(
+    credentialsKeptDetail("https://hub.example.com"),
+    "this machine syncs to https://hub.example.com; run 'kankaku hub use' to switch to the local hub",
+  );
+});
+
+test("describeSyncTarget: local hub, another url, or not configured", () => {
+  assert.equal(describeSyncTarget("http://127.0.0.1:8090", "http://127.0.0.1:8090"), "local hub");
+  assert.equal(describeSyncTarget("https://hub.example.com", "http://127.0.0.1:8090"), "https://hub.example.com");
+  assert.equal(describeSyncTarget("https://hub.example.com", undefined), "https://hub.example.com");
+  assert.equal(describeSyncTarget(undefined, "http://127.0.0.1:8090"), "not configured");
 });

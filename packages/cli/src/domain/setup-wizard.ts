@@ -5,6 +5,7 @@
  * callers (`src/ui/setup/*`, `src/cli.tsx`) read the real files and pass
  * plain facts in via `WizardFacts`, exactly like `domain/setup-plan.ts`.
  */
+import { shouldWriteCredentials } from "./local-hub-model.ts";
 import { detectAgents } from "./setup-plan.ts";
 import type { AgentDetectionFacts, AgentId, AgentStatus } from "./setup-plan.ts";
 
@@ -34,6 +35,8 @@ export interface WizardAction {
   file: string;
   /** Human-readable description shown on the review screen. */
   label: string;
+  /** An extra line shown under the plan on the review screen (e.g. what `install-local-hub` does to the sync credentials). */
+  note?: string;
 }
 
 export type ApplyOutcome = "wrote" | "unchanged" | "removed" | "started" | "error";
@@ -230,7 +233,11 @@ export function planFromWizard(state: WizardState, facts: WizardFacts): WizardAc
     }
   } else if (state.hub.mode === "local") {
     const url = `http://127.0.0.1:${DEFAULT_HUB_PORT}`;
-    actions.push({ kind: "install-local-hub", file: url, label: `install a local hub at ${url}` });
+    const existingUrl = facts.hub.credentialsPresent ? facts.hub.url : undefined;
+    const note = shouldWriteCredentials(existingUrl, url)
+      ? "sync credentials → the local hub"
+      : `sync credentials stay on ${existingUrl} (switch later with kankaku hub use)`;
+    actions.push({ kind: "install-local-hub", file: url, label: `install a local hub at ${url}`, note });
   }
 
   const sameRoots = facts.roots.current !== undefined && arraysEqual(facts.roots.current, state.roots);

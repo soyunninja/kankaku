@@ -311,7 +311,10 @@ export function SetupWizard({ facts, actions, onDone, onQuit, version, columns, 
           )}
 
           {state.step === "review" && (
-            <Table columns={reviewColumns(mainWidth)} rows={state.plan} rowKey={(row) => `${row.kind}-${row.file}`} cell={reviewCell} emptyText="nothing to change" />
+            <Box flexDirection="column">
+              <Table columns={reviewColumns(mainWidth)} rows={state.plan} rowKey={(row) => `${row.kind}-${row.file}`} cell={reviewCell} emptyText="nothing to change" />
+              {state.plan.map((action) => action.note !== undefined && <Text key={`note-${action.kind}-${action.file}`}>{action.note}</Text>)}
+            </Box>
           )}
 
           {state.step === "apply" && (
