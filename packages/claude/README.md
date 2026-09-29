@@ -140,8 +140,11 @@ anything behind in whatever project happens to be open.
   `node dist/cli.js report`).
 - `/kankaku:status` — the sessions kankaku-claude currently has state for:
   session id, whether its process is still alive, whether a prompt is open,
-  and the last cost the statusline reported, preceded by the resolved work
-  target (wraps `node dist/cli.js status`).
+  and the last cost the statusline reported, followed by `recorded $X of
+  $Y` (the sum of this session's record costs in this project's worklog
+  against the session total). When the two differ by more than a cent and no
+  prompt is open, the line adds `(unrecorded $Z, goes to the next prompt)`.
+  The resolved work target comes first (wraps `node dist/cli.js status`).
 - `/kankaku:task` — links this session to a hub task (wraps
   `node dist/cli.js task`); see "Linking a task" below.
 - `/kankaku:setup` — prints the `statusLine` snippet described above (wraps
@@ -257,6 +260,37 @@ from Claude Code is not supported yet. Assignment is create-only
 on the hub: a row already uploaded as unassigned stays that way until it is
 reassigned in the web app; a later sync does not move it.
 
+## How cost is derived
+
+Claude Code hooks carry no cost. The only source is the statusline, whose
+`cost.total_cost_usd` is the running total of the session; the statusline
+command stores the latest value under your home directory (see "Where the
+files live").
+
+- **Per-prompt difference.** A prompt's cost is the session total when the
+  prompt settles minus the total the prompt is measured from, rounded to
+  micro-dollars and never negative.
+- **Chained baseline.** The session state keeps `costBaseline`, the session
+  total at the last settle. The next prompt is measured from that baseline,
+  not from the snapshot at submit, so the records of a session add up to its
+  total. A session Claude Code reports as newly started (`SessionStart`
+  source `startup`) begins with baseline 0. A resumed session keeps the
+  baseline of its state file; with no state file its first prompt is
+  measured from the snapshot at submit.
+- **Spend between prompts belongs to the next record.** `worklog.jsonl` is
+  append-only and the previous record is already written, so anything spent
+  after a settle and before the next prompt (background subagents that keep
+  running, a statusline refresh that arrives after `Stop`) is added to the
+  next record of the same session.
+- **Counter reset.** If the total is lower than the value the prompt is
+  measured from, the counter was reset: the prompt's cost is the new total
+  and the baseline restarts from it.
+- **Headless runs have no cost.** `claude -p` renders no statusline, so
+  there is no total: the record stays without cost (`costObserved` unset)
+  and the baseline does not move.
+- `/kankaku:status` shows `recorded $X of $Y` per live session so a gap is
+  visible.
+
 ## Where the files live
 
 - `<KANKAKU_DIR>/worklog.jsonl` — the append-only log of settled records,
@@ -304,9 +338,11 @@ still open is closed at that same instant.
   only the statusline's aggregate `total_cost_usd`; per-record `usage` token
   fields stay at zero, cost is the only populated figure.
 - **Cost is a per-prompt delta of the session total, from the statusline,
-  and needs the manual setup step.** A tiny race is possible: the statusline
-  can render after `Stop` has already computed the delta, in which case a
-  sliver of one prompt's cost is attributed to the next prompt instead.
+  and needs the manual setup step.** See "How cost is derived". Spend that
+  lands between two prompts (a late statusline refresh, a background
+  subagent still running) is attributed to the next record of the session,
+  not lost. Headless `claude -p` runs have no statusline, so their records
+  carry no cost.
 - **A permission wait ends at the next hook event, not when you actually
   click.** There is no documented hook that fires the moment you answer a
   permission dialog, so the waiting span closes at whatever hook fires next

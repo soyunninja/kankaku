@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- Spend that landed between two prompts was in no record: on a real session
+  the statusline total was 461.06 USD while its 134 records summed to
+  299.80 USD, so 35 % of the spend was missing. A prompt's cost was measured
+  from the statusline snapshot at submit, which left background subagent
+  work and late statusline refreshes after a `Stop` unattributed. The
+  session state now keeps `costBaseline`, the total at the last settle, and
+  each prompt is measured from it (Stop, SessionEnd and crash recovery), so
+  the records of a session add up to its total. A new session starts at 0; a
+  counter reset records the new total. `/kankaku:status` shows `recorded $X
+  of $Y` and flags an unrecorded gap. Headless runs still have no cost.
+
 ## 1.0.0 — 2026-09-29
 
 ### Changed

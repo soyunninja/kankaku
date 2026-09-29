@@ -91,6 +91,7 @@ extension has one. Instead:
   everything lives under `<KANKAKU_DIR>/claude/`.
 - `src/session-state.ts` — `readState`/`writeState`/`updateState`, the
   atomic per-session state file (no `cost` field since T7).
+- `src/cost-chain.ts` — `settleCost`, the pure chained per-prompt cost rule.
 - `src/cost-store.ts` — `readCost`/`writeCost`/`deleteCost`/
   `sweepStaleCostFiles`, the per-session cost file under
   `~/.kankaku/claude/cost/`. Node builtins only, no `kankaku-pi` import.
@@ -147,6 +148,19 @@ extension has one. Instead:
   a placeholder state file (`pid: 0`, `cwd: ""`) that `isAlive(0)` — via
   `process.kill(0, 0)`, which signals the whole process GROUP — reported
   alive forever, so recovery never swept it.
+- **Cost is chained, never re-based at submit.** A prompt's `costAtStart`
+  is `state.costBaseline` (the session total at the last settle) when the
+  state has one, and only otherwise the statusline snapshot at submit.
+  `SessionStart` with `source: "startup"` and no state sets the baseline to
+  0; any other or absent source sets none. Every settle (`Stop`,
+  `SessionEnd` with an open prompt, `recoverStaleSessions`) goes through
+  `settleCost` (`src/cost-chain.ts`): cost = total - start in
+  micro-dollars, a lower total is a counter reset (cost = total), and the
+  baseline becomes the total; with no finite total the cost stays
+  unobserved and the baseline does not move. Spend between two prompts
+  belongs to the next record. A `Stop` or `SessionEnd` with no open prompt
+  writes nothing and never moves the baseline. Handlers that rebuild the
+  state must carry `costBaseline` over.
 - **A non-positive pid is always dead.** `isAlive` returns `false` for pid
   `<= 0` (or non-integer) without calling `process.kill` at all, and
   `recoverStaleSessions` treats `state.pid <= 0` as dead independently of
