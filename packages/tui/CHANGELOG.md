@@ -3,6 +3,15 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 0.10.2 — 2026-09-29
+
+### Changed
+
+- Bundles `kankaku-claude` 0.10.2, whose records carry their own agent and
+  plugin identity: a Claude Code worklog synced from this app is no longer
+  labelled `unknown` / `kankaku-tui` on the hub. No change in this
+  package's own code.
+
 ## 0.10.1 — 2026-09-29
 
 ### Added
