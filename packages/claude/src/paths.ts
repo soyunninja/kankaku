@@ -48,3 +48,8 @@ export function listStateFiles(claudeDir: string): string[] {
     .filter((name) => name.endsWith(".state.json"))
     .map((name) => join(claudeDir, name));
 }
+
+/** `<claudeDir>/<sessionId>.target.json`: the session-only task link (see `session-target-store.ts`). */
+export function resolveTargetFile(claudeDir: string, sessionId: string): string {
+  return join(claudeDir, `${sessionId}.target.json`);
+}
