@@ -72,7 +72,7 @@ at it directly:
 git clone https://github.com/soyunninja/kankaku.git
 cd kankaku/packages/claude
 npm install && npm run build
-claude --plugin-dir /path/to/kankaku-claude
+claude --plugin-dir "$PWD"
 ```
 
 `npm run build` compiles `src/` into `dist/`; the hooks, statusline and

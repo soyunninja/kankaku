@@ -39,16 +39,14 @@ The wizard's steps, `enter` to advance and `esc` to go back throughout
    below.
 2. **Hub** — `use an existing hub` (URL, email, masked password, a `c`
    inline health check, reusing the current credentials as the default),
-   `install locally`, or `skip`. Installing locally looks for a
-   `kankaku-hub` checkout first; if found, its path is prefilled and
-   confirming it downloads PocketBase, starts the dev server in the
-   background and creates a **development** service account (its email
-   and password are fixed constants from `kankaku-hub`'s own dev script,
-   never meant for anything but a local machine) — the wizard writes that
-   account as this machine's hub credentials. Without a checkout, the
-   wizard shows the exact commands to run in another terminal and a `c`
-   "check again" action, plus `m` to acknowledge you'll install it
-   manually.
+   `install locally`, or `skip`. Installing locally asks only for the
+   owner's email and password and then runs the same installer as
+   `kankaku hub install` (see "Local hub" below): no `kankaku-hub`
+   checkout is needed, and the wizard writes the local hub's service
+   account as this machine's hub credentials. The wizard always uses the
+   default port; if another process already holds it the step fails with
+   the port-in-use message, and `kankaku hub install --port <N>` is the
+   way to pick another one.
 3. **Roots** — the comma-separated project roots, defaulting to the
    current `tui.json` (or the parent of the current directory the first
    time). See "Configuration" below for how deep each root is searched.
