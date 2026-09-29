@@ -5,6 +5,7 @@ import { SetupWizard } from "../src/ui/setup/wizard-screen.tsx";
 import type { WizardActions } from "../src/ui/setup/wizard-screen.tsx";
 import type { ApplyResult, WizardAction, WizardFacts, WizardState } from "../src/domain/setup-wizard.ts";
 import type { AgentDetectionFacts } from "../src/domain/setup-plan.ts";
+import { settle, waitFor } from "./helpers/ui-wait.ts";
 
 function baseAgentFacts(): AgentDetectionFacts {
   return { pi: undefined, gentleShell: undefined, claudeCode: undefined, codex: undefined, opencode: undefined };
@@ -48,10 +49,6 @@ function fakeActions(overrides: Partial<WizardActions> = {}): {
   return { actions, calls };
 }
 
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 60));
-}
-
 test("Agents step (first step): renders the agent facts and Esc quits the wizard", async () => {
   const { actions } = fakeActions();
   let quit = 0;
@@ -63,8 +60,10 @@ test("Agents step (first step): renders the agent facts and Esc quits the wizard
   assert.equal(frame.includes("pi"), true);
 
   stdin.write("\u001B");
-  await nextTick();
-  assert.equal(quit, 1);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(quit, 1);
+  });
 });
 
 test("Agents step: Space toggles the cursor row's selection, disabled rows never toggle", async () => {
@@ -82,12 +81,16 @@ test("Agents step: Space toggles the cursor row's selection, disabled rows never
   assert.equal((lastFrame() ?? "").includes("[ ] pi"), true);
 
   stdin.write(" ");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("[x] pi"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("[x] pi"), true);
+  });
 
   // codex is present but has no adapter yet; opencode isn't present at all.
-  assert.equal((lastFrame() ?? "").includes("no adapter yet"), true);
-  assert.equal((lastFrame() ?? "").includes("not installed"), true);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("no adapter yet"), true);
+    assert.equal((lastFrame() ?? "").includes("not installed"), true);
+  });
 });
 
 test("Hub step (existing mode): 'c' runs the health check and shows the result", async () => {
@@ -96,14 +99,18 @@ test("Hub step (existing mode): 'c' runs the health check and shows the result",
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
   stdin.write("\r"); // agents -> hub (there is no separate Claude step)
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
-  assert.equal((lastFrame() ?? "").includes("hub.example.com"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
+    assert.equal((lastFrame() ?? "").includes("hub.example.com"), true);
+  });
 
   stdin.write("c");
-  await nextTick();
-  assert.deepEqual(calls.checkHealth, ["https://hub.example.com"]);
-  assert.equal((lastFrame() ?? "").includes("health ok"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.deepEqual(calls.checkHealth, ["https://hub.example.com"]);
+    assert.equal((lastFrame() ?? "").includes("health ok"), true);
+  });
 });
 
 test("Hub step (local mode): shows the local install URL and blocks next until owner email/password are set", async () => {
@@ -111,16 +118,20 @@ test("Hub step (local mode): shows the local install URL and blocks next until o
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
   stdin.write("\r"); // agents -> hub
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u001B[A"); // skip -> local (up arrow)
-  await nextTick();
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("http://127.0.0.1:8090"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    assert.equal(frame.includes("http://127.0.0.1:8090"), true);
+  });
 
   stdin.write("\r"); // next with empty owner email/password: blocked
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
-  assert.equal((lastFrame() ?? "").includes("enter a valid email"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
+    assert.equal((lastFrame() ?? "").includes("enter a valid email"), true);
+  });
 });
 
 test("Hub step (local mode): Tab focuses the owner email/password fields, typing fills them, Enter advances once valid", async () => {
@@ -128,22 +139,26 @@ test("Hub step (local mode): Tab focuses the owner email/password fields, typing
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
   stdin.write("\r"); // agents -> hub
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u001B[A"); // skip -> local
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\t"); // radio -> owner email field
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("owner@example.com");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\t"); // owner email -> owner password field
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("s3cret");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("owner@example.com"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("owner@example.com"), true);
+  });
 
   stdin.write("\r"); // hub -> roots
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+  });
 });
 
 test("Review step: lists the plan's label and file, Roots step renders along the way", async () => {
@@ -152,35 +167,40 @@ test("Review step: lists the plan's label and file, Roots step renders along the
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
   stdin.write(" "); // select pi (cursor starts on the first row)
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // agents -> hub
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // hub (skip) -> roots
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+  });
 
   stdin.write("\r"); // roots -> review
-  await nextTick();
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("Setup · Review"), true);
-  assert.equal(frame.includes("install kankaku in pi"), true);
-  assert.equal(frame.includes("/home/.pi/agent/settings.json"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    assert.equal(frame.includes("Setup · Review"), true);
+    assert.equal(frame.includes("install kankaku in pi"), true);
+    assert.equal(frame.includes("/home/.pi/agent/settings.json"), true);
+  });
 });
 
 /** Moves the wizard to the Hub step in local mode with the owner fields filled, leaving focus on the radio. */
-async function toLocalHub(stdin: { write: (data: string) => void }): Promise<void> {
+async function toLocalHub(view: { stdin: { write: (data: string) => void }; lastFrame: () => string | undefined }): Promise<void> {
+  const { stdin, lastFrame } = view;
   stdin.write("\r"); // agents -> hub
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u001B[A"); // skip -> local
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\t");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("owner@example.com");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\t");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("s3cret");
-  await nextTick();
+  await settle(lastFrame);
 }
 
 test("Hub step (local mode): the port field is prefilled with the first free port from the default upwards", async () => {
@@ -192,16 +212,18 @@ test("Hub step (local mode): the port field is prefilled with the first free por
     },
   });
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // agents -> hub
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u001B[A"); // skip -> local
-  await nextTick();
+  await settle(lastFrame);
 
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("port: 8093"), true);
-  assert.equal(frame.includes("http://127.0.0.1:8093"), true);
-  assert.deepEqual(asked, [8090]);
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    assert.equal(frame.includes("port: 8093"), true);
+    assert.equal(frame.includes("http://127.0.0.1:8093"), true);
+    assert.deepEqual(asked, [8090]);
+  });
 });
 
 test("Hub step (local mode): an occupied port is rejected inline and blocks next; a free one goes through", async () => {
@@ -215,25 +237,30 @@ test("Hub step (local mode): an occupied port is rejected inline and blocks next
     },
   });
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
-  await nextTick();
-  await toLocalHub(stdin);
+  await settle(lastFrame);
+  await toLocalHub({ stdin, lastFrame });
 
   stdin.write("\r"); // hub -> roots: blocked, 8095 is taken
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
-  assert.equal((lastFrame() ?? "").includes("port 8095 is in use"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
+    assert.equal((lastFrame() ?? "").includes("port 8095 is in use"), true);
+  });
 
   stdin.write("\t"); // owner password -> port
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u007F"); // backspace: 8095 -> 809
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("6");
-  await nextTick();
+  await settle(lastFrame);
+  await waitFor(() => assert.equal((lastFrame() ?? "").includes("port: 8096"), true)); // the edit is on screen
   assert.equal((lastFrame() ?? "").includes("port 8095 is in use"), false); // editing clears the error
   stdin.write("\r");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
-  assert.deepEqual(probed, [8095, 8096]);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+    assert.deepEqual(probed, [8095, 8096]);
+  });
 });
 
 test("Hub step (local mode): a port outside 1024-65535 is rejected without probing", async () => {
@@ -245,20 +272,22 @@ test("Hub step (local mode): a port outside 1024-65535 is rejected without probi
     },
   });
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
-  await nextTick();
-  await toLocalHub(stdin);
+  await settle(lastFrame);
+  await toLocalHub({ stdin, lastFrame });
   stdin.write("\t"); // -> port
-  await nextTick();
+  await settle(lastFrame);
   for (let i = 0; i < 4; i += 1) stdin.write("\u007F");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("80");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r");
-  await nextTick();
+  await settle(lastFrame);
 
-  assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
-  assert.equal((lastFrame() ?? "").includes("enter a port between 1024 and 65535"), true);
-  assert.deepEqual(probed, []);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Hub"), true);
+    assert.equal((lastFrame() ?? "").includes("enter a port between 1024 and 65535"), true);
+    assert.deepEqual(probed, []);
+  });
 });
 
 test("Hub step (local mode): an existing install keeps its own port, prefilled and never probed", async () => {
@@ -276,55 +305,63 @@ test("Hub step (local mode): an existing install keeps its own port, prefilled a
     },
   });
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
-  await nextTick();
-  await toLocalHub(stdin);
-  assert.equal((lastFrame() ?? "").includes("port: 8093"), true);
-  assert.deepEqual(asked, []);
+  await settle(lastFrame);
+  await toLocalHub({ stdin, lastFrame });
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("port: 8093"), true);
+    assert.deepEqual(asked, []);
+  });
 
   stdin.write("\r");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
-  assert.deepEqual(probed, []);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Roots"), true);
+    assert.deepEqual(probed, []);
+  });
 });
 
 test("Review and apply carry the chosen port into the install action", async () => {
   const { actions, calls } = fakeActions({ suggestPort: async () => 8093 });
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={120} rows={24} />);
-  await nextTick();
-  await toLocalHub(stdin);
+  await settle(lastFrame);
+  await toLocalHub({ stdin, lastFrame });
   stdin.write("\r"); // hub -> roots
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // roots -> review
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("install a local hub at http://127.0.0.1:8093"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("install a local hub at http://127.0.0.1:8093"), true);
+  });
 
   stdin.write("\r"); // review -> apply
-  await nextTick();
-  await nextTick();
+  await settle(lastFrame);
+  await settle(lastFrame);
   const install = calls.apply.find(([action]) => action.kind === "install-local-hub");
-  assert.equal(install?.[0].file, "http://127.0.0.1:8093");
-  assert.equal(install?.[1].hub.port, "8093");
+  await waitFor(() => {
+    assert.equal(install?.[0].file, "http://127.0.0.1:8093");
+    assert.equal(install?.[1].hub.port, "8093");
+  });
 });
 
 async function reviewWithLocalHub(facts: WizardFacts): Promise<string> {
   const { actions } = fakeActions();
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => {}} onQuit={() => {}} columns={120} rows={24} />);
   stdin.write("\r"); // agents -> hub
-  await nextTick();
+  await settle(lastFrame);
   stdin.write(facts.hub.credentialsPresent ? "\u001B[B" : "\u001B[A"); // existing -> local (down), or skip -> local (up)
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\t");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("owner@example.com");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\t");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("s3cret");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // hub -> roots
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // roots -> review
-  await nextTick();
+  await settle(lastFrame);
   return lastFrame() ?? "";
 }
 
@@ -348,31 +385,37 @@ test("Apply step: runs every planned action through actions.apply in order and s
   const { lastFrame, stdin } = render(<SetupWizard facts={facts} actions={actions} onDone={() => (done += 1)} onQuit={() => {}} columns={100} rows={24} />);
 
   stdin.write(" "); // select pi
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // agents -> hub
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // hub -> roots
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // roots -> review
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // review -> apply (starts running)
-  await nextTick();
-  await nextTick();
+  await settle(lastFrame);
+  await settle(lastFrame);
 
-  assert.equal(calls.apply.length, 2); // install-pi + write-roots (no current tui.json)
-  assert.equal(calls.apply[0]?.[0].kind, "install-pi");
-  assert.equal(calls.apply[1]?.[0].kind, "write-roots");
-  const applyFrame = lastFrame() ?? "";
-  assert.equal(applyFrame.includes("Setup · Apply"), true);
-  assert.equal(applyFrame.includes("wrote"), true);
+  await waitFor(() => {
+    assert.equal(calls.apply.length, 2); // install-pi + write-roots (no current tui.json)
+    assert.equal(calls.apply[0]?.[0].kind, "install-pi");
+    assert.equal(calls.apply[1]?.[0].kind, "write-roots");
+    const applyFrame = lastFrame() ?? "";
+    assert.equal(applyFrame.includes("Setup · Apply"), true);
+    assert.equal(applyFrame.includes("wrote"), true);
+  });
 
   stdin.write("\r"); // apply finished -> done
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
+  });
 
   stdin.write("\r");
-  await nextTick();
-  assert.equal(done, 1);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(done, 1);
+  });
 });
 
 // ---- R2: no sidebar, progress in the panel title ----
@@ -400,8 +443,10 @@ test("title carries progress numbering across steps: Agents 1/4 -> Hub 2/4", asy
   assert.equal((lastFrame() ?? "").includes("Setup · Agents 1/4"), true);
 
   stdin.write("\r"); // agents -> hub
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Hub 2/4"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Hub 2/4"), true);
+  });
 });
 
 test("title numbering stays at 1/4 even when Claude Code is selected (no separate Claude step)", async () => {
@@ -409,12 +454,14 @@ test("title numbering stays at 1/4 even when Claude Code is selected (no separat
   const { lastFrame, stdin } = render(<SetupWizard facts={baseFacts()} actions={actions} onDone={() => {}} onQuit={() => {}} columns={100} rows={24} />);
 
   stdin.write("\u001B[B"); // pi -> gentle-shell
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u001B[B"); // gentle-shell -> claude-code
-  await nextTick();
+  await settle(lastFrame);
   stdin.write(" "); // select claude-code
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Agents 1/4"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Agents 1/4"), true);
+  });
 });
 
 test("title has no numbering on Done", async () => {
@@ -423,11 +470,13 @@ test("title has no numbering on Done", async () => {
 
   for (let i = 0; i < 4; i += 1) {
     stdin.write("\r"); // agents -> hub -> roots -> review -> apply
-    await nextTick();
+    await settle(lastFrame);
   }
-  await nextTick(); // let the (empty) plan's apply effect settle
+  await settle(lastFrame); // let the (empty) plan's apply effect settle
   stdin.write("\r"); // apply finished -> done
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
-  assert.equal((lastFrame() ?? "").includes("Setup · Done 5/4"), false);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
+    assert.equal((lastFrame() ?? "").includes("Setup · Done 5/4"), false);
+  });
 });

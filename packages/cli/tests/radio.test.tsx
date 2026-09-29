@@ -3,10 +3,7 @@ import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { Radio } from "../src/ui/components/radio.tsx";
 import type { RadioOption } from "../src/ui/components/radio.tsx";
-
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 30));
-}
+import { settle, waitFor } from "./helpers/ui-wait.ts";
 
 const options: RadioOption<"existing" | "local" | "skip">[] = [
   { value: "existing", label: "use existing" },
@@ -24,32 +21,40 @@ test("renders (•) for the selected option and ( ) for the rest", () => {
 
 test("down arrow selects the next option", async () => {
   const selections: string[] = [];
-  const { stdin } = render(<Radio options={options} value="existing" onChange={(value) => selections.push(value)} focused />);
+  const { stdin, lastFrame } = render(<Radio options={options} value="existing" onChange={(value) => selections.push(value)} focused />);
   stdin.write("\u001B[B"); // down
-  await nextTick();
-  assert.deepEqual(selections, ["local"]);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.deepEqual(selections, ["local"]);
+  });
 });
 
 test("up arrow selects the previous option", async () => {
   const selections: string[] = [];
-  const { stdin } = render(<Radio options={options} value="local" onChange={(value) => selections.push(value)} focused />);
+  const { stdin, lastFrame } = render(<Radio options={options} value="local" onChange={(value) => selections.push(value)} focused />);
   stdin.write("\u001B[A"); // up
-  await nextTick();
-  assert.deepEqual(selections, ["existing"]);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.deepEqual(selections, ["existing"]);
+  });
 });
 
 test("clamps at the first and last option", async () => {
   const selections: string[] = [];
-  const { stdin } = render(<Radio options={options} value="existing" onChange={(value) => selections.push(value)} focused />);
+  const { stdin, lastFrame } = render(<Radio options={options} value="existing" onChange={(value) => selections.push(value)} focused />);
   stdin.write("\u001B[A"); // up, already first
-  await nextTick();
-  assert.deepEqual(selections, []);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.deepEqual(selections, []);
+  });
 });
 
 test("ignores input when not focused", async () => {
   const selections: string[] = [];
-  const { stdin } = render(<Radio options={options} value="existing" onChange={(value) => selections.push(value)} focused={false} />);
+  const { stdin, lastFrame } = render(<Radio options={options} value="existing" onChange={(value) => selections.push(value)} focused={false} />);
   stdin.write("\u001B[B");
-  await nextTick();
-  assert.deepEqual(selections, []);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.deepEqual(selections, []);
+  });
 });

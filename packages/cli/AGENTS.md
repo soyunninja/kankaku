@@ -370,6 +370,15 @@ through `tsx` (`node --import tsx --test`), which does transform JSX, so
   terminal Ink would otherwise emit ANSI codes and text assertions would
   break. A selection highlight must therefore be a visible text marker
   (e.g. `"› "`), never colour alone.
+- **UI tests wait for a condition, never for a fixed time.** Use `settle(lastFrame)`
+  (resolves once the rendered frame has been quiet for 60 ms) after every
+  input, and wrap every assertion that depends on an asynchronous action
+  (a promise from a fake hub/action, a state update after it) in
+  `waitFor(() => assert…)`; both live in `tests/helpers/ui-wait.ts`. A
+  negative assertion ("nothing opens", "the modal is closed") first waits
+  for the positive effect that proves the action finished, then asserts the
+  absence. A `setTimeout` sleep in a UI test is a defect: it passes on a
+  fast machine and flakes on a slow CI runner.
 - Relative imports include the `.ts`/`.tsx` extension; `verbatimModuleSyntax`
   is on.
 - No runtime dependencies beyond `ink`, `react` and `kankaku-pi`.

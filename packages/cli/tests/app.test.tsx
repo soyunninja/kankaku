@@ -10,6 +10,7 @@ import type { DashboardActions } from "../src/ui/dashboard-screen.tsx";
 import type { WizardActions } from "../src/ui/setup/wizard-screen.tsx";
 import type { WizardFacts } from "../src/domain/setup-wizard.ts";
 import type { ReassignActions } from "../src/ports/reassign-actions.ts";
+import { settle, waitFor } from "./helpers/ui-wait.ts";
 
 function dashboardModel(): DashboardModel {
   return {
@@ -66,10 +67,6 @@ function wizardActions(): WizardActions {
   };
 }
 
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 60));
-}
-
 test("App renders the sidebar with Dashboard active by default", () => {
   const { lastFrame } = render(<App {...appProps()} />);
   const frame = lastFrame() ?? "";
@@ -86,34 +83,46 @@ test("the very first frame already has the sidebar focused: its own footer hints
 test("App switches screens on 1-4", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
   stdin.write("2");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Tasks"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Tasks"), true);
+  });
   stdin.write("3");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Catalog"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Catalog"), true);
+  });
   stdin.write("4");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Sync"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Sync"), true);
+  });
   stdin.write("1");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
+  });
 });
 
 test("enter first focuses the main zone, then opens the selected Dashboard project", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
   stdin.write("\r");
-  await nextTick();
+  await settle(lastFrame);
   // First `enter` (sidebar focused) only moves focus to main: no navigation yet.
-  const afterFirstEnter = lastFrame() ?? "";
-  assert.equal(afterFirstEnter.includes("filtered:"), false);
-  assert.equal(afterFirstEnter.includes("› Dashboard"), true);
-  assert.equal(afterFirstEnter.includes("← menu"), true);
+  await waitFor(() => {
+    const afterFirstEnter = lastFrame() ?? "";
+    assert.equal(afterFirstEnter.includes("filtered:"), false);
+    assert.equal(afterFirstEnter.includes("› Dashboard"), true);
+    assert.equal(afterFirstEnter.includes("← menu"), true);
+  });
 
   stdin.write("\r");
-  await nextTick();
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("› Tasks"), true);
-  assert.equal(frame.includes("filtered: kankaku-tui"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    assert.equal(frame.includes("› Tasks"), true);
+    assert.equal(frame.includes("filtered: kankaku-tui"), true);
+  });
 });
 
 test("sidebar focus: down/up move the active screen (clamped), without opening it", async () => {
@@ -121,22 +130,30 @@ test("sidebar focus: down/up move the active screen (clamped), without opening i
   assert.equal((lastFrame() ?? "").includes("choose"), true); // sidebar-focus footer hints
 
   stdin.write("\u001B[A"); // up arrow, already on the first screen: clamps
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
+  });
 
   stdin.write("\u001B[B"); // down arrow
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Tasks"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Tasks"), true);
+  });
 
   stdin.write("\u001B[B");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u001B[B");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Sync"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Sync"), true);
+  });
 
   stdin.write("\u001B[B"); // down arrow, already on the last screen: clamps
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Sync"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Sync"), true);
+  });
 });
 
 test("right arrow and tab, like enter, focus the main zone from the sidebar", async () => {
@@ -144,7 +161,7 @@ test("right arrow and tab, like enter, focus the main zone from the sidebar", as
     const { lastFrame, stdin } = render(<App {...appProps()} />);
     assert.equal((lastFrame() ?? "").includes("choose"), true);
     stdin.write(key);
-    await nextTick();
+    await settle(lastFrame);
     assert.equal((lastFrame() ?? "").includes("← menu"), true);
   }
 });
@@ -153,10 +170,10 @@ test("left arrow and tab return focus to the sidebar from the main zone", async 
   for (const key of ["\u001B[D", "\t"]) {
     const { lastFrame, stdin } = render(<App {...appProps()} />);
     stdin.write("\r"); // focus main
-    await nextTick();
+    await settle(lastFrame);
     assert.equal((lastFrame() ?? "").includes("← menu"), true);
     stdin.write(key);
-    await nextTick();
+    await settle(lastFrame);
     assert.equal((lastFrame() ?? "").includes("choose"), true);
   }
 });
@@ -164,14 +181,18 @@ test("left arrow and tab return focus to the sidebar from the main zone", async 
 test("digit keys switch screens without changing which zone is focused", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
   stdin.write("\r"); // focus main
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("← menu"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("← menu"), true);
+  });
 
   stdin.write("2");
-  await nextTick();
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("› Tasks"), true);
-  assert.equal(frame.includes("← menu"), true); // still main-focused
+  await settle(lastFrame);
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    assert.equal(frame.includes("› Tasks"), true);
+    assert.equal(frame.includes("← menu"), true); // still main-focused
+  });
 });
 
 test("while the sidebar is focused, arrow keys never reach the active screen's own list", async () => {
@@ -179,41 +200,53 @@ test("while the sidebar is focused, arrow keys never reach the active screen's o
   // On Dashboard, sidebar focused by default: down arrow moves the active
   // screen (to Tasks) instead of the Projects selection.
   stdin.write("\u001B[B");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Tasks"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Tasks"), true);
+  });
 });
 
 test("esc on Tasks with a project filter clears it first, the next esc returns to the sidebar", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
   stdin.write("\r"); // focus main on Dashboard
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // open the selected project in Tasks, filtered
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("filtered: kankaku-tui"), true);
-  assert.equal((lastFrame() ?? "").includes("← menu"), true); // still main-focused
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("filtered: kankaku-tui"), true);
+    assert.equal((lastFrame() ?? "").includes("← menu"), true); // still main-focused
+  });
 
   stdin.write("\u001B"); // first esc: clears the filter, stays on Tasks, stays main-focused
-  await nextTick();
-  const afterFirstEsc = lastFrame() ?? "";
-  assert.equal(afterFirstEsc.includes("filtered:"), false);
-  assert.equal(afterFirstEsc.includes("› Tasks"), true);
-  assert.equal(afterFirstEsc.includes("← menu"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    const afterFirstEsc = lastFrame() ?? "";
+    assert.equal(afterFirstEsc.includes("filtered:"), false);
+    assert.equal(afterFirstEsc.includes("› Tasks"), true);
+    assert.equal(afterFirstEsc.includes("← menu"), true);
+  });
 
   stdin.write("\u001B"); // second esc: no filter left to consume, returns to the sidebar
-  await nextTick();
-  const afterSecondEsc = lastFrame() ?? "";
-  assert.equal(afterSecondEsc.includes("choose"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    const afterSecondEsc = lastFrame() ?? "";
+    assert.equal(afterSecondEsc.includes("choose"), true);
+  });
 });
 
 test("esc on a screen without a project filter returns straight to the sidebar", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} />);
   stdin.write("\r"); // focus main on Dashboard
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("← menu"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("← menu"), true);
+  });
 
   stdin.write("\u001B");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("choose"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("choose"), true);
+  });
 });
 
 test("startInWizard opens the app straight into the setup wizard instead of the Dashboard", () => {
@@ -247,26 +280,34 @@ test("finishing the wizard (Done -> Enter) switches to the Dashboard in place, r
 
   for (let i = 0; i < 4; i += 1) {
     stdin.write("\r"); // agents -> hub -> roots -> review -> apply
-    await nextTick();
+    await settle(lastFrame);
   }
-  await nextTick(); // let the (empty) plan's apply effect settle
-  assert.equal((lastFrame() ?? "").includes("Setup · Apply"), true);
+  await settle(lastFrame); // let the (empty) plan's apply effect settle
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Apply"), true);
+  });
 
   stdin.write("\r"); // apply finished (empty plan) -> done
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Done"), true);
+  });
 
   stdin.write("\r"); // done -> onDone
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
-  assert.equal(loads, 1);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("› Dashboard"), true);
+    assert.equal(loads, 1);
+  });
 });
 
 test("while the wizard is active, the app's own global keys (q, digits, arrows) are inert", async () => {
   const { lastFrame, stdin } = render(<App {...appProps()} wizard={{ facts: wizardFacts(), actions: wizardActions() }} startInWizard />);
   stdin.write("1"); // would switch to Dashboard on the normal shell
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("Setup · Agents"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("Setup · Agents"), true);
+  });
 });
 
 function reassignActions(): ReassignActions & { applied: number } {
@@ -302,65 +343,83 @@ function tasksProps(actions: ReassignActions) {
 test("while the reassignment picker is open, esc, left, tab and 1-4 stay inside it and focus stays on main", async () => {
   const { lastFrame, stdin } = render(<App {...tasksProps(reassignActions())} />);
   stdin.write("2"); // Tasks
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r"); // focus main
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("m"); // picker
-  await nextTick();
-  assert.match(lastFrame() ?? "", /Reassign · Client/);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.match(lastFrame() ?? "", /Reassign · Client/);
+  });
 
   stdin.write("\t");
-  await nextTick();
-  assert.match(lastFrame() ?? "", /Reassign · Client/, "tab must not move focus out of the picker");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.match(lastFrame() ?? "", /Reassign · Client/, "tab must not move focus out of the picker");
+  });
   stdin.write("3");
-  await nextTick();
-  assert.match(lastFrame() ?? "", /Reassign · Client/, "1-4 must not leave the screen while the picker is open");
-  assert.match(lastFrame() ?? "", /› Tasks/);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.match(lastFrame() ?? "", /Reassign · Client/, "1-4 must not leave the screen while the picker is open");
+    assert.match(lastFrame() ?? "", /› Tasks/);
+  });
 
   stdin.write("\r"); // Acme -> project step
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u001B"); // esc: back to client, still open and focused
-  await nextTick();
-  assert.match(lastFrame() ?? "", /Reassign · Client/);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.match(lastFrame() ?? "", /Reassign · Client/);
+  });
 
   stdin.write("\u001B"); // esc at the first step closes the picker only
-  await nextTick();
-  let frame = lastFrame() ?? "";
-  assert.doesNotMatch(frame, /Reassign · /);
-  assert.match(frame, /← menu/, "focus is still on the main zone after the picker closed");
+  await settle(lastFrame);
+  await waitFor(() => {
+    let frame = lastFrame() ?? "";
+    assert.doesNotMatch(frame, /Reassign · /);
+    assert.match(frame, /← menu/, "focus is still on the main zone after the picker closed");
+  });
 
   stdin.write("\u001B"); // a further esc now returns to the sidebar as usual
-  await nextTick();
-  frame = lastFrame() ?? "";
-  assert.match(frame, /↑↓ choose/);
+  await settle(lastFrame);
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    assert.match(frame, /↑↓ choose/);
+  });
 });
 
 test("after the picker closes, 1-4 switch screens again and a reopened Tasks screen starts closed", async () => {
   const { lastFrame, stdin } = render(<App {...tasksProps(reassignActions())} />);
   stdin.write("2");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("m");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\u001B");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("3");
-  await nextTick();
-  assert.match(lastFrame() ?? "", /› Catalog/);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.match(lastFrame() ?? "", /› Catalog/);
+  });
 });
 
 test("q still quits while the picker is open", async () => {
   const { lastFrame, stdin } = render(<App {...tasksProps(reassignActions())} />);
   stdin.write("2");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r");
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("m");
-  await nextTick();
-  assert.match(lastFrame() ?? "", /Reassign · Client/);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.match(lastFrame() ?? "", /Reassign · Client/);
+  });
   stdin.write("q");
-  await nextTick();
+  await settle(lastFrame);
   // Ink unmounts on exit and clears the frame.
-  assert.equal((lastFrame() ?? "").trim(), "");
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").trim(), "");
+  });
 });

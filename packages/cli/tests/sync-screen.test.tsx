@@ -3,10 +3,7 @@ import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { SyncScreen } from "../src/ui/sync-screen.tsx";
 import type { SyncModel } from "../src/ui/sync-screen.tsx";
-
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 30));
-}
+import { settle, waitFor } from "./helpers/ui-wait.ts";
 
 function readyModel(): SyncModel {
   return {
@@ -33,9 +30,11 @@ test("marks the selected card with a visible marker", async () => {
     <SyncScreen load={readyModel} syncOne={async () => ({ ok: true, message: "" })} syncAll={async () => []} roots={["/work"]} version="0.1.0" columns={120} />,
   );
   stdin.write("\u001B[B");
-  await nextTick();
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("› kankaku-tui"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    assert.equal(frame.includes("› kankaku-tui"), true);
+  });
 });
 
 test("'s' syncs the selected project and shows the result inline", async () => {
@@ -50,8 +49,10 @@ test("'s' syncs the selected project and shows the result inline", async () => {
     />,
   );
   stdin.write("s");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("synced 2 tasks"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("synced 2 tasks"), true);
+  });
 });
 
 test("'S' syncs every project", async () => {
@@ -73,11 +74,13 @@ test("'S' syncs every project", async () => {
     />,
   );
   stdin.write("S");
-  await nextTick();
-  assert.equal(calls, 1);
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("ok a"), true);
-  assert.equal(frame.includes("ok b"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(calls, 1);
+    const frame = lastFrame() ?? "";
+    assert.equal(frame.includes("ok a"), true);
+    assert.equal(frame.includes("ok b"), true);
+  });
 });
 
 test("shows a plain note when unavailable", () => {
@@ -157,14 +160,20 @@ test("PageDown/Home/End move the card selection with many projects", async () =>
   assert.equal(markedCard(), "project-0");
 
   stdin.write("\u001B[F"); // End
-  await nextTick();
-  assert.equal(markedCard(), "project-39");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedCard(), "project-39");
+  });
 
   stdin.write("\u001B[H"); // Home
-  await nextTick();
-  assert.equal(markedCard(), "project-0");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedCard(), "project-0");
+  });
 
   stdin.write("\u001B[6~"); // Page Down
-  await nextTick();
-  assert.notEqual(markedCard(), "project-0");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.notEqual(markedCard(), "project-0");
+  });
 });

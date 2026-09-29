@@ -4,10 +4,7 @@ import { render } from "ink-testing-library";
 import { DashboardScreen } from "../src/ui/dashboard-screen.tsx";
 import type { DashboardActions } from "../src/ui/dashboard-screen.tsx";
 import type { DashboardModel, DashboardProjectRow } from "../src/domain/dashboard-model.ts";
-
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 30));
-}
+import { settle, waitFor } from "./helpers/ui-wait.ts";
 
 function model(overrides: Partial<DashboardModel> = {}): DashboardModel {
   return {
@@ -66,7 +63,7 @@ test("renders the header, sidebar, panels and footer at a wide terminal", () => 
 
 test("reloads through `load` when 'r' is pressed", async () => {
   let loadCalls = 0;
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <DashboardScreen
       load={() => {
         loadCalls += 1;
@@ -79,20 +76,24 @@ test("reloads through `load` when 'r' is pressed", async () => {
     />,
   );
   stdin.write("r");
-  await nextTick();
-  assert.equal(loadCalls, 2);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(loadCalls, 2);
+  });
 });
 
 test("enter on the selected project calls onOpenProject with its name", async () => {
   let opened: string | undefined;
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <DashboardScreen load={() => model()} actions={actions()} roots={["/work"]} version="0.1.0" columns={120} onOpenProject={(name) => (opened = name)} />,
   );
   stdin.write("\u001B[B"); // down arrow -> select kankaku-tui
-  await nextTick();
+  await settle(lastFrame);
   stdin.write("\r");
-  await nextTick();
-  assert.equal(opened, "kankaku-tui");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(opened, "kankaku-tui");
+  });
 });
 
 test("shows a plain note instead of the Hub panel body when the hub is not configured", () => {
@@ -132,14 +133,16 @@ test("fits within `rows` with many projects at 100×24", async () => {
   // panel's actual content width used to corrupt rendering into blank
   // lines instead of showing the indicator text and the Today card.
   stdin.write("\u001B[6~"); // Page Down
-  await nextTick();
+  await settle(lastFrame);
 
-  const frame = lastFrame() ?? "";
-  const lines = frame.split("\n");
-  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
-  assert.equal(frame.includes("work"), true, "the Today card's work line should still render");
-  assert.equal(/↑ \d+ more/.test(frame), true, "expected an '↑ N more' indicator");
-  assert.equal(/↓ \d+ more/.test(frame), true, "expected a '↓ N more' indicator");
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    const lines = frame.split("\n");
+    assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+    assert.equal(frame.includes("work"), true, "the Today card's work line should still render");
+    assert.equal(/↑ \d+ more/.test(frame), true, "expected an '↑ N more' indicator");
+    assert.equal(/↓ \d+ more/.test(frame), true, "expected a '↓ N more' indicator");
+  });
 });
 
 test("PageDown/Home/End move the Projects selection", async () => {
@@ -151,18 +154,24 @@ test("PageDown/Home/End move the Projects selection", async () => {
   assert.equal(markedProject(), "project-0");
 
   stdin.write("\u001B[6~"); // Page Down
-  await nextTick();
+  await settle(lastFrame);
   const afterPageDown = markedProject();
-  assert.notEqual(afterPageDown, "project-0");
-  assert.notEqual(afterPageDown, "project-1");
+  await waitFor(() => {
+    assert.notEqual(afterPageDown, "project-0");
+    assert.notEqual(afterPageDown, "project-1");
+  });
 
   stdin.write("\u001B[F"); // End
-  await nextTick();
-  assert.equal(markedProject(), "project-39");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedProject(), "project-39");
+  });
 
   stdin.write("\u001B[H"); // Home
-  await nextTick();
-  assert.equal(markedProject(), "project-0");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedProject(), "project-0");
+  });
 });
 
 function longNameProjects(count: number): DashboardProjectRow[] {
@@ -216,17 +225,21 @@ test("'c' shows a busy line while refreshCatalog runs, then the result", async (
     />,
   );
   stdin.write("c");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("… refresh catalog"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("… refresh catalog"), true);
+  });
 
   resolveRefresh("catalog: 9 clients · 17 projects · 42 tasks");
-  await nextTick();
-  assert.equal((lastFrame() ?? "").includes("catalog: 9 clients · 17 projects · 42 tasks"), true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal((lastFrame() ?? "").includes("catalog: 9 clients · 17 projects · 42 tasks"), true);
+  });
 });
 
 test("after a quick action settles, the model reloads (Hub card and Projects table refresh)", async () => {
   let loadCalls = 0;
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <DashboardScreen
       load={() => {
         loadCalls += 1;
@@ -242,16 +255,18 @@ test("after a quick action settles, the model reloads (Hub card and Projects tab
   );
   const before = loadCalls;
   stdin.write("s");
-  await nextTick();
-  await nextTick();
-  assert.ok(loadCalls > before, "expected the dashboard model to reload after the action settled");
+  await settle(lastFrame);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.ok(loadCalls > before, "expected the dashboard model to reload after the action settled");
+  });
 });
 
 test("quick action keys are ignored while another action is busy", async () => {
   let refreshCalls = 0;
   let syncCalls = 0;
   const pending = new Promise<string>(() => {}); // never resolves within this test
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <DashboardScreen
       load={() => model()}
       actions={actions({
@@ -272,17 +287,21 @@ test("quick action keys are ignored while another action is busy", async () => {
     />,
   );
   stdin.write("c");
-  await nextTick();
-  assert.equal(refreshCalls, 1);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(refreshCalls, 1);
+  });
 
   stdin.write("s");
-  await nextTick();
-  assert.equal(syncCalls, 0, "sync should be ignored while refresh is busy");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(syncCalls, 0, "sync should be ignored while refresh is busy");
+  });
 });
 
 test("quick action keys are ignored when the main zone is not focused", async () => {
   let refreshCalls = 0;
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <DashboardScreen
       load={() => model()}
       actions={actions({
@@ -299,8 +318,10 @@ test("quick action keys are ignored when the main zone is not focused", async ()
     />,
   );
   stdin.write("c");
-  await nextTick();
-  assert.equal(refreshCalls, 0);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(refreshCalls, 0);
+  });
 });
 
 test("without hub credentials, the panel shows a note and 'c'/'s'/'S' do nothing", async () => {
@@ -318,8 +339,10 @@ test("without hub credentials, the panel shows a note and 'c'/'s'/'S' do nothing
   );
   assert.equal((lastFrame() ?? "").includes("hub not configured"), true);
   stdin.write("c");
-  await nextTick();
-  assert.equal(refreshCalls, 0);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(refreshCalls, 0);
+  });
 });
 
 test("without actions.localHub, the panel lists only the four base actions and shows no local hub line", () => {
@@ -371,8 +394,10 @@ test("'h' toggles the local hub and shows the result, reloading the model", asyn
   );
   const loadCallsBeforeToggle = loadCalls;
   stdin.write("h");
-  await nextTick();
-  assert.equal(toggleCalls, 1);
-  assert.equal((lastFrame() ?? "").includes("stopped the local hub"), true);
-  assert.ok(loadCalls > loadCallsBeforeToggle);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(toggleCalls, 1);
+    assert.equal((lastFrame() ?? "").includes("stopped the local hub"), true);
+    assert.ok(loadCalls > loadCallsBeforeToggle);
+  });
 });

@@ -3,10 +3,7 @@ import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { CatalogScreen } from "../src/ui/catalog-screen.tsx";
 import type { CatalogModel } from "../src/domain/catalog-model.ts";
-
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 30));
-}
+import { settle, waitFor } from "./helpers/ui-wait.ts";
 
 function readyModel(): CatalogModel {
   return {
@@ -49,15 +46,17 @@ test("down arrow moves the client selection and updates the Projects panel", asy
     <CatalogScreen load={readyModel} refresh={async () => readyModel()} roots={["/work"]} version="0.1.0" columns={120} />,
   );
   stdin.write("\u001B[B");
-  await nextTick();
-  const frame = lastFrame() ?? "";
-  assert.equal(frame.includes("Infra"), true);
-  assert.equal(frame.includes("Website"), false);
+  await settle(lastFrame);
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    assert.equal(frame.includes("Infra"), true);
+    assert.equal(frame.includes("Website"), false);
+  });
 });
 
 test("'r' refreshes and shows a note without hitting the network before that", async () => {
   let refreshCalls = 0;
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <CatalogScreen
       load={readyModel}
       refresh={async () => {
@@ -70,8 +69,10 @@ test("'r' refreshes and shows a note without hitting the network before that", a
     />,
   );
   stdin.write("r");
-  await nextTick();
-  assert.equal(refreshCalls, 1);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(refreshCalls, 1);
+  });
 });
 
 test("shows a plain note when unavailable", () => {
@@ -136,15 +137,21 @@ test("PageDown/Home/End move the client selection", async () => {
   assert.equal(markedClient(), "Client 0");
 
   stdin.write("\u001B[F"); // End
-  await nextTick();
-  assert.equal(markedClient(), "Client 39");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedClient(), "Client 39");
+  });
 
   stdin.write("\u001B[H"); // Home
-  await nextTick();
-  assert.equal(markedClient(), "Client 0");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedClient(), "Client 0");
+  });
 
   stdin.write("\u001B[6~"); // Page Down
-  await nextTick();
+  await settle(lastFrame);
   const afterPageDown = markedClient();
-  assert.notEqual(afterPageDown, "Client 0");
+  await waitFor(() => {
+    assert.notEqual(afterPageDown, "Client 0");
+  });
 });

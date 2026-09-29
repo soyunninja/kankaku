@@ -3,10 +3,7 @@ import assert from "node:assert/strict";
 import { render } from "ink-testing-library";
 import { TasksScreen } from "../src/ui/tasks-screen.tsx";
 import type { TaskRow, TasksModel } from "../src/domain/tasks-model.ts";
-
-function nextTick(): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, 30));
-}
+import { settle, waitFor } from "./helpers/ui-wait.ts";
 
 function row(overrides: Partial<TaskRow> = {}): TaskRow {
   return {
@@ -40,7 +37,7 @@ test("renders the table and the detail panel for the selected row", () => {
 
 test("'a' toggles today/all and reloads", async () => {
   const calls: boolean[] = [];
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <TasksScreen
       load={(options) => {
         calls.push(options.all);
@@ -52,13 +49,15 @@ test("'a' toggles today/all and reloads", async () => {
     />,
   );
   stdin.write("a");
-  await nextTick();
-  assert.deepEqual(calls, [false, true]);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.deepEqual(calls, [false, true]);
+  });
 });
 
 test("'r' reloads with the current all flag", async () => {
   let loadCalls = 0;
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <TasksScreen
       load={() => {
         loadCalls += 1;
@@ -70,8 +69,10 @@ test("'r' reloads with the current all flag", async () => {
     />,
   );
   stdin.write("r");
-  await nextTick();
-  assert.equal(loadCalls, 2);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(loadCalls, 2);
+  });
 });
 
 test("filters rows to projectFilter and shows it in the header", () => {
@@ -86,12 +87,14 @@ test("filters rows to projectFilter and shows it in the header", () => {
 
 test("esc clears the project filter", async () => {
   let cleared = false;
-  const { stdin } = render(
+  const { stdin, lastFrame } = render(
     <TasksScreen load={() => model()} roots={["/work"]} version="0.1.0" columns={120} projectFilter="kankaku" onClearFilter={() => (cleared = true)} />,
   );
   stdin.write("\u001B");
-  await nextTick();
-  assert.equal(cleared, true);
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(cleared, true);
+  });
 });
 
 test("renders at 80 columns without overflowing any line", () => {
@@ -113,16 +116,18 @@ test("fits within `rows` and shows both indicators with many tasks at 100×24", 
   // fixed-width column overflowing the panel's actual content width used
   // to corrupt into blank lines instead of the indicator text).
   stdin.write("\u001B[6~"); // Page Down
-  await nextTick();
+  await settle(lastFrame);
 
-  const frame = lastFrame() ?? "";
-  const lines = frame.split("\n");
-  assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
-  assert.equal(/↑ \d+ more/.test(frame), true, "expected an '↑ N more' indicator");
-  assert.equal(/↓ \d+ more/.test(frame), true, "expected a '↓ N more' indicator");
-  // Every visible row is real task content — no blank line stands in for
-  // a row that failed to render (the corruption this guards against).
-  assert.equal(lines.some((line) => /^\s*$/.test(line) && line !== ""), false, "no whitespace-only line should appear inside the frame");
+  await waitFor(() => {
+    const frame = lastFrame() ?? "";
+    const lines = frame.split("\n");
+    assert.ok(lines.length <= 24, `expected at most 24 lines, got ${lines.length}`);
+    assert.equal(/↑ \d+ more/.test(frame), true, "expected an '↑ N more' indicator");
+    assert.equal(/↓ \d+ more/.test(frame), true, "expected a '↓ N more' indicator");
+    // Every visible row is real task content — no blank line stands in for
+    // a row that failed to render (the corruption this guards against).
+    assert.equal(lines.some((line) => /^\s*$/.test(line) && line !== ""), false, "no whitespace-only line should appear inside the frame");
+  });
 });
 
 test("PageDown/PageUp move the selection by the window size, Home/End jump to the ends", async () => {
@@ -137,24 +142,34 @@ test("PageDown/PageUp move the selection by the window size, Home/End jump to th
   assert.equal(markedProject(), "p0");
 
   stdin.write("\u001B[6~"); // Page Down
-  await nextTick();
-  assert.equal(markedProject(), "p19");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedProject(), "p19");
+  });
 
   stdin.write("\u001B[6~"); // Page Down again
-  await nextTick();
-  assert.equal(markedProject(), "p38");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedProject(), "p38");
+  });
 
   stdin.write("\u001B[5~"); // Page Up
-  await nextTick();
-  assert.equal(markedProject(), "p19");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedProject(), "p19");
+  });
 
   stdin.write("\u001B[H"); // Home
-  await nextTick();
-  assert.equal(markedProject(), "p0");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedProject(), "p0");
+  });
 
   stdin.write("\u001B[F"); // End
-  await nextTick();
-  assert.equal(markedProject(), "p39");
+  await settle(lastFrame);
+  await waitFor(() => {
+    assert.equal(markedProject(), "p39");
+  });
 });
 
 test("a 3000-character prompt never pushes the header out of view or the detail panel past its budget, at 100×24", () => {
