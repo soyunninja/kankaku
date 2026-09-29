@@ -3,7 +3,7 @@
 All notable changes to kankaku-pi (formerly kankaku). The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
-## Unreleased
+## 1.3.0 — 2026-09-29
 
 ### Added
 

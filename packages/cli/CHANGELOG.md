@@ -3,6 +3,15 @@
 All notable changes to kankaku (formerly kankaku-tui). The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 1.3.0 — 2026-09-29
+
+### Changed
+
+- Bundles `kankaku-claude` 1.3.0: Claude Code records carry real token
+  counts (so `cache hit` appears for them), the Claude Code version, and,
+  for headless `claude -p` runs, their cost. No change in this package's
+  own code.
+
 ## 1.2.0 — 2026-09-29
 
 ### Added
