@@ -133,7 +133,7 @@ test("full prompt lifecycle: one completed record with a cost delta from a simul
   const { resolvePaths } = await import("../src/paths.ts");
   try {
     clock.set(0);
-    await handleHook(baseInput({ hook_event_name: "SessionStart", source: "startup" }), deps);
+    await handleHook(baseInput({ hook_event_name: "SessionStart", source: "resume" }), deps);
 
     const paths = resolvePaths({ env: deps.env, cwd: "/repo", sessionId: "session-1" });
     writeCost(deps.env, "session-1", { totalUsd: 0.1, updatedAt: 200 }); // pre-existing baseline
@@ -268,7 +268,7 @@ test("UserPromptSubmit sets promptOpen.costAtStart from the cost file, not the p
   const { readState } = await import("../src/session-state.ts");
   try {
     clock.set(0);
-    await handleHook(baseInput({ hook_event_name: "SessionStart", source: "startup" }), deps);
+    await handleHook(baseInput({ hook_event_name: "SessionStart", source: "resume" }), deps);
     writeCost(deps.env, "session-1", { totalUsd: 0.25, updatedAt: 500 });
 
     clock.set(1000);

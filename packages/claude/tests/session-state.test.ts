@@ -109,3 +109,17 @@ function baseState(): SessionState {
     permissionOpen: null,
   };
 }
+
+test("a state file without costBaseline stays valid, and costBaseline round-trips", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { readState, writeState } = await import("../src/session-state.ts");
+  const dir = mkdtempSync(join(tmpdir(), "kankaku-claude-state-baseline-"));
+  const file = join(dir, "s.state.json");
+  writeFileSync(file, JSON.stringify({ pid: 1, parentPid: 2, cwd: "/r", startedAt: 3, promptOpen: null, permissionOpen: null }));
+  assert.equal(readState(file)?.costBaseline, undefined);
+  assert.notEqual(readState(file), undefined);
+  writeState(file, { pid: 1, parentPid: 2, cwd: "/r", startedAt: 3, promptOpen: null, permissionOpen: null, costBaseline: 1.25 });
+  assert.equal(readState(file)?.costBaseline, 1.25);
+});

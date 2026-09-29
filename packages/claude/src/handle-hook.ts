@@ -5,6 +5,7 @@ import { readState, writeState, updateState, type SessionState } from "./session
 import { resolveClaudePid, type PsInfo } from "./claude-pid.ts";
 import { splitPrompts, type PromptEvents } from "./prompts.ts";
 import { readCost, deleteCost, sweepStaleCostFiles } from "./cost-store.ts";
+import { settleCost } from "./cost-chain.ts";
 import type { Event } from "./events.ts";
 import type { WorkLog } from "kankaku-pi/ports";
 import type { SyncTrigger } from "kankaku-pi/hub";
@@ -58,14 +59,16 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
         ? { ts, event: "UserPromptSubmit", prompt, promptId }
         : { ts, event: "UserPromptSubmit", prompt };
       appendEvent(paths.eventsFile, event);
-      const costAtStart = readCost(deps.env, sessionId)?.totalUsd;
+      const snapshot = readCost(deps.env, sessionId)?.totalUsd;
       updateState(paths.stateFile, (state) => ({
         pid: state?.pid ?? 0,
         parentPid: state?.parentPid ?? 0,
         cwd: state?.cwd || cwd,
         startedAt: state?.startedAt ?? ts,
-        promptOpen: { id: promptId ?? `${sessionId}:${ts}`, startedAt: ts, costAtStart },
+        // The chained baseline wins over the snapshot: spend since the last settle belongs to this prompt.
+        promptOpen: { id: promptId ?? `${sessionId}:${ts}`, startedAt: ts, costAtStart: state?.costBaseline ?? snapshot },
         permissionOpen: null,
+        ...(state?.costBaseline !== undefined ? { costBaseline: state.costBaseline } : {}),
       }));
       return;
     }
@@ -95,6 +98,7 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
         startedAt: state?.startedAt ?? ts,
         promptOpen: state?.promptOpen ?? null,
         permissionOpen: ts,
+        ...(state?.costBaseline !== undefined ? { costBaseline: state.costBaseline } : {}),
       }));
       return;
     }
@@ -122,7 +126,7 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
     case "SessionStart": {
       const source = readString(raw.source) ?? "startup";
       appendEvent(paths.eventsFile, { ts, event: "SessionStart", source });
-      await handleSessionStart(paths, sessionId, cwd, source, ts, deps);
+      await handleSessionStart(paths, sessionId, cwd, source, raw.source === "startup", ts, deps);
       return;
     }
     case "SessionEnd": {
@@ -159,14 +163,10 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
     return;
   }
 
-  const costAtStart = state.promptOpen?.costAtStart;
-  const totalUsd = cost?.totalUsd;
-  const costDelta =
-    typeof costAtStart === "number" && typeof totalUsd === "number"
-      ? Math.max(0, Math.round((totalUsd - costAtStart) * 1e6) / 1e6) // micro-dollars: no binary float noise in the record
-      : undefined;
+  // A Stop with no open prompt settles nothing: no cost, no baseline move.
+  const settled = state.promptOpen ? settleCost(cost?.totalUsd, state.promptOpen.costAtStart) : {};
 
-  const core = replayPrompt(last, { cost: costDelta });
+  const core = replayPrompt(last, { cost: settled.cost });
   if (core) {
     const assignment = await assignmentResolver(paths, deps);
     const record = buildClaudeRecord(core, state, sessionId, cost?.model, assignment(state.cwd, sessionId));
@@ -174,7 +174,12 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
     log.append(record);
   }
 
-  writeState(paths.stateFile, { ...state, promptOpen: null, permissionOpen: null });
+  writeState(paths.stateFile, {
+    ...state,
+    promptOpen: null,
+    permissionOpen: null,
+    ...(settled.baseline !== undefined ? { costBaseline: settled.baseline } : {}),
+  });
   const keep = events.slice(0, events.length - last.events.length);
   dropSettledPrompts(paths.eventsFile, keep);
   if (core) await syncHeavy("agent_settled", state.cwd, deps);
@@ -185,6 +190,7 @@ async function handleSessionStart(
   sessionId: string,
   cwd: string,
   source: string,
+  isStartup: boolean,
   ts: number,
   deps: HandleHookDeps,
 ): Promise<void> {
@@ -223,6 +229,8 @@ async function handleSessionStart(
     startedAt: ts,
     promptOpen: null,
     permissionOpen: null,
+    // A newly started session's counter starts at zero; any other source keeps the snapshot-at-submit fallback.
+    ...(isStartup ? { costBaseline: 0 } : {}),
   };
   writeState(paths.stateFile, state);
   await syncHeavy("session_start", cwd, deps);
@@ -238,9 +246,11 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
     const prompts = splitPrompts(events);
     const last = prompts[prompts.length - 1];
     if (last) {
-      const core = replayPrompt(last, { settledAt: ts });
+      const costNow = readCost(deps.env, sessionId);
+      const settled = settleCost(costNow?.totalUsd, state.promptOpen.costAtStart);
+      const core = replayPrompt(last, { settledAt: ts, cost: settled.cost });
       if (core) {
-        const model = readCost(deps.env, sessionId)?.model;
+        const model = costNow?.model;
         const assignment = await assignmentResolver(paths, deps);
         const record = buildClaudeRecord(core, state, sessionId, model, assignment(state.cwd, sessionId));
         const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);

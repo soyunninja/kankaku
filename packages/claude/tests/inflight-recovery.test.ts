@@ -259,3 +259,34 @@ test("recoverStaleSessions closes a prompt with no follow-up event at its own st
     teardown(dirs);
   }
 });
+
+test("recoverStaleSessions settles the interrupted record's cost as total - costAtStart", () => {
+  const dirs = setup();
+  try {
+    writeState(join(dirs.claudeDir, "dead-cost.state.json"), baseState({ pid: 9999, promptOpen: { id: "p1", startedAt: 1000, costAtStart: 1.5 } }));
+    appendEvent(join(dirs.claudeDir, "dead-cost.events.jsonl"), { ts: 1000, event: "UserPromptSubmit", prompt: "cut off" });
+    writeCost(dirs.env, "dead-cost", { totalUsd: 4, updatedAt: 1000 });
+    const records = recoverStaleSessions({ claudeDir: dirs.claudeDir, currentSessionId: "current", isAlive: () => false, now: 5000, env: dirs.env });
+    assert.equal(records[0]?.usage.cost, 2.5);
+    assert.equal(records[0]?.costObserved, true);
+  } finally {
+    teardown(dirs);
+  }
+});
+
+test("recoverStaleSessions treats a total below costAtStart as a counter reset, and leaves cost unobserved without a total", () => {
+  const dirs = setup();
+  try {
+    writeState(join(dirs.claudeDir, "dead-reset.state.json"), baseState({ pid: 9999, promptOpen: { id: "p1", startedAt: 1000, costAtStart: 7 } }));
+    appendEvent(join(dirs.claudeDir, "dead-reset.events.jsonl"), { ts: 1000, event: "UserPromptSubmit", prompt: "a" });
+    writeCost(dirs.env, "dead-reset", { totalUsd: 0.5, updatedAt: 1000 });
+    writeState(join(dirs.claudeDir, "dead-none.state.json"), baseState({ pid: 9999, promptOpen: { id: "p2", startedAt: 1000, costAtStart: 7 } }));
+    appendEvent(join(dirs.claudeDir, "dead-none.events.jsonl"), { ts: 1000, event: "UserPromptSubmit", prompt: "b" });
+    const records = recoverStaleSessions({ claudeDir: dirs.claudeDir, currentSessionId: "current", isAlive: () => false, now: 5000, env: dirs.env });
+    const bySession = new Map(records.map((r) => [r.sessionId, r]));
+    assert.equal(bySession.get("dead-reset")?.usage.cost, 0.5);
+    assert.equal(bySession.get("dead-none")?.costObserved, undefined);
+  } finally {
+    teardown(dirs);
+  }
+});

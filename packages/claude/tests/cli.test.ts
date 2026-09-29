@@ -193,3 +193,79 @@ test("runCli returns usage on stderr and exit code 1 for an unknown command", as
     cleanup({ dir, homeDir });
   }
 });
+
+function statusFixture(opts: { promptOpen: boolean; total: number | undefined; recorded: number[] }) {
+  const t = tmpDeps({ isAlive: () => true });
+  const paths = resolvePaths({ env: t.deps.env, cwd: t.deps.cwd, sessionId: "s1" });
+  writeState(paths.stateFile, {
+    pid: 111,
+    parentPid: 1,
+    cwd: t.deps.cwd,
+    startedAt: 1000,
+    promptOpen: opts.promptOpen ? { id: "p1", startedAt: 1000, costAtStart: 0 } : null,
+    permissionOpen: null,
+  });
+  if (opts.total !== undefined) writeCost(t.deps.env, "s1", { totalUsd: opts.total, updatedAt: 1000 });
+  const log = new JsonlWorkLog(t.dir);
+  opts.recorded.forEach((cost, i) => {
+    const base = sampleRecord(new Date(1_000_000 + i));
+    log.append({ ...base, id: `r${i}`, sessionId: "s1", usage: { ...base.usage, cost } });
+  });
+  // Another session's record must never count.
+  const other = sampleRecord(new Date(2_000_000));
+  log.append({ ...other, id: "other", sessionId: "s2", usage: { ...other.usage, cost: 99 } });
+  return t;
+}
+
+test("runCli status shows recorded vs total, with no warning when they match", async () => {
+  const t = statusFixture({ promptOpen: false, total: 3, recorded: [1, 2] });
+  try {
+    const out = (await runCli(["status"], t.deps)).stdout;
+    assert.ok(out.includes("recorded $3.00 of $3.00"), out);
+    assert.equal(out.includes("unrecorded"), false);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test("runCli status warns about the unrecorded gap when no prompt is open", async () => {
+  const t = statusFixture({ promptOpen: false, total: 7, recorded: [1, 2] });
+  try {
+    const out = (await runCli(["status"], t.deps)).stdout;
+    assert.ok(out.includes("recorded $3.00 of $7.00 (unrecorded $4.00, goes to the next prompt)"), out);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test("runCli status shows no warning while a prompt is open, even with a gap", async () => {
+  const t = statusFixture({ promptOpen: true, total: 7, recorded: [1, 2] });
+  try {
+    const out = (await runCli(["status"], t.deps)).stdout;
+    assert.ok(out.includes("recorded $3.00 of $7.00"), out);
+    assert.equal(out.includes("unrecorded"), false);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test("runCli status ignores a gap of one cent or less", async () => {
+  const t = statusFixture({ promptOpen: false, total: 3.01, recorded: [1, 2] });
+  try {
+    const out = (await runCli(["status"], t.deps)).stdout;
+    assert.equal(out.includes("unrecorded"), false);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test("runCli status omits the recorded part when no total is known, and keeps the existing parts", async () => {
+  const t = statusFixture({ promptOpen: false, total: undefined, recorded: [1] });
+  try {
+    const out = (await runCli(["status"], t.deps)).stdout;
+    assert.equal(out.includes("recorded"), false);
+    assert.ok(out.includes("s1  pid 111 (alive)  idle  cost -"), out);
+  } finally {
+    cleanup(t);
+  }
+});

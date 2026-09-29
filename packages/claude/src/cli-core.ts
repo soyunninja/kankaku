@@ -80,9 +80,17 @@ function runStatus(deps: CliDeps): CliResult {
   if (files.length === 0) {
     return { stdout: `${targetLine}\nNo active sessions.\n`, exitCode: 0 };
   }
+  const recordedBySession = new Map<string, number>();
+  for (const record of new JsonlWorkLog(kankakuDir).readAll()) {
+    if (record.sessionId === undefined) continue;
+    recordedBySession.set(record.sessionId, (recordedBySession.get(record.sessionId) ?? 0) + record.usage.cost);
+  }
   const lines = files
     .sort()
-    .map((file) => formatStatusLine(sessionIdFromStateFile(file), file, deps.isAlive, deps.env));
+    .map((file) => {
+      const sessionId = sessionIdFromStateFile(file);
+      return formatStatusLine(sessionId, file, deps.isAlive, deps.env, recordedBySession.get(sessionId) ?? 0);
+    });
   return { stdout: [targetLine, ...lines].join("\n") + "\n", exitCode: 0 };
 }
 
@@ -91,6 +99,7 @@ function formatStatusLine(
   stateFile: string,
   isAlive: (pid: number) => boolean,
   env: NodeJS.ProcessEnv,
+  recordedUsd: number,
 ): string {
   const state = readState(stateFile);
   if (!state) return `${sessionId}  (unreadable state)`;
@@ -100,7 +109,11 @@ function formatStatusLine(
     : "idle";
   const cost = readCost(env, sessionId);
   const costWord = cost ? `$${cost.totalUsd.toFixed(2)}` : "-";
-  return `${sessionId}  pid ${state.pid} (${aliveWord})  ${promptWord}  cost ${costWord}`;
+  const base = `${sessionId}  pid ${state.pid} (${aliveWord})  ${promptWord}  cost ${costWord}`;
+  if (!cost) return base;
+  const gap = cost.totalUsd - recordedUsd;
+  const warning = gap > 0.01 && !state.promptOpen ? ` (unrecorded $${gap.toFixed(2)}, goes to the next prompt)` : "";
+  return `${base}  recorded $${recordedUsd.toFixed(2)} of $${cost.totalUsd.toFixed(2)}${warning}`;
 }
 
 function sessionIdFromStateFile(file: string): string {

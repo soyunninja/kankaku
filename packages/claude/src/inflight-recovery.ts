@@ -7,6 +7,7 @@ import { readEventLog } from "./event-log.ts";
 import { splitPrompts, replayPrompt } from "./replay.ts";
 import { buildClaudeRecord } from "./record.ts";
 import { readCost, deleteCost, type CostEnv } from "./cost-store.ts";
+import { settleCost } from "./cost-chain.ts";
 import type { RecordAssignment } from "./work-target.ts";
 
 export interface RecoverStaleSessionsInput {
@@ -63,9 +64,10 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
         // `now` is only a fallback when no usable timestamp exists.
         const lastTs = last.events[last.events.length - 1]?.ts;
         const settledAt = typeof lastTs === "number" && Number.isFinite(lastTs) ? lastTs : input.now;
-        const core = replayPrompt(last, { settledAt });
+        const costNow = readCost(input.env, sessionId);
+        const core = replayPrompt(last, { settledAt, cost: settleCost(costNow?.totalUsd, state.promptOpen.costAtStart).cost });
         if (core) {
-          const model = readCost(input.env, sessionId)?.model;
+          const model = costNow?.model;
           records.push(buildClaudeRecord(core, state, sessionId, model, input.resolveAssignment?.(state.cwd, sessionId)));
         }
       }

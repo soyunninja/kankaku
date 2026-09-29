@@ -20,6 +20,12 @@ export interface SessionState {
   startedAt: number;
   promptOpen: PromptOpenState | null;
   permissionOpen: number | null;
+  /**
+   * The session's cost total (USD) at its last settle: the chain that makes
+   * spend between two prompts land in the next record. Optional, so a state
+   * file written before it existed stays valid.
+   */
+  costBaseline?: number;
 }
 
 /**

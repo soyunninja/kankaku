@@ -119,5 +119,9 @@ export function replayPrompt(
   if (terminalStopIndex >= 0) return settled;
 
   current = opts.settledAt ?? prompt.events[prompt.events.length - 1]!.ts;
-  return tracker.onShutdown();
+  const interrupted = tracker.onShutdown();
+  if (!interrupted || typeof opts.cost !== "number" || !Number.isFinite(opts.cost)) return interrupted;
+  // An interrupted prompt ends no turn, so the tracker saw no cost; stamp the
+  // measured delta without inventing a turn.
+  return { ...interrupted, usage: { ...interrupted.usage, cost: interrupted.usage.cost + opts.cost }, costObserved: true };
 }
