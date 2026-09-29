@@ -1,5 +1,23 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { WorkRecord, WorkRecordCore } from "kankaku/domain";
 import type { SessionState } from "./session-state.ts";
+
+/** `version` from a `package.json`, or `undefined` when unreadable — never guessed. */
+export function readPackageVersion(file: string): string | undefined {
+  try {
+    const pkg = JSON.parse(readFileSync(file, "utf8")) as { version?: unknown };
+    return typeof pkg.version === "string" && pkg.version !== "" ? pkg.version : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Resolved once per hook process; `src/` and `dist/` share the same depth.
+const PLUGIN_VERSION = readPackageVersion(
+  join(dirname(dirname(fileURLToPath(import.meta.url))), "package.json"),
+);
 
 /**
  * Attaches the orchestrator metadata a replayed {@link WorkRecordCore}
@@ -8,6 +26,12 @@ import type { SessionState } from "./session-state.ts";
  * model id (from `src/cost-store.ts#readCost`, since T7 no longer a field
  * of `SessionState`) — passed in explicitly rather than read here, so the
  * caller decides which cost snapshot's model applies.
+ *
+ * Also stamps who MEASURED the record (`agent`, `plugin`, `pluginVersion`),
+ * so a worklog later synced by another tool (the kankaku TUI) keeps the
+ * right identity. `agentVersion` is omitted: Claude Code passes its version
+ * to no hook payload, and spawning `claude --version` from a hook is not
+ * acceptable.
  */
 export function buildClaudeRecord(
   core: WorkRecordCore,
@@ -23,6 +47,9 @@ export function buildClaudeRecord(
     project: state.cwd,
     sessionId,
     mode: "claude-code",
+    agent: "claude-code",
+    plugin: "kankaku-claude",
+    ...(PLUGIN_VERSION !== undefined ? { pluginVersion: PLUGIN_VERSION } : {}),
     ...(model ? { model: `anthropic/${model}` } : {}),
   };
 }

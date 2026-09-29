@@ -51,6 +51,10 @@ test("recoverStaleSessions replays an open prompt from a dead session as interru
 
     assert.equal(records.length, 1);
     assert.equal(records[0]?.status, "interrupted");
+    assert.equal(records[0]?.agent, "claude-code");
+    assert.equal(records[0]?.plugin, "kankaku-claude");
+    assert.equal(typeof records[0]?.pluginVersion, "string");
+    assert.equal(records[0]?.agentVersion, undefined);
     assert.equal(records[0]?.sessionId, "dead-open");
     assert.equal(records[0]?.project, "/repo");
     assert.equal(records[0]?.model, "anthropic/claude-x");

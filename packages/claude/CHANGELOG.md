@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- **Records synced by another tool were attributed to the syncer.** Records
+  carried no `agent`/`plugin`, so when the kankaku TUI synced a worklog
+  written by Claude Code, the hub row was created as agent `unknown`,
+  plugin `kankaku-tui`. Every record (settled, settled at SessionEnd, or
+  recovered as `interrupted`) now carries `agent: "claude-code"`,
+  `plugin: "kankaku-claude"` and `pluginVersion`. Records already on disk
+  are not rewritten.
+
 ## 0.10.1 — 2026-09-29
 
 ### Fixed

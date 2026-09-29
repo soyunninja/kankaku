@@ -25,6 +25,13 @@ its own `worklog.jsonl`. This means kankaku's existing report and export
 tooling can read this plugin's worklog unchanged. kankaku-claude also exposes
 manual and best-effort automatic hub sync through kankaku's public hub adapters (below).
 
+Every record carries the identity of who measured it: `agent: "claude-code"`,
+`plugin: "kankaku-claude"` and `pluginVersion` (this package's version).
+A worklog synced by another tool, such as the kankaku TUI, therefore keeps
+the right agent on the hub. `agentVersion` is left unset because Claude Code
+does not pass its version to hooks. Records written before this version carry
+no identity and are labelled by whichever tool syncs them first.
+
 ## Requirements
 
 - Claude Code with plugin support.

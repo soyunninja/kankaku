@@ -67,8 +67,11 @@ extension has one. Instead:
   replay, and the plugin's Claude-Code-specific `SubagentProfile`
   (`Agent`/`Task` tools, `subagent_type` as the agent name).
 - `src/record.ts` — `buildClaudeRecord`, attaching orchestrator metadata
-  (`role`, `pid`, `parentPid`, `project`, `sessionId`, `mode`, `model`) to a
-  replayed `WorkRecordCore`.
+  (`role`, `pid`, `parentPid`, `project`, `sessionId`, `mode`, `model`, plus the
+  measuring identity `agent`, `plugin`, `pluginVersion`) to a replayed
+  `WorkRecordCore`. Identity is stamped on every record so another syncer
+  (the TUI) cannot relabel it; `agentVersion` stays unset because no hook
+  payload carries Claude Code's version.
 - `src/paths.ts` — `resolvePaths`/`resolveKankakuDir`/`listStateFiles`: where
   everything lives under `<KANKAKU_DIR>/claude/`.
 - `src/session-state.ts` — `readState`/`writeState`/`updateState`, the

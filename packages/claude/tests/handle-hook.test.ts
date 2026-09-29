@@ -98,6 +98,14 @@ function lightPathModules(entry: string): string[] {
   return [...seen];
 }
 
+function assertClaudeIdentity(record: { agent?: string; agentVersion?: string; plugin?: string; pluginVersion?: string } | undefined): void {
+  const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { version: string };
+  assert.equal(record?.agent, "claude-code");
+  assert.equal(record?.plugin, "kankaku-claude");
+  assert.equal(record?.pluginVersion, pkg.version);
+  assert.equal(record?.agentVersion, undefined);
+}
+
 test("static check: nothing on the light hook path (src/hook.ts and its transitive relative imports) has a top-level runtime import from kankaku", () => {
   const modules = lightPathModules(join(__dirname, "..", "src", "hook.ts"));
   assert.ok(modules.some((file) => file.endsWith("handle-hook.ts")), "the walk must reach handle-hook.ts");
@@ -162,6 +170,7 @@ test("full prompt lifecycle: one completed record with a cost delta from a simul
     const record = records[0]!;
     assert.equal(isWorkRecord(record), true);
     assert.equal(record.status, "completed");
+    assertClaudeIdentity(record);
     assert.equal(record.wallMs, record.waitingMs + record.workMs);
     assert.equal(record.wallMs, 4000);
     assert.equal(record.waitingMs, 500);
@@ -298,6 +307,7 @@ test("SessionStart recovers a dead session's open prompt as interrupted and clea
     const records = readWorklog(dirs.kankakuDir);
     assert.equal(records.length, 1);
     assert.equal(records[0]?.status, "interrupted");
+    assertClaudeIdentity(records[0]);
     assert.equal(records[0]?.sessionId, "dead-session");
     assert.equal(existsSync(deadPaths.stateFile), false);
     assert.equal(existsSync(deadPaths.eventsFile), false);
@@ -368,6 +378,7 @@ test("SessionEnd with an open prompt appends an interrupted record and deletes t
     const records = readWorklog(dirs.kankakuDir);
     assert.equal(records.length, 1);
     assert.equal(records[0]?.status, "interrupted");
+    assertClaudeIdentity(records[0]);
     assert.equal(records[0]?.model, "anthropic/claude-x");
     assert.deepEqual(seen, [{ trigger: "session_start", status: undefined }, { trigger: "session_shutdown", status: "interrupted" }]);
 
