@@ -194,7 +194,7 @@ test("runCli returns usage on stderr and exit code 1 for an unknown command", as
   }
 });
 
-function statusFixture(opts: { promptOpen: boolean; total: number | undefined; recorded: number[] }) {
+function statusFixture(opts: { promptOpen: boolean; total: number | undefined; recorded: number[]; baseline?: number; costAtStart?: number }) {
   const t = tmpDeps({ isAlive: () => true });
   const paths = resolvePaths({ env: t.deps.env, cwd: t.deps.cwd, sessionId: "s1" });
   writeState(paths.stateFile, {
@@ -202,8 +202,9 @@ function statusFixture(opts: { promptOpen: boolean; total: number | undefined; r
     parentPid: 1,
     cwd: t.deps.cwd,
     startedAt: 1000,
-    promptOpen: opts.promptOpen ? { id: "p1", startedAt: 1000, costAtStart: 0 } : null,
+    promptOpen: opts.promptOpen ? { id: "p1", startedAt: 1000, costAtStart: opts.costAtStart ?? 0 } : null,
     permissionOpen: null,
+    ...(opts.baseline !== undefined ? { costBaseline: opts.baseline } : {}),
   });
   if (opts.total !== undefined) writeCost(t.deps.env, "s1", { totalUsd: opts.total, updatedAt: 1000 });
   const log = new JsonlWorkLog(t.dir);
@@ -222,38 +223,76 @@ test("runCli status shows recorded vs total, with no warning when they match", a
   try {
     const out = (await runCli(["status"], t.deps)).stdout;
     assert.ok(out.includes("recorded $3.00 of $3.00"), out);
-    assert.equal(out.includes("unrecorded"), false);
+    assert.equal(out.includes("pending"), false);
+    assert.equal(out.includes("never recorded"), false);
   } finally {
     cleanup(t);
   }
 });
 
-test("runCli status warns about the unrecorded gap when no prompt is open", async () => {
+test("runCli status: idle with a baseline, the spend since the last settle is pending for the next prompt", async () => {
+  const t = statusFixture({ promptOpen: false, total: 7, recorded: [1, 2], baseline: 3 });
+  try {
+    const out = (await runCli(["status"], t.deps)).stdout;
+    assert.ok(out.includes("recorded $3.00 of $7.00 (pending $4.00, goes to the next prompt)"), out);
+    assert.equal(out.includes("never recorded"), false);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test("runCli status: idle with NO baseline, a gap is never recorded and nothing is promised to the next prompt", async () => {
+  // A session upgraded mid-way, or resumed without state: the next prompt
+  // starts at the snapshot, so it will NOT pick this gap up.
   const t = statusFixture({ promptOpen: false, total: 7, recorded: [1, 2] });
   try {
     const out = (await runCli(["status"], t.deps)).stdout;
-    assert.ok(out.includes("recorded $3.00 of $7.00 (unrecorded $4.00, goes to the next prompt)"), out);
+    assert.ok(out.includes("recorded $3.00 of $7.00 (never recorded $4.00)"), out);
+    assert.equal(out.includes("goes to the next prompt"), false);
   } finally {
     cleanup(t);
   }
 });
 
-test("runCli status shows no warning while a prompt is open, even with a gap", async () => {
-  const t = statusFixture({ promptOpen: true, total: 7, recorded: [1, 2] });
+test("runCli status: idle with a baseline above what was recorded shows both the pending and the never-recorded parts", async () => {
+  const t = statusFixture({ promptOpen: false, total: 7, recorded: [1, 2], baseline: 6 });
   try {
     const out = (await runCli(["status"], t.deps)).stdout;
-    assert.ok(out.includes("recorded $3.00 of $7.00"), out);
-    assert.equal(out.includes("unrecorded"), false);
+    assert.ok(out.includes("recorded $3.00 of $7.00 (pending $1.00, goes to the next prompt) (never recorded $3.00)"), out);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test("runCli status: with a prompt open, its running spend is neither pending nor never recorded", async () => {
+  const t = statusFixture({ promptOpen: true, total: 7, recorded: [1, 2], costAtStart: 6.5 });
+  try {
+    const out = (await runCli(["status"], t.deps)).stdout;
+    assert.ok(out.includes("recorded $3.00 of $7.00 (this prompt so far $0.50) (never recorded $3.50)"), out);
+    assert.equal(out.includes("goes to the next prompt"), false);
+  } finally {
+    cleanup(t);
+  }
+});
+
+test("runCli status: with a prompt open that accounts for the whole gap, nothing else is reported", async () => {
+  const t = statusFixture({ promptOpen: true, total: 7, recorded: [1, 2], costAtStart: 3 });
+  try {
+    const out = (await runCli(["status"], t.deps)).stdout;
+    assert.ok(out.includes("recorded $3.00 of $7.00 (this prompt so far $4.00)"), out);
+    assert.equal(out.includes("never recorded"), false);
+    assert.equal(out.includes("pending"), false);
   } finally {
     cleanup(t);
   }
 });
 
 test("runCli status ignores a gap of one cent or less", async () => {
-  const t = statusFixture({ promptOpen: false, total: 3.01, recorded: [1, 2] });
+  const t = statusFixture({ promptOpen: false, total: 3.01, recorded: [1, 2], baseline: 3 });
   try {
     const out = (await runCli(["status"], t.deps)).stdout;
-    assert.equal(out.includes("unrecorded"), false);
+    assert.equal(out.includes("pending"), false);
+    assert.equal(out.includes("never recorded"), false);
   } finally {
     cleanup(t);
   }

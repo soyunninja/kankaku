@@ -142,8 +142,13 @@ anything behind in whatever project happens to be open.
   session id, whether its process is still alive, whether a prompt is open,
   and the last cost the statusline reported, followed by `recorded $X of
   $Y` (the sum of this session's record costs in this project's worklog
-  against the session total). When the two differ by more than a cent and no
-  prompt is open, the line adds `(unrecorded $Z, goes to the next prompt)`.
+  against the session total). When they differ by more than a cent the line says what the
+  difference is: `(this prompt so far $R)` for the open prompt's running
+  spend, `(pending $P, goes to the next prompt)` for what was spent since
+  the last settle of a session that has a chained baseline, and
+  `(never recorded $Z)` for spend from before the session had one (a
+  session upgraded mid-way, or resumed without its state) — no later
+  prompt carries that part.
   The resolved work target comes first (wraps `node dist/cli.js status`).
 - `/kankaku:task` — links this session to a hub task (wraps
   `node dist/cli.js task`); see "Linking a task" below.

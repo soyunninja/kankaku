@@ -4,6 +4,20 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## 1.0.2 — 2026-09-29
+
+### Fixed
+
+- **`/kankaku:status` promised a recovery that would not happen.** The
+  line compared the session total with the sum of ALL the session's
+  records and, when idle, called the whole difference "unrecorded, goes
+  to the next prompt". For a session that spent money before it had a
+  chained baseline (upgraded mid-way, or resumed without its state) that
+  was false: the next prompt only carries what was spent since the last
+  settle. The line now separates `this prompt so far`, `pending, goes to
+  the next prompt` and `never recorded`. Attribution itself was correct
+  in 1.0.1 and is unchanged.
+
 ## 1.0.1 — 2026-09-29
 
 ### Fixed

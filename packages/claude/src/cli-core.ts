@@ -2,6 +2,7 @@ import { basename, join } from "node:path";
 import { JsonlWorkLog } from "kankaku-pi/hub";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";
 import { readState } from "./session-state.ts";
+import type { SessionState } from "./session-state.ts";
 import { readCost } from "./cost-store.ts";
 import { formatReport } from "./report.ts";
 import { runSyncCli } from "./sync-cli.ts";
@@ -111,9 +112,38 @@ function formatStatusLine(
   const costWord = cost ? `$${cost.totalUsd.toFixed(2)}` : "-";
   const base = `${sessionId}  pid ${state.pid} (${aliveWord})  ${promptWord}  cost ${costWord}`;
   if (!cost) return base;
-  const gap = cost.totalUsd - recordedUsd;
-  const warning = gap > 0.01 && !state.promptOpen ? ` (unrecorded $${gap.toFixed(2)}, goes to the next prompt)` : "";
-  return `${base}  recorded $${recordedUsd.toFixed(2)} of $${cost.totalUsd.toFixed(2)}${warning}`;
+  return `${base}  recorded $${recordedUsd.toFixed(2)} of $${cost.totalUsd.toFixed(2)}${describeGap(state, cost.totalUsd, recordedUsd)}`;
+}
+
+/** Amounts of one cent or less are rounding noise, never reported. */
+const REPORTABLE_USD = 0.01;
+
+/**
+ * Splits the difference between the session's total and what its records
+ * hold into what it actually is, so the line never promises a recovery
+ * that will not happen:
+ *
+ * - `this prompt so far`: the open prompt's running spend (total − its
+ *   `costAtStart`); it lands in that prompt's own record at settle.
+ * - `pending, goes to the next prompt`: only when idle AND the session has
+ *   a `costBaseline` — the next prompt starts there, so it picks this up.
+ *   Without a baseline the next prompt starts at the snapshot and picks up
+ *   nothing, so nothing is promised.
+ * - `never recorded`: whatever is left — spent before this session had a
+ *   chained baseline (a session upgraded mid-way, or resumed without its
+ *   state). It is in no record and no later prompt will carry it.
+ */
+function describeGap(state: SessionState, totalUsd: number, recordedUsd: number): string {
+  const start = state.promptOpen?.costAtStart;
+  const running = state.promptOpen && typeof start === "number" ? Math.max(0, totalUsd - start) : 0;
+  const pending = !state.promptOpen && typeof state.costBaseline === "number" ? Math.max(0, totalUsd - state.costBaseline) : 0;
+  const neverRecorded = totalUsd - recordedUsd - running - pending;
+
+  const parts: string[] = [];
+  if (running > REPORTABLE_USD) parts.push(` (this prompt so far $${running.toFixed(2)})`);
+  if (pending > REPORTABLE_USD) parts.push(` (pending $${pending.toFixed(2)}, goes to the next prompt)`);
+  if (neverRecorded > REPORTABLE_USD) parts.push(` (never recorded $${neverRecorded.toFixed(2)})`);
+  return parts.join("");
 }
 
 function sessionIdFromStateFile(file: string): string {
