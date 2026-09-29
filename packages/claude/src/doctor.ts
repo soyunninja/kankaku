@@ -6,6 +6,7 @@ import type { CliDeps } from "./cli-core.ts";
 import { costDir } from "./cost-store.ts";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";
 import { readState } from "./session-state.ts";
+import { formatTargetLine, resolveClaudeWorkTarget } from "./work-target.ts";
 
 function metadata(file: string): Record<string, unknown> | undefined {
   try {
@@ -77,6 +78,8 @@ export function runDoctor(deps: CliDeps): string {
     `active sessions: ${states.length}`,
     `alive: ${alive}; dead: ${dead}; open prompts: ${open}; unreadable: ${unreadable}`,
     `cost files visible: ${costsVisible ? "yes" : "no"} (current HOME)`,
+    "", "## Work target",
+    formatTargetLine(resolveClaudeWorkTarget({ cwd: deps.cwd, kankakuDir: dir, homeDir: deps.env.HOME || homedir(), env: deps.env })),
     "", "## Hub / sync",
     `hub: ${hubState}`,
     `pending: ${pending}`,

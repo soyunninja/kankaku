@@ -1,3 +1,4 @@
+import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { JsonlWorkLog } from "kankaku/hub";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";
@@ -6,6 +7,7 @@ import { readCost } from "./cost-store.ts";
 import { formatReport } from "./report.ts";
 import { runSyncCli } from "./sync-cli.ts";
 import { runDoctor } from "./doctor.ts";
+import { formatTargetLine, resolveClaudeWorkTarget } from "./work-target.ts";
 
 export interface CliDeps {
   env: NodeJS.ProcessEnv;
@@ -63,13 +65,16 @@ function runStatus(deps: CliDeps): CliResult {
   const kankakuDir = resolveKankakuDir(deps.env.KANKAKU_DIR ?? ".kankaku", deps.cwd);
   const claudeDir = join(kankakuDir, "claude");
   const files = listStateFiles(claudeDir);
+  const targetLine = formatTargetLine(
+    resolveClaudeWorkTarget({ cwd: deps.cwd, kankakuDir, homeDir: deps.env.HOME || homedir(), env: deps.env }),
+  );
   if (files.length === 0) {
-    return { stdout: "No active sessions.\n", exitCode: 0 };
+    return { stdout: `${targetLine}\nNo active sessions.\n`, exitCode: 0 };
   }
   const lines = files
     .sort()
     .map((file) => formatStatusLine(sessionIdFromStateFile(file), file, deps.isAlive, deps.env));
-  return { stdout: lines.join("\n") + "\n", exitCode: 0 };
+  return { stdout: [targetLine, ...lines].join("\n") + "\n", exitCode: 0 };
 }
 
 function formatStatusLine(
