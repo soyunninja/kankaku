@@ -3,6 +3,11 @@
 All notable changes to kankaku. The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## 0.11.0 — 2026-09-29
+
+No changes in this package; released in lockstep with kankaku-claude and
+kankaku-tui 0.11.0.
+
 ## 0.10.2 — 2026-09-29
 
 No changes in this package; released in lockstep with kankaku-claude and

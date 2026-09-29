@@ -3,6 +3,17 @@
 All notable changes to kankaku-tui. The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 0.11.0 — 2026-09-29
+
+### Changed
+
+- Bundles `kankaku-claude` 0.11.0: Claude Code records now resolve their
+  client and project automatically (the project's `config.json`, then the
+  cached catalog's `repo_paths` match for the working directory), so they
+  no longer land on the hub's unassigned client. `/kankaku:status` and
+  `/kankaku:doctor` show the resolved target. No change in this package's
+  own code.
+
 ## 0.10.2 — 2026-09-29
 
 ### Changed
