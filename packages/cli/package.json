@@ -2,6 +2,12 @@
   "name": "kankaku",
   "version": "0.12.1",
   "description": "Terminal app that shows today's kankaku work across every project on disk",
+  "keywords": [
+    "pi-package",
+    "kankaku",
+    "time-tracking",
+    "agents"
+  ],
   "license": "MIT",
   "type": "module",
   "bin": {
@@ -9,9 +15,15 @@
   },
   "files": [
     "dist/",
+    "vendor/",
     "README.md",
     "LICENSE"
   ],
+  "pi": {
+    "extensions": [
+      "./vendor/kankaku-pi/src/extension.ts"
+    ]
+  },
   "engines": {
     "node": ">=24"
   },
@@ -21,7 +33,8 @@
     "test": "node --import ./tests/setup.mjs --import tsx --test tests/*.test.ts tests/*.test.tsx",
     "check": "npm run build && npm run typecheck && npm test",
     "dev": "tsx src/cli.tsx",
-    "prepublishOnly": "npm run check"
+    "prepublishOnly": "npm run check",
+    "prepack": "node scripts/vendor-pi.mjs"
   },
   "dependencies": {
     "ink": "^7.1.1",

@@ -12,3 +12,5 @@ packages/*/dist/
 packages/*/.kankaku/
 packages/*/.codegraph/
 packages/*/odd/
+
+packages/*/vendor/
