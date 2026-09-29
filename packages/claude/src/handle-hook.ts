@@ -32,6 +32,9 @@ export interface HandleHookDeps {
   resolveTarget?: (input: ClaudeWorkTargetInput) => ClaudeWorkTarget;
 }
 
+/** The transcript `entrypoint` of a headless `claude -p` run. */
+const HEADLESS_ENTRYPOINT = "sdk-cli";
+
 const STOP_COST_WAIT_POLL_MS = 100;
 const STOP_COST_WAIT_MAX_MS = 1500;
 
@@ -158,9 +161,12 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   const opened = readState(paths.stateFile);
   const transcript = opened?.promptOpen ? settleSafely(opened, deps) : undefined;
 
+  // A headless session (`claude -p`) has no statusline: its cost comes from the transcript at SessionEnd.
+  const headless = transcript?.transcript.entrypoint === HEADLESS_ENTRYPOINT;
+
   const deadline = deps.now() + STOP_COST_WAIT_MAX_MS;
   let cost = readCost(deps.env, sessionId);
-  while ((!cost || cost.updatedAt < beforeStopTs) && deps.now() < deadline) {
+  while (!headless && (!cost || cost.updatedAt < beforeStopTs) && deps.now() < deadline) {
     await deps.sleep(STOP_COST_WAIT_POLL_MS);
     cost = readCost(deps.env, sessionId);
   }
@@ -170,6 +176,22 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
   const state = readState(paths.stateFile);
   if (!last || !state) {
     if (!state) deps.stderr(`kankaku: no session state at Stop for ${sessionId}`);
+    return;
+  }
+
+  if (headless && state.promptOpen) {
+    // Times, waiting and tokens are final; the cost is not known until SessionEnd. Keep the prompt and write nothing.
+    const core = replayPrompt(last, {});
+    const pending = [...(state.pending ?? [])];
+    if (core) pending.push({ core: stampTokens(core, transcript?.tokens), costAtStart: state.promptOpen.costAtStart });
+    writeState(paths.stateFile, {
+      ...state,
+      promptOpen: null,
+      permissionOpen: null,
+      ...withTranscript(transcript?.transcript),
+      pending,
+    });
+    dropSettledPrompts(paths.eventsFile, events.slice(0, events.length - last.events.length));
     return;
   }
 
@@ -252,28 +274,50 @@ async function handleSessionStart(
 
 async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: string, ts: number, deps: HandleHookDeps): Promise<void> {
   const state = readState(paths.stateFile);
-  if (state?.promptOpen) {
+  if (state && (state.promptOpen || (state.pending?.length ?? 0) > 0)) {
     const { replayPrompt } = await import("./replay.ts");
     const { buildClaudeRecord, stampTokens } = await import("./record.ts");
     const { JsonlWorkLog } = await import("kankaku-pi/hub");
-    const events = readEventLog(paths.eventsFile);
-    const prompts = splitPrompts(events);
-    const last = prompts[prompts.length - 1];
-    if (last) {
-      const costNow = readCost(deps.env, sessionId);
-      const settled = settleCost(costNow?.totalUsd, state.promptOpen.costAtStart);
-      const transcript = settleSafely(state, deps);
-      const core = replayPrompt(last, { settledAt: ts, cost: settled.cost });
-      if (core) {
-        const model = costNow?.model;
-        const assignment = await assignmentResolver(paths, deps);
-        const version = agentVersionOf(transcript, state);
-        const record = buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, model, assignment(state.cwd, sessionId), {
-          ...(version !== undefined ? { agentVersion: version } : {}),
-        });
-        const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
-        log.append(record);
+    const log = deps.log ?? new JsonlWorkLog(paths.kankakuDir);
+    const assignment = await assignmentResolver(paths, deps);
+    // Also the only place the cost-state of a headless run is visible: it is written after the last Stop.
+    const transcript = settleSafely(state, deps);
+    const version = agentVersionOf(transcript, state);
+    const headless = (state.pending?.length ?? 0) > 0 || transcript?.transcript.entrypoint === HEADLESS_ENTRYPOINT;
+    const pending = [...(state.pending ?? [])];
+
+    if (state.promptOpen) {
+      const events = readEventLog(paths.eventsFile);
+      const last = splitPrompts(events).at(-1);
+      if (last) {
+        const costNow = readCost(deps.env, sessionId);
+        const settled = headless ? {} : settleCost(costNow?.totalUsd, state.promptOpen.costAtStart);
+        const core = replayPrompt(last, { settledAt: ts, cost: settled.cost });
+        if (core && headless) {
+          pending.push({ core: stampTokens(core, transcript?.tokens), costAtStart: state.promptOpen.costAtStart });
+        } else if (core) {
+          const record = buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, costNow?.model, assignment(state.cwd, sessionId), {
+            ...(version !== undefined ? { agentVersion: version } : {}),
+          });
+          log.append(record);
+        }
       }
+    }
+
+    if (headless && pending.length > 0) {
+      const { buildHeadlessRecords } = await import("./headless.ts");
+      const records = buildHeadlessRecords({
+        pending,
+        state,
+        sessionId,
+        ...(transcript?.costState !== undefined ? { costState: transcript.costState } : {}),
+        assignment: assignment(state.cwd, sessionId),
+        ...(version !== undefined ? { agentVersion: version } : {}),
+      });
+      for (const record of records) log.append(record);
+      // Written once, whichever path gets there first: drop the pending list before anything slow runs.
+      const { pending: _written, ...withoutPending } = state;
+      writeState(paths.stateFile, { ...withoutPending, promptOpen: null, permissionOpen: null });
     }
   }
   try {

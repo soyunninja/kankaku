@@ -7,6 +7,7 @@ import { readEventLog } from "./event-log.ts";
 import { splitPrompts, replayPrompt } from "./replay.ts";
 import { buildClaudeRecord, stampTokens } from "./record.ts";
 import { settleTranscripts } from "./transcript-settle.ts";
+import { buildHeadlessRecords } from "./headless.ts";
 import { readCost, deleteCost, type CostEnv } from "./cost-store.ts";
 import { settleCost } from "./cost-chain.ts";
 import type { RecordAssignment } from "./work-target.ts";
@@ -55,29 +56,51 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
     const dead = state.pid <= 0 || !input.isAlive(state.pid);
     if (!dead) continue;
 
-    if (state.promptOpen && state.cwd !== "") {
-      const events = readEventLog(eventsFile);
-      const prompts = splitPrompts(events);
-      const last = prompts[prompts.length - 1];
-      if (last && last.open) {
-        // Close at the prompt's last recorded activity, never at recovery
-        // time (which is the next session start, possibly hours later).
-        // `now` is only a fallback when no usable timestamp exists.
-        const lastTs = last.events[last.events.length - 1]?.ts;
-        const settledAt = typeof lastTs === "number" && Number.isFinite(lastTs) ? lastTs : input.now;
-        const costNow = readCost(input.env, sessionId);
-        const core = replayPrompt(last, { settledAt, cost: settleCost(costNow?.totalUsd, state.promptOpen.costAtStart).cost });
-        if (core) {
-          const model = costNow?.model;
-          const transcript = settleSafely(state);
-          const version = transcript?.transcript.agentVersion ?? state.transcript?.agentVersion;
-          records.push(
-            buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, model, input.resolveAssignment?.(state.cwd, sessionId), {
-              ...(version !== undefined ? { agentVersion: version } : {}),
-            }),
-          );
+    const held = [...(state.pending ?? [])];
+    const openPrompt = state.promptOpen && state.cwd !== "" ? state.promptOpen : undefined;
+    if (openPrompt || held.length > 0) {
+      // One read of the dead session's transcript: tokens of the open prompt,
+      // the entry point, and the cost-state a headless run wrote after its last Stop.
+      const transcript = settleSafely(state);
+      const version = transcript?.transcript.agentVersion ?? state.transcript?.agentVersion;
+      const headless = held.length > 0 || transcript?.transcript.entrypoint === "sdk-cli";
+      const costNow = readCost(input.env, sessionId);
+      const assignment = input.resolveAssignment?.(state.cwd, sessionId);
+
+      if (openPrompt) {
+        const events = readEventLog(eventsFile);
+        const prompts = splitPrompts(events);
+        const last = prompts[prompts.length - 1];
+        if (last && last.open) {
+          // Close at the prompt's last recorded activity, never at recovery
+          // time (which is the next session start, possibly hours later).
+          // `now` is only a fallback when no usable timestamp exists.
+          const lastTs = last.events[last.events.length - 1]?.ts;
+          const settledAt = typeof lastTs === "number" && Number.isFinite(lastTs) ? lastTs : input.now;
+          const cost = headless ? undefined : settleCost(costNow?.totalUsd, openPrompt.costAtStart).cost;
+          const core = replayPrompt(last, { settledAt, cost });
+          if (core && headless) {
+            held.push({ core: stampTokens(core, transcript?.tokens), costAtStart: openPrompt.costAtStart });
+          } else if (core) {
+            records.push(
+              buildClaudeRecord(stampTokens(core, transcript?.tokens), state, sessionId, costNow?.model, assignment, {
+                ...(version !== undefined ? { agentVersion: version } : {}),
+              }),
+            );
+          }
         }
       }
+
+      records.push(
+        ...buildHeadlessRecords({
+          pending: held,
+          state,
+          sessionId,
+          ...(transcript?.costState !== undefined ? { costState: transcript.costState } : {}),
+          ...(assignment !== undefined ? { assignment } : {}),
+          ...(version !== undefined ? { agentVersion: version } : {}),
+        }),
+      );
     }
 
     safeUnlink(stateFile);

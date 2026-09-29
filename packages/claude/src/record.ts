@@ -24,6 +24,8 @@ const PLUGIN_VERSION = readPackageVersion(
 export interface RecordExtras {
   /** Claude Code's version, from the transcript. */
   agentVersion?: string;
+  /** The record's cost is a share of a session total (see `WorkRecordMetadata.costAllocated`). */
+  costAllocated?: true;
 }
 
 /**
@@ -73,6 +75,7 @@ export function buildClaudeRecord(
     plugin: "kankaku-claude",
     ...(PLUGIN_VERSION !== undefined ? { pluginVersion: PLUGIN_VERSION } : {}),
     ...(extras.agentVersion !== undefined ? { agentVersion: extras.agentVersion } : {}),
+    ...(extras.costAllocated === true ? { costAllocated: true as const } : {}),
     ...(model ? { model: `anthropic/${model}` } : {}),
     ...(legacyClient !== undefined ? { client: legacyClient } : {}),
     ...(target !== undefined
