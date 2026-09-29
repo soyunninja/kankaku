@@ -1,0 +1,66 @@
+name: Release
+
+# Publishes the three client packages when a tag v<version> is pushed.
+# Authentication is npm trusted publishing (OIDC): there is no npm token in
+# this repository. Each package on npmjs.com names this file
+# (release.yml) as its trusted publisher, so the file must keep this name.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write # required for OIDC
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "24"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false # never use caching in release builds
+
+      # Trusted publishing needs npm 11.5.1 or later.
+      - run: npm install -g npm@^11.5.1
+      - run: npm ci
+
+      - name: The tag must match the version of every package
+        run: |
+          node -e '
+            const { readFileSync } = require("node:fs");
+            const tag = process.env.GITHUB_REF_NAME;
+            const expected = tag.replace(/^v/, "");
+            const dirs = ["packages/pi", "packages/claude", "packages/cli"];
+            const bad = dirs
+              .map((dir) => ({ dir, ...JSON.parse(readFileSync(`${dir}/package.json`, "utf8")) }))
+              .filter((pkg) => pkg.version !== expected);
+            if (bad.length > 0) {
+              for (const pkg of bad) console.error(`${pkg.name} in ${pkg.dir} is ${pkg.version}, the tag is ${tag}`);
+              process.exit(1);
+            }
+            console.log(`every package is ${expected}`);
+          '
+
+      - run: npm run check
+
+      # Dependency order: the consumers depend on kankaku-pi. A version that
+      # is already on the registry is skipped, so a run that failed half-way
+      # can simply be run again.
+      - name: Publish in order
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          for package in kankaku-pi kankaku-claude kankaku; do
+            if npm view "$package@$version" version >/dev/null 2>&1; then
+              echo "$package@$version is already published, skipping"
+            else
+              npm publish -w "$package"
+            fi
+          done

@@ -45,6 +45,14 @@ their own repositories.
   `packages/cli/package.json` points there. `scripts/vendor-pi.mjs` writes
   it on `prepack`; never edit it and never commit it (it is ignored). The
   `kankaku-pi` tarball still ships the same extension on its own.
+- **Releases are published by GitHub Actions**, not by hand: pushing the
+  tag `v<version>` runs `.github/workflows/release.yml`, which checks that
+  the tag matches every package, runs the root check and publishes the
+  three packages in dependency order through npm trusted publishing
+  (OIDC, no token). The file name is part of the trust configured on
+  npmjs.com for each package: renaming it breaks publishing.
+  `npm run publish:all` remains the manual fallback.
+  `.github/workflows/ci.yml` runs the same check on every push to `main`.
 - **One lockfile**, at the root. Never add a `package-lock.json` inside a
   package.
 - **Strict TDD and the per-package verification commands are unchanged**;
