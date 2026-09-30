@@ -82,6 +82,21 @@ export function readSessionTarget(file: string): SessionTargetLink | undefined {
   };
 }
 
+/** What the work-target resolution takes from a session's file: the `/kankaku:target` pick and the task link. */
+export function sessionInputs(link: SessionTargetLink): {
+  sessionTarget?: { clientId: string; projectId?: string };
+  taskLink?: { hubTaskId: string; hubTaskTitle?: string };
+} {
+  return {
+    ...(link.clientId !== undefined
+      ? { sessionTarget: { clientId: link.clientId, ...(link.projectId !== undefined ? { projectId: link.projectId } : {}) } }
+      : {}),
+    ...(link.hubTaskId !== undefined
+      ? { taskLink: { hubTaskId: link.hubTaskId, ...(link.hubTaskTitle !== undefined ? { hubTaskTitle: link.hubTaskTitle } : {}) } }
+      : {}),
+  };
+}
+
 /** The same file content without the task link (the target and the list are kept). */
 export function withoutTaskLink(link: SessionTargetLink): SessionTargetLink {
   const { hubTaskId: _id, hubTaskTitle: _title, pickedAt: _at, projectId, ...rest } = link;

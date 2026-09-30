@@ -10,7 +10,7 @@ import type { WorkTarget } from "kankaku-pi/domain";
 import type { PsInfo } from "./claude-pid.ts";
 import { findSession } from "./find-session.ts";
 import { resolveKankakuDir, resolveTargetFile } from "./paths.ts";
-import { readSessionTarget } from "./session-target-store.ts";
+import { readSessionTarget, sessionInputs } from "./session-target-store.ts";
 
 export interface ClaudeWorkTargetInput {
   /** The session's working directory, matched against the catalog's `repo_paths`. */
@@ -20,6 +20,13 @@ export interface ClaudeWorkTargetInput {
   /** Home directory holding `.kankaku/catalog.json` and `.kankaku/credentials.json`. */
   homeDir: string;
   env: NodeJS.ProcessEnv;
+  /**
+   * The client (and project) this session picked with `/kankaku:target`. It
+   * goes to the library as the session candidate: it wins over the project
+   * config and `repo_paths` while it resolves to an active catalog entry,
+   * and falls through otherwise.
+   */
+  sessionTarget?: { clientId: string; projectId?: string };
   /**
    * The hub task this session linked with `/kankaku:task`. Validated
    * against the resolved project by the library's `resolveWorkTarget` (as
@@ -37,7 +44,7 @@ export interface RecordAssignment {
 }
 
 export interface ClaudeWorkTarget extends RecordAssignment {
-  source?: "project" | "repoPaths";
+  source?: "session" | "project" | "repoPaths";
   /** Why there is no target; set only when {@link ClaudeWorkTarget.target} is absent. */
   reason?: string;
   /** Set when a `taskLink` was given but could not be applied; `title` is what the user linked. */
@@ -47,7 +54,8 @@ export interface ClaudeWorkTarget extends RecordAssignment {
 /**
  * Resolves the work target for a session, for record stamping and display.
  *
- * Sources, in order: the project's `config.json` ids, then the cached
+ * Sources, in order: the session's `/kankaku:target` pick, the project's
+ * `config.json` ids, then the cached
  * catalog's `repo_paths` match for `cwd`. The catalog comes only from the
  * cache file that every real sync refreshes — there is no fetch, no refresh
  * and no network here, and nothing throws: an unusable cache means "no
@@ -80,6 +88,7 @@ function resolveUnsafe(input: ClaudeWorkTargetInput): ClaudeWorkTarget {
   if (!snapshot) return withLegacy({ reason: "no catalog cache" });
 
   const resolveInput = {
+    ...(input.sessionTarget !== undefined ? { session: input.sessionTarget } : {}),
     project: readProjectTargetIds(input.kankakuDir),
     cwd: input.cwd,
     clients: snapshot.clients,
@@ -87,7 +96,7 @@ function resolveUnsafe(input: ClaudeWorkTargetInput): ClaudeWorkTarget {
   };
   const target = resolveWorkTarget(resolveInput);
   const source = resolveWorkTargetSource(resolveInput);
-  if (!target || (source !== "project" && source !== "repoPaths")) {
+  if (!target || source === undefined) {
     return withLegacy({ reason: `no match for ${input.cwd}` });
   }
   // Mirrors the pi extension: with a hub target the legacy label is the
@@ -128,7 +137,7 @@ function readCatalogCache(input: ClaudeWorkTargetInput) {
 /** The `target:` line printed by `/kankaku:status` and `/kankaku:doctor`. */
 export function formatTargetLine(result: ClaudeWorkTarget): string {
   if (!result.target) return `target: none (${result.reason ?? "unresolved"})`;
-  const source = result.source === "project" ? "project config" : "repo_paths";
+  const source = result.source === "session" ? "session" : result.source === "project" ? "project config" : "repo_paths";
   // The task has its own line (see formatTaskLine); keep this one to client and project.
   const { hubTaskId: _id, hubTaskTitle: _title, ...bare } = result.target;
   return `target: ${formatWorkTargetLabel(bare)} (source: ${source})`;
@@ -164,8 +173,6 @@ export function resolveSessionWorkTarget(deps: SessionWorkTargetDeps): ClaudeWor
   const stored = session !== undefined ? readSessionTarget(resolveTargetFile(claudeDir, session)) : undefined;
   return resolveClaudeWorkTarget({
     cwd: deps.cwd, kankakuDir, homeDir: deps.env.HOME || homedir(), env: deps.env,
-    ...(stored?.hubTaskId !== undefined
-      ? { taskLink: { hubTaskId: stored.hubTaskId, ...(stored.hubTaskTitle !== undefined ? { hubTaskTitle: stored.hubTaskTitle } : {}) } }
-      : {}),
+    ...(stored !== undefined ? sessionInputs(stored) : {}),
   });
 }

@@ -246,3 +246,60 @@ test("formatTargetLine shows the label and source, or none with the reason", () 
     f.cleanup();
   }
 });
+
+test("a session override wins over the project config and repo_paths, source session", () => {
+  const f = fixture();
+  try {
+    f.writeCache();
+    f.writeConfig({ clientId: "c-acme", projectId: "p-api" });
+    const r = resolveClaudeWorkTarget({
+      cwd: "/work/acme/web", kankakuDir: f.kankakuDir, homeDir: f.home, env: f.env,
+      sessionTarget: { clientId: "c-acme", projectId: "p-web" },
+    });
+    assert.equal(r.source, "session");
+    assert.equal(r.target?.projectId, "p-web");
+    assert.equal(r.legacyClient, "acme");
+    assert.equal(formatTargetLine(r), "target: Acme Corp · Web (source: session)");
+    // a client-only override has no project even where repo_paths would give one
+    const clientOnly = resolveClaudeWorkTarget({
+      cwd: "/work/acme/web", kankakuDir: f.kankakuDir, homeDir: f.home, env: f.env,
+      sessionTarget: { clientId: "c-acme" },
+    });
+    assert.equal(clientOnly.source, "session");
+    assert.equal(clientOnly.target?.projectId, undefined);
+    assert.equal(formatTargetLine(clientOnly), "target: Acme Corp (source: session)");
+  } finally { f.cleanup(); }
+});
+
+test("an override that no longer resolves falls through; an invalid client code leaves no legacy label", () => {
+  const f = fixture();
+  try {
+    f.writeCache();
+    for (const clientId of ["c-off", "c-unassigned", "c-gone"]) {
+      const r = resolveClaudeWorkTarget({
+        cwd: "/work/acme/web", kankakuDir: f.kankakuDir, homeDir: f.home, env: f.env, sessionTarget: { clientId },
+      });
+      assert.equal(r.source, "repoPaths", clientId);
+      assert.equal(r.target?.projectId, "p-web", clientId);
+    }
+    const bad = resolveClaudeWorkTarget({
+      cwd: "/x", kankakuDir: f.kankakuDir, homeDir: f.home, env: f.env, sessionTarget: { clientId: "c-bad" },
+    });
+    assert.equal(bad.source, "session");
+    assert.equal(bad.target?.clientCode, "has space");
+    assert.equal(bad.legacyClient, undefined);
+  } finally { f.cleanup(); }
+});
+
+test("an override project of another client is dropped, the client stays", () => {
+  const f = fixture();
+  try {
+    f.writeCache();
+    const r = resolveClaudeWorkTarget({
+      cwd: "/x", kankakuDir: f.kankakuDir, homeDir: f.home, env: f.env, sessionTarget: { clientId: "c-acme", projectId: "p-bad" },
+    });
+    assert.equal(r.source, "session");
+    assert.equal(r.target?.clientId, "c-acme");
+    assert.equal(r.target?.projectId, undefined);
+  } finally { f.cleanup(); }
+});

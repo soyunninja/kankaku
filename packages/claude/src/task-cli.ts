@@ -5,7 +5,7 @@ import type { CliDeps, CliResult } from "./cli-core.ts";
 import { refreshCatalog } from "./catalog-refresh.ts";
 import { findSession } from "./find-session.ts";
 import { resolveKankakuDir, resolveTargetFile } from "./paths.ts";
-import { readSessionTarget, withoutTaskLink, writeSessionTarget } from "./session-target-store.ts";
+import { readSessionTarget, sessionInputs, withoutTaskLink, writeSessionTarget } from "./session-target-store.ts";
 import { listOpenTasks, selectTask } from "./task-select.ts";
 import { resolveClaudeWorkTarget } from "./work-target.ts";
 
@@ -44,7 +44,10 @@ export async function runTaskCli(args: string[], deps: CliDeps): Promise<CliResu
   const prefix = note?.text ? [note.text] : [];
   const tasks = note?.snapshot.tasks ?? [];
   const shownIds = stored.lastList.kind === "tasks" ? stored.lastList.ids : [];
-  const resolved = resolveClaudeWorkTarget({ cwd: deps.cwd, kankakuDir, homeDir, env: deps.env });
+  const { sessionTarget } = sessionInputs(stored);
+  const resolved = resolveClaudeWorkTarget({
+    cwd: deps.cwd, kankakuDir, homeDir, env: deps.env, ...(sessionTarget !== undefined ? { sessionTarget } : {}),
+  });
   const projectId = resolved.target?.projectId;
   if (!resolved.target || projectId === undefined) {
     const reason = resolved.reason ?? "the resolved client has no project";

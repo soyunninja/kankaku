@@ -257,3 +257,45 @@ test("clear needs no project and no network", async () => {
     assert.deepEqual(f.fetched, []);
   } finally { f.cleanup(); }
 });
+
+test("with a /kankaku:target override, list shows the tasks of the overridden project", async () => {
+  const f = fixture(); // cwd is the Web project, the override picks API
+  try {
+    writeSessionTarget(f.target(), { clientId: "c-acme", projectId: "p-api", pickedTargetAt: 5, lastList: { kind: "tasks", ids: [] } });
+    const r = await runTaskCli([], f.deps);
+    assert.equal(r.stdout, ["open tasks in project API:", "  1. Other project task", "pick one with: /kankaku:task <number>", ""].join("\n"));
+    assert.equal((await runTaskCli(["1"], f.deps)).stdout, "linked: Other project task\n");
+    const stored = readSessionTarget(f.target());
+    // linking a task keeps the target the session picked
+    assert.equal(stored?.clientId, "c-acme");
+    assert.equal(stored?.projectId, "p-api");
+    assert.equal(stored?.pickedTargetAt, 5);
+    assert.equal(stored?.hubTaskId, "x1");
+    // and so does clearing the link
+    assert.equal((await runTaskCli(["clear"], f.deps)).stdout, "task link cleared\n");
+    const cleared = readSessionTarget(f.target());
+    assert.equal(cleared?.clientId, "c-acme");
+    assert.equal(cleared?.projectId, "p-api");
+    assert.equal(cleared?.hubTaskId, undefined);
+  } finally { f.cleanup(); }
+});
+
+test("a client-only override has no project: task says so", async () => {
+  const f = fixture();
+  try {
+    writeSessionTarget(f.target(), { clientId: "c-acme", pickedTargetAt: 5, lastList: { kind: "tasks", ids: [] } });
+    const r = await runTaskCli([], f.deps);
+    assert.equal(r.exitCode, 1);
+    assert.match(r.stdout, /^no project resolved for this folder \(the resolved client has no project\)/);
+  } finally { f.cleanup(); }
+});
+
+test("a number after a clients or projects list is not a task number", async () => {
+  const f = fixture();
+  try {
+    writeSessionTarget(f.target(), { lastList: { kind: "clients", ids: ["c-acme"] } });
+    const r = await runTaskCli(["1"], f.deps);
+    assert.equal(r.exitCode, 1);
+    assert.match(r.stdout, /list the tasks first/);
+  } finally { f.cleanup(); }
+});

@@ -64,3 +64,19 @@ test("doctor has a work target section with the same line", () => {
     assert.match(runDoctor(g.deps), /## Work target\ntarget: none \(no catalog cache\)\n/);
   } finally { g.cleanup(); }
 });
+
+test("status and doctor report source: session when the /kankaku:target override is active", async () => {
+  const f = fixture(true);
+  try {
+    writeFileSync(join(f.home, ".kankaku", "catalog.json"), JSON.stringify({
+      fetchedAt: 1, url: HUB,
+      clients: [...CLIENTS, { id: "c-zed", name: "Zed Studio", code: "zed", active: true }],
+      projects: [{ id: "p-web", name: "Web", clientId: "c-acme", repoPaths: [f.cwd], active: true }],
+    }));
+    mkdirSync(join(f.dir, "claude"), { recursive: true });
+    writeFileSync(join(f.dir, "claude", "s1.target.json"), JSON.stringify({ clientId: "c-zed", pickedTargetAt: 1, lastList: { kind: "clients", ids: [] } }));
+    const deps = { ...f.deps, env: { ...f.deps.env, KANKAKU_CLAUDE_SESSION: "s1" } };
+    assert.match((await runCli(["status"], deps)).stdout, /^target: Zed Studio \(source: session\)\n/);
+    assert.match(runDoctor(deps), /## Work target\ntarget: Zed Studio \(source: session\)\n/);
+  } finally { f.cleanup(); }
+});

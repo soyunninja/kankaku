@@ -15,8 +15,13 @@ const HUB = "https://hub.example.test";
 const CLIENTS: Client[] = [
   { id: "c-unassigned", name: "Sin determinar", code: "SIN", active: true, unassigned: true },
   { id: "c-acme", name: "Acme Corp", code: "acme", active: true },
+  { id: "c-zed", name: "Zed Studio", code: "zed", active: true },
+  { id: "c-spaced", name: "Spaced Inc", code: "has space", active: true },
 ];
-const PROJECTS: Project[] = [{ id: "p-web", name: "Web", clientId: "c-acme", repoPaths: ["/work/acme/web"], active: true }];
+const PROJECTS: Project[] = [
+  { id: "p-web", name: "Web", clientId: "c-acme", repoPaths: ["/work/acme/web"], active: true },
+  { id: "p-zweb", name: "Zed Web", clientId: "c-zed", repoPaths: [], active: true },
+];
 
 interface Dirs { kankakuDir: string; home: string }
 
@@ -182,5 +187,107 @@ test("a throwing target resolver never breaks record writing", async () => {
     const [record] = worklog(d);
     assert.equal(record?.status, "completed");
     assert.equal(record?.clientId, undefined);
+  } finally { cleanup(d); }
+});
+
+const targetFile = (d: Dirs) => join(d.kankakuDir, "claude", "s1.target.json");
+
+test("Stop stamps the /kankaku:target override, which wins over repo_paths, with the legacy client = code", async () => {
+  const d = makeDirs();
+  try {
+    writeSessionTarget(targetFile(d), { clientId: "c-zed", projectId: "p-zweb", pickedTargetAt: 1, lastList: { kind: "projects", ids: [] } });
+    const { deps, set } = makeDeps(d);
+    await onePrompt(deps, set, "/work/acme/web", "Stop");
+    const [record] = worklog(d);
+    assert.equal(record?.clientId, "c-zed");
+    assert.equal(record?.clientName, "Zed Studio");
+    assert.equal(record?.projectId, "p-zweb");
+    assert.equal(record?.projectName, "Zed Web");
+    assert.equal(record?.client, "zed");
+  } finally { cleanup(d); }
+});
+
+test("a client-only override stamps the client with no project, even where repo_paths has one", async () => {
+  const d = makeDirs();
+  try {
+    writeSessionTarget(targetFile(d), { clientId: "c-zed", pickedTargetAt: 1, lastList: { kind: "projects", ids: [] } });
+    const { deps, set } = makeDeps(d);
+    await onePrompt(deps, set, "/work/acme/web", "Stop");
+    const [record] = worklog(d);
+    assert.equal(record?.clientId, "c-zed");
+    assert.equal(record?.projectId, undefined);
+    assert.equal(record?.projectName, undefined);
+  } finally { cleanup(d); }
+});
+
+test("an override whose client code is not a valid label leaves the legacy client unset", async () => {
+  const d = makeDirs();
+  try {
+    writeSessionTarget(targetFile(d), { clientId: "c-spaced", pickedTargetAt: 1, lastList: { kind: "clients", ids: [] } });
+    const { deps, set } = makeDeps(d);
+    await onePrompt(deps, set, "/work/acme/web", "Stop");
+    const [record] = worklog(d);
+    assert.equal(record?.clientId, "c-spaced");
+    assert.equal(record?.client, undefined);
+  } finally { cleanup(d); }
+});
+
+test("an override that no longer resolves (unassigned or unknown client) falls through to repo_paths", async () => {
+  for (const clientId of ["c-unassigned", "c-gone"]) {
+    const d = makeDirs();
+    try {
+      writeSessionTarget(targetFile(d), { clientId, pickedTargetAt: 1, lastList: { kind: "clients", ids: [] } });
+      const { deps, set } = makeDeps(d);
+      await onePrompt(deps, set, "/work/acme/web", "Stop");
+      const [record] = worklog(d);
+      assert.equal(record?.clientId, "c-acme", clientId);
+      assert.equal(record?.projectId, "p-web", clientId);
+    } finally { cleanup(d); }
+  }
+});
+
+test("SessionEnd with an open prompt stamps the override too", async () => {
+  const d = makeDirs();
+  try {
+    writeSessionTarget(targetFile(d), { clientId: "c-zed", projectId: "p-zweb", pickedTargetAt: 1, lastList: { kind: "projects", ids: [] } });
+    const { deps, set } = makeDeps(d);
+    set(0);
+    await handleHook(input("/work/acme/web", { hook_event_name: "SessionStart", source: "startup" }), deps);
+    set(1000);
+    await handleHook(input("/work/acme/web", { hook_event_name: "UserPromptSubmit", prompt: "work" }), deps);
+    set(2000);
+    await handleHook(input("/work/acme/web", { hook_event_name: "SessionEnd", reason: "other" }), deps);
+    const [record] = worklog(d);
+    assert.equal(record?.status, "interrupted");
+    assert.equal(record?.projectId, "p-zweb");
+    assert.equal(existsSync(targetFile(d)), false); // the session-only file goes with the session
+  } finally { cleanup(d); }
+});
+
+test("recovery stamps the dead session's own override", async () => {
+  const d = makeDirs();
+  try {
+    const claudeDir = join(d.kankakuDir, "claude");
+    writeState(join(claudeDir, "dead.state.json"), { pid: 9999, parentPid: 1, cwd: "/work/acme/web", startedAt: 1000, promptOpen: { id: "p1", startedAt: 1000, costAtStart: undefined }, permissionOpen: null });
+    appendEvent(join(claudeDir, "dead.events.jsonl"), { ts: 1000, event: "UserPromptSubmit", prompt: "cut off" });
+    writeSessionTarget(join(claudeDir, "dead.target.json"), { clientId: "c-zed", projectId: "p-zweb", pickedTargetAt: 1, lastList: { kind: "projects", ids: [] } });
+    const { deps, set } = makeDeps(d, { isAlive: () => false });
+    set(5000);
+    await handleHook(input("/elsewhere", { session_id: "current", hook_event_name: "SessionStart", source: "startup" }), deps);
+    const recovered = worklog(d).find((r) => r.sessionId === "dead");
+    assert.equal(recovered?.clientId, "c-zed");
+    assert.equal(recovered?.projectId, "p-zweb");
+    assert.equal(recovered?.client, "zed");
+  } finally { cleanup(d); }
+});
+
+test("the heavy hook hands the resolver the override next to the task link", async () => {
+  const d = makeDirs();
+  try {
+    const seen: unknown[] = [];
+    const { deps, set } = makeDeps(d, { resolveTarget: (i): ClaudeWorkTarget => { seen.push(i.sessionTarget); return {}; } });
+    writeSessionTarget(targetFile(d), { clientId: "c-zed", projectId: "p-zweb", pickedTargetAt: 1, lastList: { kind: "projects", ids: [] } });
+    await onePrompt(deps, set, "/work/acme/web", "Stop");
+    assert.deepEqual(seen, [{ clientId: "c-zed", projectId: "p-zweb" }]);
   } finally { cleanup(d); }
 });

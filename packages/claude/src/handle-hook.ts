@@ -349,21 +349,19 @@ async function assignmentResolver(
   try {
     const { resolveClaudeWorkTarget } = await import("./work-target.ts");
     const { homedir } = await import("node:os");
-    const { readSessionTarget } = await import("./session-target-store.ts");
+    const { readSessionTarget, sessionInputs } = await import("./session-target-store.ts");
     const { resolveTargetFile } = await import("./paths.ts");
     const resolve = deps.resolveTarget ?? resolveClaudeWorkTarget;
     return (cwd, sessionId) => {
       try {
-        // The session-only task link (`/kankaku:task`); heavy hooks only.
+        // The session-only target and task link (`/kankaku:target`, `/kankaku:task`); heavy hooks only.
         const stored = readSessionTarget(resolveTargetFile(paths.claudeDir, sessionId));
         const { target, legacyClient } = resolve({
           cwd,
           kankakuDir: paths.kankakuDir,
           homeDir: deps.env.HOME || homedir(),
           env: deps.env,
-          ...(stored?.hubTaskId !== undefined
-            ? { taskLink: { hubTaskId: stored.hubTaskId, ...(stored.hubTaskTitle !== undefined ? { hubTaskTitle: stored.hubTaskTitle } : {}) } }
-            : {}),
+          ...(stored !== undefined ? sessionInputs(stored) : {}),
         });
         return {
           ...(target !== undefined ? { target } : {}),
