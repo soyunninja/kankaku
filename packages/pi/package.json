@@ -1,6 +1,6 @@
 {
   "name": "kankaku-pi",
-  "version": "1.3.1",
+  "version": "1.4.0",
   "description": "pi extension that records agent work time per prompt, excluding waits for the user, with subagent linkage and task/session views",
   "license": "MIT",
   "author": "soyunninja",
