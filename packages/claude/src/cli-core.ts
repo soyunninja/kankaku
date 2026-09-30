@@ -8,6 +8,7 @@ import { formatReport } from "./report.ts";
 import { runSyncCli } from "./sync-cli.ts";
 import { runDoctor } from "./doctor.ts";
 import { runTaskCli } from "./task-cli.ts";
+import { runTargetCli } from "./target-cli.ts";
 import type { PsInfo } from "./claude-pid.ts";
 import { formatTargetLine, formatTaskLine, resolveSessionWorkTarget } from "./work-target.ts";
 
@@ -34,7 +35,7 @@ export interface CliResult {
   stderr?: string;
 }
 
-const USAGE = "usage: node dist/cli.js <report|status|setup|sync|doctor|task> [--days N]\n";
+const USAGE = "usage: node dist/cli.js <report|status|setup|sync|doctor|task|target> [--days N]\n";
 
 /** CLI commands, resolved from `deps.cwd`. */
 export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> {
@@ -50,6 +51,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<CliResult> 
       return runSyncCli(rest, deps);
     case "task":
       return runTaskCli(rest, deps);
+    case "target":
+      return runTargetCli(rest, deps);
     case "doctor":
       return { stdout: runDoctor(deps), exitCode: 0 };
     default:
