@@ -38,7 +38,7 @@ function fixture(tasks: HubTask[] = TASKS): F {
   const claudeDir = join(dir, "claude");
   return {
     dir, home, claudeDir, env: { KANKAKU_DIR: dir, HOME: home, KANKAKU_SYNC_AUTO: "0" },
-    link: (session, taskId, title) => writeSessionTarget(join(claudeDir, `${session}.target.json`), { hubTaskId: taskId, hubTaskTitle: title, projectId: "p-web", pickedAt: 1, lastList: [] }),
+    link: (session, taskId, title) => writeSessionTarget(join(claudeDir, `${session}.target.json`), { hubTaskId: taskId, hubTaskTitle: title, projectId: "p-web", pickedAt: 1, lastList: { kind: "tasks", ids: [] } }),
     cleanup: () => { rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); },
   };
 }

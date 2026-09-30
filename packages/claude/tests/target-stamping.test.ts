@@ -158,7 +158,7 @@ test("the light hook path never resolves a target; only Stop does", async () => 
     const { deps, set } = makeDeps(d, { resolveTarget: (input): ClaudeWorkTarget => { calls++; links.push(input.taskLink); return {}; } });
     const cwd = "/work/acme/web";
     // A session link on disk: only the heavy path may read it.
-    writeSessionTarget(join(d.kankakuDir, "claude", "s1.target.json"), { hubTaskId: "t1", hubTaskTitle: "Task", lastList: [] });
+    writeSessionTarget(join(d.kankakuDir, "claude", "s1.target.json"), { hubTaskId: "t1", hubTaskTitle: "Task", lastList: { kind: "tasks", ids: [] } });
     set(0);
     await handleHook(input(cwd, { hook_event_name: "UserPromptSubmit", prompt: "work" }), deps);
     await handleHook(input(cwd, { hook_event_name: "PreToolUse", tool_use_id: "t1", tool_name: "Read", tool_input: {} }), deps);

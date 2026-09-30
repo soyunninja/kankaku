@@ -104,7 +104,7 @@ test("list refreshes the catalog and prints the open tasks numbered, then the hi
       "",
     ].join("\n"));
     assert.ok(f.fetched.some((u) => u.includes("/collections/tasks/")));
-    assert.deepEqual(readSessionTarget(f.target())?.lastList, ["t1", "t2", "t3"]);
+    assert.deepEqual(readSessionTarget(f.target())?.lastList, { kind: "tasks", ids: ["t1", "t2", "t3"] });
     assert.equal((await runTaskCli(["list"], f.deps)).stdout, r.stdout);
   } finally { f.cleanup(); }
 });
@@ -112,7 +112,7 @@ test("list refreshes the catalog and prints the open tasks numbered, then the hi
 test("list marks the linked task", async () => {
   const f = fixture();
   try {
-    writeSessionTarget(f.target(), { hubTaskId: "t2", hubTaskTitle: "Beta login page", projectId: "p-web", pickedAt: 1, lastList: [] });
+    writeSessionTarget(f.target(), { hubTaskId: "t2", hubTaskTitle: "Beta login page", projectId: "p-web", pickedAt: 1, lastList: { kind: "tasks", ids: [] } });
     const r = await runTaskCli([], f.deps);
     assert.match(r.stdout, /\n  1\. Alpha login fix\n\* 2\. Beta login page \(WEB-2\) \[linked\]\n/);
   } finally { f.cleanup(); }
@@ -176,7 +176,7 @@ test("picking by number uses the last list shown, links the task and prints it",
     assert.equal(stored?.hubTaskTitle, "Zeta report");
     assert.equal(stored?.projectId, "p-web");
     assert.equal(stored?.pickedAt, NOW);
-    assert.deepEqual(stored?.lastList, ["t1", "t2", "t3"]);
+    assert.deepEqual(stored?.lastList, { kind: "tasks", ids: ["t1", "t2", "t3"] });
   } finally { f.cleanup(); }
 });
 
@@ -216,7 +216,7 @@ test("ambiguous text prints numbered candidates, changes the link nothing and ma
     ].join("\n"));
     const stored = readSessionTarget(f.target());
     assert.equal(stored?.hubTaskId, "t3");
-    assert.deepEqual(stored?.lastList, ["t1", "t2"]);
+    assert.deepEqual(stored?.lastList, { kind: "tasks", ids: ["t1", "t2"] });
     assert.equal((await runTaskCli(["2"], f.deps)).stdout, "linked: Beta login page\n");
   } finally { f.cleanup(); }
 });
@@ -244,7 +244,7 @@ test("clear drops the link and keeps the list; without a link it says so", async
     assert.deepEqual(r, { stdout: "task link cleared\n", exitCode: 0 });
     const stored = readSessionTarget(f.target());
     assert.equal(stored?.hubTaskId, undefined);
-    assert.deepEqual(stored?.lastList, ["t1", "t2", "t3"]);
+    assert.deepEqual(stored?.lastList, { kind: "tasks", ids: ["t1", "t2", "t3"] });
     assert.equal((await runTaskCli(["clear"], f.deps)).stdout, "no task linked\n");
   } finally { f.cleanup(); }
 });
@@ -252,7 +252,7 @@ test("clear drops the link and keeps the list; without a link it says so", async
 test("clear needs no project and no network", async () => {
   const f = fixture({ cwd: "/somewhere/else", fetchMode: "fail" });
   try {
-    writeSessionTarget(f.target(), { hubTaskId: "t1", hubTaskTitle: "x", projectId: "p", pickedAt: 1, lastList: [] });
+    writeSessionTarget(f.target(), { hubTaskId: "t1", hubTaskTitle: "x", projectId: "p", pickedAt: 1, lastList: { kind: "tasks", ids: [] } });
     assert.equal((await runTaskCli(["clear"], f.deps)).stdout, "task link cleared\n");
     assert.deepEqual(f.fetched, []);
   } finally { f.cleanup(); }
