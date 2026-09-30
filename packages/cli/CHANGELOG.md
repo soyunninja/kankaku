@@ -3,6 +3,18 @@
 All notable changes to kankaku (formerly kankaku-tui). The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 1.3.1 — 2026-09-30
+
+### Changed
+
+- **Requires `kankaku-hub` 0.3.0.** `kankaku hub install` and `kankaku hub
+  upgrade` now carry hub 0.3.0, which fixes the session task inheritance
+  (a row that inherits its session's task also gets that task's project
+  and client instead of staying on the unassigned client), stops the
+  login alert e-mails, and brings the hub web app's latest changes. An
+  existing local hub moves to it with `kankaku hub upgrade`; `pb_data` is
+  kept.
+
 ## 1.3.0 — 2026-09-29
 
 ### Changed
