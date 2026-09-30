@@ -23,3 +23,14 @@ test("task.md forwards its arguments, and never picks on the user's behalf", () 
   assert.match(text, /ask the user which one/);
   assert.match(text, /Never pick a task on the user's behalf/);
 });
+
+test("target.md forwards its arguments, asks which one by number and never picks for the user", () => {
+  const text = readFileSync(join(dir, "target.md"), "utf8");
+  assert.match(text, /^argument-hint: \[number \| code \| text\] \[project\] \| clear$/m);
+  assert.ok(text.includes('!node "${CLAUDE_PLUGIN_ROOT}/dist/cli.js" target $ARGUMENTS'));
+  assert.match(text, /verbatim/);
+  assert.match(text, /ask the user which one/);
+  assert.match(text, /by number/);
+  assert.match(text, /Never pick a client or a project on the user's behalf/);
+  assert.match(text, /this session only/);
+});

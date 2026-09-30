@@ -3,6 +3,14 @@
 All notable changes to kankaku (formerly kankaku-tui). The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- Bundles the `/kankaku:target` command of `kankaku-claude`: `kankaku setup`
+  installs it with the other `/kankaku:*` commands, so a Claude Code session
+  can pick its client and project. No change in this package's own code.
+
 ## 1.3.1 — 2026-09-30
 
 ### Changed

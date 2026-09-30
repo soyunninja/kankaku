@@ -61,7 +61,7 @@ export function runDoctor(deps: CliDeps): string {
   const target = hub.credentials?.url ?? store.read()?.target ?? "";
   const { state, pending, staleOutsideWindow } = computeSyncStatus(log, store, target, syncWindowHours(deps.env));
   const hubState = hub.invalidReason ? "invalid URL" : hub.credentials ? "configured" : "unconfigured";
-  const commands = ["report", "status", "setup", "sync", "sync-status", "sync-all", "doctor", "task"];
+  const commands = ["report", "status", "setup", "sync", "sync-status", "sync-all", "doctor", "task", "target"];
   const present = commands.filter((name) => existsSync(join(deps.pluginRoot, "commands", `${name}.md`))).length;
   const actions = ["/kankaku:status", "/kankaku:sync-status"];
   if (!costsVisible) actions.unshift("/kankaku:setup (configure the statusline for cost)");

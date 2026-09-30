@@ -4,6 +4,21 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **`/kankaku:target`.** Chooses the client and project a Claude Code session
+  works for, from inside the session: with no argument it prints the current
+  target and its source and the active clients numbered; `<number | code |
+  text>` picks a client and lists its projects, a following pick sets the
+  project, `<client> <project>` sets both, and `clear` returns to the
+  automatic resolution. The pick is session-only (stored next to the task
+  link, never in `config.json`) and wins over the project config and
+  `repo_paths` when records are written; `/kankaku:status` and
+  `/kankaku:doctor` show `source: session`. Changing the project drops the
+  task link unless the linked task belongs to the new project.
+
 ## 1.3.1 — 2026-09-30
 
 No changes in this package; released in lockstep with kankaku-pi and

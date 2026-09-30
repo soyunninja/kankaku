@@ -115,7 +115,7 @@ left untouched — and installs the slash commands:
   `--plugin-dir` flag needed**.
 
 It also installs the `/kankaku:*` slash commands (`/kankaku:report`,
-`/kankaku:status`, `/kankaku:task`, `/kankaku:sync`, …) as user commands under
+`/kankaku:status`, `/kankaku:task`, `/kankaku:target`, `/kankaku:sync`, …) as user commands under
 `~/.claude/commands/kankaku/<name>.md`, generated from the plugin's own
 `commands/*.md` with the plugin's absolute install path filled in. Setup
 lists each file it wrote or left unchanged; `kankaku doctor` reports Claude

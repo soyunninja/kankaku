@@ -153,6 +153,9 @@ anything behind in whatever project happens to be open.
   session upgraded mid-way, or resumed without its state) — no later
   prompt carries that part.
   The resolved work target comes first (wraps `node dist/cli.js status`).
+- `/kankaku:target` — chooses the client and project this session works
+  for (wraps `node dist/cli.js target`); see "Choosing the client and
+  project for a session" below.
 - `/kankaku:task` — links this session to a hub task (wraps
   `node dist/cli.js task`); see "Linking a task" below.
 - `/kankaku:setup` — prints the `statusLine` snippet described above (wraps
@@ -215,9 +218,10 @@ Each record is stamped with a hub client and project when one resolves, so
 the hub files the task under the right client instead of "Sin determinar".
 Sources, in order:
 
-1. the project's `<KANKAKU_DIR>/config.json` ids (`clientId`, optional
+1. the session's own pick, made with `/kankaku:target` (see below);
+2. the project's `<KANKAKU_DIR>/config.json` ids (`clientId`, optional
    `projectId`);
-2. the cached catalog's `repo_paths`: the active project whose path equals
+3. the cached catalog's `repo_paths`: the active project whose path equals
    the session's working directory, or contains it.
 
 Inactive clients and projects, and the "unassigned" client, are never used.
@@ -234,6 +238,53 @@ The target is resolved when a record is written (`Stop`, `SessionEnd`,
 crash recovery), never on the per-tool-call hooks. `/kankaku:status` and
 `/kankaku:doctor` print `target: <client> · <project> (source: ...)`, or
 `target: none (<reason>)`.
+
+### Choosing the client and project for a session
+
+`/kankaku:target` picks the client and project the records of this session
+are filed under, for the cases where the folder does not say (or says the
+wrong thing):
+
+- `/kankaku:target` prints the current target and its source (`session`,
+  `project config` or `repo_paths`), then the active clients numbered;
+  Claude then asks which one you want. The unassigned client is never
+  listed.
+- `/kankaku:target <number | code | text>` picks a client: from the last
+  list shown in this session (a purely numeric argument is always a list
+  number), by client code (exact, case-insensitive), or by a unique
+  case-insensitive part of its name. It prints `client set to <Client>` and
+  that client's active projects numbered. A following
+  `/kankaku:target <number | code | text>` that matches one of those
+  projects sets the project (`target set to <Client> · <Project>`).
+- `/kankaku:target <client> <project>` sets both at once; the project must
+  belong to the client, otherwise nothing changes.
+- `/kankaku:target clear` removes the pick and prints what the automatic
+  resolution gives now.
+
+Text that matches nothing, or several entries, changes nothing (several are
+listed so one can be picked by number). Inactive entries are never
+selectable.
+
+The pick is session-only, like `/kankaku target pick|clear` in pi: it is
+stored in `<KANKAKU_DIR>/claude/<session>.target.json` next to the task
+link, removed when the session ends, and **`config.json` is never written**.
+For a permanent choice use `kankaku setup` or the project's `config.json`.
+Precedence at record time is the library's: session pick, then `config.json`,
+then `repo_paths`; a picked client or project that is no longer active in
+the catalog falls through to the next source. Records carry the picked
+client and project (`clientId`, `clientName`, `projectId`, `projectName`,
+and the legacy `client` label = the client code when it is a valid label),
+and `/kankaku:status` and `/kankaku:doctor` print `(source: session)`.
+
+Changing or clearing the client or project also decides the task link: it is
+kept only when the linked task belongs to the resulting project, and the
+command says which happened (`task link kept`, or `task link dropped
+(<title> is not in <Project>)`). Picking only a client always drops it,
+since no project is chosen yet. `/kankaku:task` lists the tasks of the
+resulting project. Listing and picking refresh the catalog first (bounded to
+3 seconds) and fall back to the cache (`catalog from cache, <age> old`);
+without a cache and without a hub the command says `no catalog` and exits
+with 1.
 
 ### Linking a task
 

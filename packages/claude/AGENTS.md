@@ -81,14 +81,28 @@ extension has one. Instead:
   (stat only) and `settleTranscripts` (main + subagent files, shared bound).
 - `src/headless.ts` — `allocateCost` and `buildHeadlessRecords`, the records
   of a finished `sdk-cli` session. Heavy path only.
-- `src/work-target.ts` — `resolveClaudeWorkTarget` (project `config.json` ids
-  > cached catalog `repo_paths`, through the library's `resolveWorkTarget`),
+- `src/work-target.ts` — `resolveClaudeWorkTarget` (the session's
+  `/kankaku:target` pick > project `config.json` ids > cached catalog
+  `repo_paths`, through the library's `resolveWorkTarget`, the pick passed as
+  its session candidate),
   `RecordAssignment` and `formatTargetLine`. Imports `kankaku-pi`, so heavy
   paths only.
 - `src/session-target-store.ts` — `readSessionTarget`/`writeSessionTarget`,
-  the session-only task link `<KANKAKU_DIR>/claude/<session>.target.json`
-  (`hubTaskId`, `hubTaskTitle`, `projectId`, `pickedAt`, `lastList`), tmp+rename
+  the session-only file `<KANKAKU_DIR>/claude/<session>.target.json`: the
+  task link (`hubTaskId`, `hubTaskTitle`, `pickedAt`), the `/kankaku:target`
+  pick (`clientId`, `projectId`, `pickedTargetAt`) and `lastList`, typed
+  `{ kind: "clients" | "projects" | "tasks", ids }` (a plain ids array from an
+  older file reads as a tasks list). `sessionInputs` turns a file into what
+  `resolveClaudeWorkTarget` takes (`sessionTarget`, `taskLink`). tmp+rename
   writes, malformed reads treated as absent. Node builtins only.
+- `src/catalog-refresh.ts` — `refreshCatalog`, the bounded best-effort
+  catalog fetch with cache fallback shared by `task` and `target`.
+- `src/target-select.ts` — pure pick logic for `target` (`pickTarget`,
+  `pickBoth`: number on the last list, else client code, else unique name
+  substring; only active, non-unassigned entries; a project must belong to its
+  client) and `taskLinkOutcome`, the task-link rule.
+- `src/target-cli.ts` — `runTargetCli`, the `target` subcommand (list, pick,
+  clear); bounded fetch like `task`.
 - `src/find-session.ts` — `findSession`: `KANKAKU_CLAUDE_SESSION` wins, else
   the CLI pid is walked to the Claude process (`resolveClaudePid`) and matched
   to the state file `pid`, most recent activity first.
@@ -122,8 +136,8 @@ extension has one. Instead:
 - `hooks/hooks.json` — registers the compiled `dist/hook.js` for all 9
   hook events (see "Build step" below).
 - `commands/*.md` — the `/kankaku:report`, `/kankaku:status`,
-  `/kankaku:task` and `/kankaku:setup` (and sync/doctor) slash commands, each running the CLI via the `!` shell
-  prefix.
+  `/kankaku:task`, `/kankaku:target` and `/kankaku:setup` (and sync/doctor)
+  slash commands, each running the CLI via the `!` shell prefix.
 
 ## Rules (do not break)
 
@@ -186,7 +200,10 @@ extension has one. Instead:
   throw. A missing or unusable cache means no target (today's unassigned
   behaviour). Stamping mirrors pi-tracker: `clientId`, `clientName`,
   `projectId`, `projectName`, and the legacy `client` label = client code
-  when valid against `CLIENT_PATTERN`; without a target it falls back to
+  when valid against `CLIENT_PATTERN`; a `/kankaku:target` pick (session
+  source) is stamped the same way and is dropped, with the task link, per the
+  task-link rule (kept only when the task belongs to the resulting project);
+  without a target it falls back to
   `KANKAKU_CLIENT` > `config.json` client. The plugin writes no separate
   subagent records, so none carries its own target (the task view inherits
   the orchestrator's). Assignment is create-only on the hub; never rewrite

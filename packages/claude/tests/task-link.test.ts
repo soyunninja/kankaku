@@ -330,6 +330,6 @@ test("doctor counts the task command file", () => {
   try {
     mkdirSync(join(f.dir, "commands"));
     writeFileSync(join(f.dir, "commands", "task.md"), "---\n---\n");
-    assert.match(runDoctor(cliDeps(f)), /command files present: 1\/8/);
+    assert.match(runDoctor(cliDeps(f)), /command files present: 1\/9/);
   } finally { f.cleanup(); }
 });
