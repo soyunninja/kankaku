@@ -17,7 +17,7 @@ test("every command file has a description, allowed-tools and runs the compiled 
 
 test("task.md forwards its arguments, and never picks on the user's behalf", () => {
   const text = readFileSync(join(dir, "task.md"), "utf8");
-  assert.match(text, /^argument-hint: \[number \| id \| text \| clear\]$/m);
+  assert.match(text, /^argument-hint: \[number \| id \| text \| clear \| new <title> \[--ref <externalRef>\]\]$/m);
   assert.ok(text.includes('!node "${CLAUDE_PLUGIN_ROOT}/dist/cli.js" task $ARGUMENTS'));
   assert.match(text, /verbatim/);
   assert.match(text, /ask the user which one/);

@@ -1,6 +1,6 @@
 ---
-description: Link this session to a hub task (list open tasks, pick one, or clear the link)
-argument-hint: [number | id | text | clear]
+description: Create or link a hub task for this session, list open tasks, or clear the link
+argument-hint: [number | id | text | clear | new <title> [--ref <externalRef>]]
 allowed-tools: Bash(node:*)
 ---
 

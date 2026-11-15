@@ -297,6 +297,11 @@ for the folder, so the records written from then on carry that task:
   `/kankaku:task <id>` by hub id, and `/kankaku:task <text>` by a unique
   case-insensitive part of the title (several matches are listed and nothing
   changes). A purely numeric argument is always a list number.
+- `/kankaku:task new <title> [--ref <externalRef>]` creates an open task
+  in the resolved project and links it to this session. The title is required;
+  `--ref` takes one argument (quote references containing spaces). Creation
+  requires a reachable hub; failure leaves the existing link unchanged.
+  The returned task is cached immediately so record resolution retains its id.
 - `/kankaku:task clear` removes the link.
 
 The link is session-only, like `/kankaku task pick` in pi: it is stored in

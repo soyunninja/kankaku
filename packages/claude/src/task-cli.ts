@@ -2,7 +2,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HubTask } from "kankaku-pi/domain";
 import type { CliDeps, CliResult } from "./cli-core.ts";
-import { refreshCatalog } from "./catalog-refresh.ts";
+import { createCatalogTask, refreshCatalog } from "./catalog-refresh.ts";
 import { findSession } from "./find-session.ts";
 import { resolveKankakuDir, resolveTargetFile } from "./paths.ts";
 import { readSessionTarget, sessionInputs, withoutTaskLink, writeSessionTarget } from "./session-target-store.ts";
@@ -33,6 +33,13 @@ export async function runTaskCli(args: string[], deps: CliDeps): Promise<CliResu
   const stored = readSessionTarget(file) ?? { lastList: { kind: "tasks", ids: [] } };
 
   const arg = args.join(" ").trim();
+  const creating = args[0] === "new";
+  const refIndex = args.indexOf("--ref");
+  const title = creating ? args.slice(1, refIndex === -1 ? undefined : refIndex).join(" ").trim() : "";
+  const externalRef = refIndex === -1 ? undefined : args[refIndex + 1]?.trim();
+  if (creating && (!title || (refIndex !== -1 && (!externalRef || refIndex !== args.length - 2)))) {
+    return say(["usage: /kankaku:task new <title> [--ref <externalRef>]"], 1);
+  }
   if (arg === "clear") {
     if (stored.hubTaskId === undefined) return say(["no task linked"], 0);
     writeSessionTarget(file, withoutTaskLink(stored));
@@ -55,6 +62,16 @@ export async function runTaskCli(args: string[], deps: CliDeps): Promise<CliResu
   }
   const projectName = resolved.target.projectName ?? projectId;
   const open = listOpenTasks(tasks, projectId);
+
+  if (creating) {
+    try {
+      const task = await createCatalogTask(deps, homeDir, projectId, title, externalRef);
+      writeSessionTarget(file, { ...stored, hubTaskId: task.id, hubTaskTitle: task.title, projectId, pickedAt: deps.now() });
+      return say([...prefix, `created and linked: ${task.title}`], 0);
+    } catch {
+      return say([...prefix, "task creation failed; existing session link unchanged"], 1);
+    }
+  }
 
   if (arg === "" || arg === "list") {
     if (open.length === 0) return say([...prefix, `no open tasks in project ${projectName}`], 0);

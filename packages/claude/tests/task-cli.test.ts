@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Client, HubTask, Project } from "kankaku-pi/domain";
@@ -65,6 +65,48 @@ function fixture(opts: { tasks?: HubTask[]; cache?: boolean; fetchMode?: "ok" | 
     cleanup: () => { rmSync(dir, { recursive: true, force: true }); rmSync(home, { recursive: true, force: true }); },
   };
 }
+
+test("new creates an open task, caches it and links only the current session", async () => {
+  const f = fixture();
+  try {
+    const original = f.deps.fetch;
+    f.deps.fetch = async (input, init) => {
+      if (init?.method === "POST" && String(input).endsWith("/tasks/records")) {
+        assert.deepEqual(JSON.parse(String(init.body)), { title: "New task", project: "p-web", status: "open", external_ref: "WEB-9" });
+        return Response.json({ id: "new", title: "New task", project: "p-web", status: "open", external_ref: "WEB-9" });
+      }
+      return original(input, init);
+    };
+    const result = await runTaskCli(["new", "New", "task", "--ref", "WEB-9"], f.deps);
+    assert.equal(result.exitCode, 0);
+    assert.equal(readSessionTarget(f.target())?.hubTaskId, "new");
+    const cache = JSON.parse(readFileSync(join(f.home, ".kankaku", "catalog.json"), "utf8"));
+    assert.ok(cache.tasks.some((task: HubTask) => task.id === "new"));
+    assert.equal(existsSync(join(f.dir, "config.json")), false);
+  } finally { f.cleanup(); }
+});
+
+test("new rejects empty titles and malformed refs without creating or linking", async () => {
+  const f = fixture();
+  try {
+    for (const args of [["new"], ["new", "   "], ["new", "Title", "--ref"], ["new", "Title", "--ref", "A", "extra"]]) {
+      const result = await runTaskCli(args, f.deps);
+      assert.equal(result.exitCode, 1);
+      assert.match(result.stdout, /usage:/);
+      assert.equal(readSessionTarget(f.target())?.hubTaskId, undefined);
+    }
+  } finally { f.cleanup(); }
+});
+
+test("new failure preserves an existing task link", async () => {
+  const f = fixture({ fetchMode: "fail" });
+  try {
+    writeSessionTarget(f.target(), { hubTaskId: "t1", lastList: { kind: "tasks", ids: [] } });
+    const result = await runTaskCli(["new", "Title"], f.deps);
+    assert.equal(result.exitCode, 1);
+    assert.equal(readSessionTarget(f.target())?.hubTaskId, "t1");
+  } finally { f.cleanup(); }
+});
 
 test("no session found: a clear message, exit 1, nothing written", async () => {
   const f = fixture({ session: null });

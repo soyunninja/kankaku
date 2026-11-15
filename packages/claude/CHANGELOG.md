@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- `/kankaku:task new <title> [--ref <externalRef>]` creates an open task in
+  the resolved project and links it session-only, caching the returned task
+  immediately. Creation stays out of hooks.
+
 ## 1.4.0 — 2026-09-30
 
 ### Added

@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { CachedCatalog, PocketBaseClient, createPocketBaseCatalogFetcher, resolveHubCredentials } from "kankaku-pi/hub";
+import { CachedCatalog, PocketBaseClient, createHubTask, createPocketBaseCatalogFetcher, resolveHubCredentials } from "kankaku-pi/hub";
 import type { CatalogSnapshot } from "kankaku-pi/ports";
 import type { CliDeps } from "./cli-core.ts";
 
@@ -38,6 +38,22 @@ export async function refreshCatalog(deps: CliDeps, homeDir: string): Promise<Ca
   const cached = catalog.read();
   if (!cached) return undefined;
   return { snapshot: cached, text: `catalog from cache, ${formatAge(deps.now() - cached.fetchedAt)} old` };
+}
+
+/** Explicit task command only: POST and adopt before the session link is written. */
+export async function createCatalogTask(deps: CliDeps, homeDir: string, projectId: string, title: string, externalRef?: string) {
+  const hub = resolveHubCredentials({ env: deps.env, homeDir: () => homeDir });
+  if (!hub.credentials) throw new Error("hub credentials are not configured");
+  const client = new PocketBaseClient({ ...hub.credentials, ...(deps.fetch ? { fetch: deps.fetch } : {}) });
+  const catalog = new CachedCatalog({ filePath: join(homeDir, ".kankaku", "catalog.json"), url: hub.credentials.url, clock: { now: deps.now }, fetchCatalog: createPocketBaseCatalogFetcher(client) });
+  if (!catalog.read()) throw new Error("no catalog cache");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), deps.catalogTimeoutMs ?? DEFAULT_REFRESH_MS);
+  try {
+    const task = await createHubTask(client, { projectId, title, ...(externalRef ? { externalRef } : {}) }, controller.signal);
+    catalog.adoptTask(task);
+    return task;
+  } finally { clearTimeout(timer); }
 }
 
 function formatAge(ms: number): string {
