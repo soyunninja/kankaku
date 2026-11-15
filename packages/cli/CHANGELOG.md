@@ -3,6 +3,16 @@
 All notable changes to kankaku (formerly kankaku-tui). The format follows Keep a Changelog;
 versions follow semver. Dates are the day the version was cut.
 
+## 1.4.2 — 2026-11-15
+
+### Changed
+
+- **Requires `kankaku-hub` 0.5.1.** The previous range (`^0.3.0`) only
+  admitted 0.3.x, so `kankaku hub install` and `kankaku hub upgrade` carried
+  a hub without the migrations of 0.4 and 0.5, including the one that lets a
+  service account create tasks. Run `kankaku hub upgrade` to move an existing
+  local hub to 0.5.1.
+
 ## 1.4.0 — 2026-09-30
 
 ### Added
