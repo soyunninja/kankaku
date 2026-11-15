@@ -39,7 +39,7 @@
   "dependencies": {
     "ink": "^7.1.1",
     "kankaku-claude": "^1.4.1",
-    "kankaku-hub": "^0.3.0",
+    "kankaku-hub": "^0.5.1",
     "kankaku-pi": "^1.4.1",
     "react": "^19.3.0"
   },
