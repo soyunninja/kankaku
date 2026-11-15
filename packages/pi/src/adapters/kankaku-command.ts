@@ -194,7 +194,7 @@ const COMMAND_TOKENS = ["all", "tasks", "sessions", "client", "clients", "export
 /** Only offered when the hub is configured, so completions are unchanged for users without one. */
 const HUB_COMMAND_TOKENS = ["target", "task", "projects", "catalog", "sync", "backfill"];
 const TARGET_TOKENS = ["pick", "clear"];
-const TASK_TOKENS = ["pick", "clear"];
+const TASK_TOKENS = ["pick", "clear", "new"];
 const CATALOG_TOKENS = ["refresh"];
 const SYNC_TOKENS = ["all", "status"];
 
@@ -480,7 +480,7 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
   }
 
   /**
-   * Handle `/kankaku task [pick|clear]`; `rest` excludes the leading `task`
+   * Handle `/kankaku task [pick|clear|new <title> [--ref <externalRef>]]`; `rest` excludes the leading `task`
    * token. Default (no args) is `pick`. `pickTask`/`clearTask`
    * (`session-target.ts`) notify their own outcome directly, so this only
    * dispatches and refreshes the idle status line.
@@ -501,6 +501,19 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
 
     if (rest.length === 0 || (rest.length === 1 && rest[0] === "pick")) {
       await sessionTarget.pickTask(pi, ctx);
+      deps.refreshIdleStatus(ctx);
+      return;
+    }
+
+    if (rest[0] === "new") {
+      const refIndex = rest.indexOf("--ref");
+      const title = rest.slice(1, refIndex === -1 ? undefined : refIndex).join(" ").trim();
+      const externalRef = refIndex === -1 ? undefined : rest[refIndex + 1]?.trim();
+      if (!title || (refIndex !== -1 && (!externalRef || refIndex !== rest.length - 2))) {
+        notifyError(ctx, new Error("usage: /kankaku task new <title> [--ref <externalRef>]"));
+        return;
+      }
+      await sessionTarget.newTask(pi, ctx, title, externalRef);
       deps.refreshIdleStatus(ctx);
       return;
     }
@@ -598,7 +611,8 @@ export function registerKankakuCommand(pi: ExtensionAPI, deps: KankakuCommandDep
       "When a hub (PocketBase) is configured: 'target' to show the effective client/project and its source, " +
       "'target pick' to run the picker again, 'target clear' to clear the session target, " +
       "'task' (or 'task pick') to link this session to an open/doing hub task of the effective project, " +
-      "'task clear' to drop the link, " +
+      "'task clear' to drop the link, 'task new <title> [--ref <externalRef>]' to create and link an open task; " +
+      "the visual task picker also offers creation, " +
       "'catalog refresh' to force a catalog refresh, 'projects' for per-project totals today ('projects all' for every day), " +
       "'sync' to push pending tasks to the hub ('sync all' for a full re-evaluation, 'sync status' for the watermark/pending count/last error), " +
       "'backfill' to run a full sync and report how many tasks went to Sin determinar, grouped by their old label. " +

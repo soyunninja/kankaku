@@ -3,6 +3,30 @@
 All notable changes to kankaku-pi (formerly kankaku). The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## Unreleased
+
+### Added
+
+- `/kankaku task new <title> [--ref <externalRef>]` creates and session-links
+  an open task for the effective project, matching Claude's command syntax.
+  Visual picker creation remains available.
+- Explicit open-task creation from the project/task picker, with required
+  title and optional external reference. Returned tasks are cached immediately;
+  links stay session-only. Shared `createHubTask` is exported from `kankaku-pi/hub`.
+
+### Changed
+
+- Task creation diagnostics distinguish unconfirmed Hub requests from local
+  catalog cache persistence failures without exposing exception text. A
+  validated Hub task remains in the in-memory catalog and linked to the
+  session if persistence fails; uncertain POST outcomes advise checking the
+  Hub before retrying.
+- The target picker now offers open/doing hub tasks after a concrete
+  project is selected at session start or with `/kankaku target pick`.
+  Skipping or dismissing the task step keeps the client/project without a
+  task; selecting no project skips it. Task links remain session-only and
+  are never persisted to `config.json`.
+
 ## 1.4.0 — 2026-09-30
 
 No changes in this package; released in lockstep with kankaku-claude and

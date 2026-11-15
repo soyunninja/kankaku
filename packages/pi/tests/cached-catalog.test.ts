@@ -30,6 +30,65 @@ function makeDir(): string {
 const CLIENTS = [{ id: "c1", name: "Acme", code: "acme", active: true }];
 const PROJECTS = [{ id: "p1", name: "Portal", clientId: "c1", repoPaths: [], active: true }];
 
+test("adopts a created task immediately in memory and on disk", async () => {
+  const dir = makeDir();
+  try {
+    const deps = { filePath: join(dir, "catalog.json"), url: "https://pb.example.com", clock: new FakeClock(1000), fetchCatalog: async () => ({ clients: CLIENTS, projects: PROJECTS }) };
+    const catalog = new CachedCatalog(deps);
+    await catalog.refresh();
+    const task = { id: "new", title: "New", projectId: "p1", status: "open" as const };
+    catalog.adoptTask(task);
+    assert.deepEqual(catalog.read()?.tasks, [task]);
+    assert.deepEqual(new CachedCatalog(deps).read()?.tasks, [task]);
+    catalog.adoptTask({ ...task, title: "Updated" });
+    assert.equal(catalog.read()?.tasks?.length, 1);
+    assert.equal(catalog.read()?.tasks?.[0]?.title, "Updated");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a created task remains in the in-memory catalog when atomic persistence fails", async () => {
+  const dir = makeDir();
+  try {
+    const parent = join(dir, "not-a-directory");
+    writeFileSync(parent, "blocked");
+    const catalog = new CachedCatalog({ filePath: join(parent, "catalog.json"), url: "https://pb.example.com", clock: new FakeClock(0), fetchCatalog: async () => ({ clients: CLIENTS, projects: PROJECTS }) });
+    await catalog.refresh();
+    const task = { id: "new", title: "New", projectId: "p1", status: "open" as const };
+    assert.throws(() => catalog.adoptTask(task));
+    assert.deepEqual(catalog.read()?.tasks, [task], "validated remote success remains available to target resolution in memory");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("adoption reports disk write failure while preserving remote success in memory", async () => {
+  const dir = makeDir();
+  try {
+    const parent = join(dir, "not-a-directory");
+    writeFileSync(parent, "blocked");
+    const catalog = new CachedCatalog({ filePath: join(parent, "catalog.json"), url: "https://pb.example.com", clock: new FakeClock(0), fetchCatalog: async () => ({ clients: CLIENTS, projects: PROJECTS }) });
+    const snapshot = await catalog.refresh();
+    assert.ok(snapshot, "refresh still returns the in-memory snapshot");
+    const task = { id: "new", title: "New", projectId: "p1", status: "open" as const };
+    assert.throws(() => catalog.adoptTask(task));
+    assert.deepEqual(catalog.read(), { ...snapshot, tasks: [task] }, "failed persistence leaves known remote success in memory");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("a refresh already in flight does not erase a newly adopted task", async () => {
+  const dir = makeDir();
+  try {
+    let complete: ((value: { clients: typeof CLIENTS; projects: typeof PROJECTS }) => void) | undefined;
+    let pending = false;
+    const catalog = new CachedCatalog({ filePath: join(dir, "catalog.json"), url: "https://pb.example.com", clock: new FakeClock(0), fetchCatalog: () => pending ? new Promise((resolve) => { complete = resolve; }) : Promise.resolve({ clients: CLIENTS, projects: PROJECTS }) });
+    await catalog.refresh();
+    pending = true;
+    const refresh = catalog.refresh();
+    catalog.adoptTask({ id: "new", title: "New", projectId: "p1", status: "open" });
+    complete!({ clients: CLIENTS, projects: PROJECTS });
+    await refresh;
+    assert.equal(catalog.read()?.tasks?.[0]?.id, "new");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("read returns undefined when no cache file exists", () => {
   const dir = makeDir();
   try {

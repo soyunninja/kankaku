@@ -23,6 +23,24 @@ interface TaskRecord extends PocketBaseRecord {
   external_ref?: string;
 }
 
+export interface CreateHubTaskInput {
+  title: string;
+  projectId: string;
+  externalRef?: string;
+}
+
+/** Explicit user-driven creation; never called from hook paths. */
+export async function createHubTask(client: PocketBaseClient, input: CreateHubTaskInput, signal?: AbortSignal): Promise<HubTask> {
+  const record: unknown = await client.request("POST", "/api/collections/tasks/records", {
+    title: input.title,
+    project: input.projectId,
+    status: "open",
+    ...(input.externalRef !== undefined ? { external_ref: input.externalRef } : {}),
+  }, signal);
+  assertCreatedTaskRecord(record, input.projectId);
+  return mapTask(record);
+}
+
 const TASK_STATUSES = new Set(["open", "doing", "done"]);
 
 function mapClient(record: ClientRecord): Client {
@@ -47,6 +65,21 @@ function mapProject(record: ProjectRecord): Project {
 }
 
 /** `open` on any unrecognised or missing status, rather than dropping the task. */
+function assertCreatedTaskRecord(record: unknown, projectId: string): asserts record is TaskRecord {
+  if (!record || typeof record !== "object" || Array.isArray(record)) {
+    throw new Error("Hub returned an invalid task creation response");
+  }
+  const candidate = record as Record<string, unknown>;
+  if (
+    typeof candidate["id"] !== "string" || candidate["id"].trim() === "" ||
+    typeof candidate["title"] !== "string" || candidate["title"].trim() === "" ||
+    candidate["project"] !== projectId ||
+    typeof candidate["status"] !== "string" || !TASK_STATUSES.has(candidate["status"])
+  ) {
+    throw new Error("Hub returned an invalid task creation response");
+  }
+}
+
 function mapTaskStatus(status: string | undefined): HubTask["status"] {
   return status !== undefined && TASK_STATUSES.has(status) ? (status as HubTask["status"]) : "open";
 }

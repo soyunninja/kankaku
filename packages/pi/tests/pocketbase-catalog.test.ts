@@ -1,7 +1,34 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { createPocketBaseCatalogFetcher } from "../src/adapters/pocketbase-catalog.ts";
+import { createHubTask, createPocketBaseCatalogFetcher } from "../src/adapters/pocketbase-catalog.ts";
 import type { PocketBaseClient } from "../src/adapters/pocketbase-client.ts";
+
+test("rejects malformed task-create responses instead of inventing defaults", async () => {
+  for (const response of [
+    { id: "", title: "New task", project: "p1", status: "open" },
+    { id: "t1", title: "", project: "p1", status: "open" },
+    { id: "t1", title: "New task", project: "another-project", status: "open" },
+    { id: "t1", title: "New task", project: "p1", status: "unexpected" },
+    { id: "t1", project: "p1", status: "open" },
+  ]) {
+    const client = { request: async () => response } as unknown as PocketBaseClient;
+    await assert.rejects(createHubTask(client, { title: "New task", projectId: "p1" }), /invalid task creation response/);
+  }
+});
+
+test("creates an open task and maps the returned record with optional reference", async () => {
+  for (const externalRef of [undefined, "WEB-1"]) {
+    const client = { request: async (method: string, path: string, body: unknown) => {
+      assert.equal(method, "POST");
+      assert.equal(path, "/api/collections/tasks/records");
+      assert.deepEqual(body, { title: "New task", project: "p1", status: "open", ...(externalRef ? { external_ref: externalRef } : {}) });
+      return { id: "new", ...(body as object) };
+    } } as unknown as PocketBaseClient;
+    assert.deepEqual(await createHubTask(client, { title: "New task", projectId: "p1", ...(externalRef ? { externalRef } : {}) }), {
+      id: "new", title: "New task", projectId: "p1", status: "open", ...(externalRef ? { externalRef } : {}),
+    });
+  }
+});
 
 function fakeClient(clients: unknown[], projects: unknown[], tasks: unknown[] = []): PocketBaseClient {
   return {

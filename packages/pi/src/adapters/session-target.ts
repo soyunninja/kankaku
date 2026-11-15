@@ -3,6 +3,8 @@ import { formatWorkTargetLabel, resolveWorkTarget, resolveWorkTargetSource } fro
 import type { WorkTarget, WorkTargetCandidate, WorkTargetSessionOverride, WorkTargetSourceName } from "../domain/work-target.ts";
 import type { WorkRole } from "../domain/work-record.ts";
 import type { Catalog, CatalogSnapshot } from "../ports/catalog.ts";
+import type { TaskCreator } from "./target-picker.ts";
+import { formatTaskCreationFailure, TaskCreationFailure } from "./task-creation.ts";
 import { pickHubTask, pickTarget } from "./target-picker.ts";
 
 /** Persisted as a `kankaku-target` custom session entry so the session-level target survives a reload. */
@@ -14,8 +16,7 @@ export interface KankakuTargetEntryData {
   /**
    * A hub task picked for this session (`/kankaku task pick`). Session-only:
    * never written to the project's `.kankaku/config.json`, and dropped by
-   * any target change (`pick`/`setExplicit`/`clear`/`ensurePicked`'s
-   * silent resolution) since those all build a fresh candidate without it.
+   * target changes unless a new task is selected in the target picker.
    */
   hubTaskId?: string;
 }
@@ -25,6 +26,8 @@ export const TARGET_ENTRY_TYPE = "kankaku-target";
 export interface SessionTargetDeps {
   role: WorkRole;
   catalog: Catalog;
+  /** Creates and adopts the returned task before linking it. */
+  createTask?: TaskCreator;
   /** Lazily reads `clientId`/`projectId` from `<kankaku dir>/config.json`. */
   resolveProjectConfigIds: () => WorkTargetCandidate | undefined;
   /** Persist `clientId`/`projectId` into `<kankaku dir>/config.json`, merging existing keys. */
@@ -81,6 +84,8 @@ export interface SessionTarget {
   pickTask(pi: ExtensionAPI, ctx: ExtensionContext): Promise<void>;
   /** `/kankaku task clear`: drops the linked hub task, keeping the rest of the session target. A no-op when none is linked. */
   clearTask(pi: ExtensionAPI): void;
+  /** Create through the shared creator and link only in the current session. */
+  newTask(pi: ExtensionAPI, ctx: ExtensionContext, title: string, externalRef?: string): Promise<void>;
   /**
    * Set the linked hub task directly, bypassing the picker — the panel's
    * target screen (`adapters/panel/screens/target.ts`) uses this once the
@@ -291,7 +296,7 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
   }
 
   async function runPicker(pi: ExtensionAPI, ctx: ExtensionContext, snapshot: CatalogSnapshot): Promise<void> {
-    const result = await pickTarget(ctx, snapshot);
+    const result = await pickTarget(ctx, snapshot, deps.createTask);
 
     if (result.kind === "skipped") {
       sessionOverride = "skipped";
@@ -299,13 +304,17 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
       return;
     }
 
-    const ids = candidateFrom(result.target);
+    const projectIds = candidateFrom(result.target);
+    const ids: WorkTargetCandidate = {
+      ...projectIds,
+      ...(result.target.hubTaskId !== undefined ? { hubTaskId: result.target.hubTaskId } : {}),
+    };
     sessionOverride = ids;
     pi.appendEntry<KankakuTargetEntryData>(TARGET_ENTRY_TYPE, entryDataFrom(ids));
 
     const remember = await ctx.ui.confirm("kankaku", `Remember ${formatWorkTargetLabel(result.target)} for this repository?`);
     if (remember) {
-      deps.persistProjectConfig(ids);
+      deps.persistProjectConfig(projectIds);
     }
   }
 
@@ -390,7 +399,7 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
     }
 
     const tasks = deps.catalog.read()?.tasks ?? [];
-    const result = await pickHubTask(ctx, tasks, target.projectId);
+    const result = await pickHubTask(ctx, tasks, target.projectId, deps.createTask);
 
     if (result.kind === "empty") {
       ctx.ui.notify(`kankaku: No open tasks for ${target.projectName ?? target.projectId} in the hub`, "warning");
@@ -402,6 +411,27 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
 
     const updated = effectiveTarget();
     if (updated) ctx.ui.notify(`kankaku: task set to ${formatWorkTargetLabel(updated)}`);
+  }
+
+  async function newTask(pi: ExtensionAPI, ctx: ExtensionContext, title: string, externalRef?: string): Promise<void> {
+    if (deps.role !== "orchestrator" || !ctx.hasUI) return;
+    const target = effectiveTarget();
+    if (!target || target.projectId === undefined) {
+      ctx.ui.notify("kankaku: Pick a client and project first (/kankaku target pick)", "warning");
+      return;
+    }
+    if (!deps.createTask) throw new Error("task creation is not configured");
+    try {
+      const task = await deps.createTask(target.projectId, title, externalRef);
+      setTask(pi, task.id);
+      ctx.ui.notify(`kankaku: created and linked: ${task.title}`);
+    } catch (error) {
+      if (error instanceof TaskCreationFailure && error.kind === "cache-persistence" && error.task) {
+        setTask(pi, error.task.id);
+      }
+      const warning = error instanceof TaskCreationFailure && (error.kind === "cache-persistence" || error.kind === "catalog-unavailable");
+      ctx.ui.notify(formatTaskCreationFailure(error), warning ? "warning" : "error");
+    }
   }
 
   function clearTask(pi: ExtensionAPI): void {
@@ -420,6 +450,7 @@ export function createSessionTarget(deps: SessionTargetDeps): SessionTarget {
     clear,
     pickTask,
     clearTask,
+    newTask,
     setTask,
     rememberTarget,
     effectiveTarget,

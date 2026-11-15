@@ -822,6 +822,10 @@ The following are available only when a hub is configured (see "Hub
 - `/kankaku task` (or `/kankaku task pick`) — link this session to an
   open/doing hub task of the effective project. `/kankaku task clear`
   drops the link. See "Linking to a hub task" below.
+- `/kankaku task new <title> [--ref <externalRef>]` — create an open hub
+  task for the effective project and link it to this session. Requires a
+  client/project target; empty titles or malformed references report usage
+  without creating or linking. pi also offers visual picker creation.
 - `/kankaku catalog refresh` — force a catalog refresh and report the
   client/project counts.
 - `/kankaku projects` — one line per project (work/waiting/wall time, cost,
@@ -906,13 +910,19 @@ On `session_start`, for the orchestrator role with a UI available:
 4. Otherwise, a picker: `ctx.ui.select` for the client (active clients,
    sorted by name, plus "— skip —"), then for the project (active projects
    of that client, plus "(no project)" and "— skip —"). Declining at either
-   step — "— skip —" or dismissing the dialog — cancels the whole pick and
+   client/project step — "— skip —" or dismissing the dialog — cancels the whole pick and
    is remembered for the session. The picker shows the freshly refreshed
    catalog when the hub answered within the deadline described in "Caching
    and offline behaviour" below; otherwise it falls back to the cache.
 
+After selecting a concrete project, the picker offers its open/doing hub
+tasks, both at `session_start` and with `/kankaku target pick`. Skipping or
+dismissing this task step keeps the client/project without a task;
+selecting "(no project)" does not prompt for a task.
+
 After a pick, kankaku asks whether to remember it for this repository; a
-"yes" merges `clientId`/`projectId` into `<KANKAKU_DIR>/config.json`.
+"yes" merges only `clientId`/`projectId` into `<KANKAKU_DIR>/config.json`,
+never the task link.
 
 An id from any source that no longer resolves to an active, non-"unassigned"
 catalog entry is treated as absent for that source and resolution falls
@@ -941,15 +951,25 @@ of the effective project's existing hub `tasks` rows: a `ctx.ui.select`
 picker lists the project's `open`/`doing` tasks, sorted by title (colliding
 titles are disambiguated with the task's external reference, or its id).
 `/kankaku task clear` drops the link, keeping the rest of the session
-target. kankaku never creates a task from pi — this only links to one
-that already exists in the hub.
+target. Choose **＋ create task ＋** in this picker or the task step after
+`/kankaku target pick` to create an open task in the selected project.
+Enter a required title and an optional external reference. Cancelling the
+title input or leaving it empty creates nothing; dismissing the optional
+external reference input still creates the task without a reference.
+Skipping the task step during target picking keeps the client/project without
+a task; skipping `/kankaku task pick` leaves any existing task link unchanged.
+The returned task is cached immediately and linked only to this session.
+Alternatively, `/kankaku task new <title> [--ref <externalRef>]` creates and
+links an open task for the effective project, matching Claude's
+`/kankaku:task new <title> [--ref <externalRef>]` syntax.
 
 The link is **session-only**: unlike `clientId`/`projectId`, it is never
-persisted to `<KANKAKU_DIR>/config.json`, and it is never asked for at
-`session_start` — you always link a task explicitly, with `/kankaku task`.
+persisted to `<KANKAKU_DIR>/config.json`. The target picker offers a task
+after a concrete project is selected at `session_start` or with
+`/kankaku target pick`; `/kankaku task` can also link one mid-session.
 Any target change (`/kankaku target pick`, `/kankaku target clear`, or the
-legacy `/kankaku client <name>`) drops the linked task, since a new client
-or project makes the old task's link meaningless. A task whose project no
+legacy `/kankaku client <name>`) drops the previous task link; the target
+picker can then link a task for the newly selected project. A task whose project no
 longer matches the effective project (e.g. after a target change or a
 reassignment in the hub) is also dropped by the domain resolver, never
 silently linked across projects. A task already marked `done` when linked
@@ -1423,9 +1443,8 @@ notice; import only `kankaku-pi/domain`, `kankaku-pi/ports`, or `kankaku-pi/hub`
   binary.
 - Linking a `task_entries` row to an existing `tasks` record (phase 3 in the
   hub's own data model) has shipped: `/kankaku task pick`/`clear` (see
-  "Linking to a hub task" above). Creating a task from pi
-  (`/kankaku task new`) is deliberately not included — kankaku never
-  invents tasks; it only ever links to one already created in the manager.
+  "Linking to a hub task" above). Explicit task creation is supported in
+  the visual picker and with `/kankaku task new <title> [--ref <externalRef>]`.
 - Generic subagent detection (phase 6): 6a fixed the two correctness bugs
   described in "Subagents" above (a phantom-orchestrator double count; a
   gentle-pi cross-worktree child's work going missing). 6b added the

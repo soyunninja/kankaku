@@ -90,6 +90,7 @@ class FakeSessionTarget implements SessionTarget {
     this.sessionOverride = undefined;
   }
   async pickTask(): Promise<void> {}
+  async newTask(): Promise<void> {}
   clearTask(_pi: ExtensionAPI): void {
     this.calls.clearTask++;
     if (this.sessionOverride && typeof this.sessionOverride === "object") {

@@ -11,8 +11,9 @@ import { LazyProjectClientSource, LazyProjectTargetSource } from "./adapters/pro
 import { LazyExportWriter } from "./adapters/export-writer.ts";
 import { resolveHubCredentials, safeHomeDir } from "./adapters/hub-credentials.ts";
 import { PocketBaseClient } from "./adapters/pocketbase-client.ts";
-import { createPocketBaseCatalogFetcher } from "./adapters/pocketbase-catalog.ts";
+import { createHubTask, createPocketBaseCatalogFetcher } from "./adapters/pocketbase-catalog.ts";
 import { CachedCatalog } from "./adapters/cached-catalog.ts";
+import { createTaskCreator } from "./adapters/task-creation.ts";
 import { createSessionTarget } from "./adapters/session-target.ts";
 import { resolveKankakuDir, resolveWritableTarget } from "./adapters/kankaku-dir.ts";
 import { SyncStateStore } from "./adapters/sync-state-store.ts";
@@ -212,7 +213,7 @@ export default function kankaku(pi: ExtensionAPI): void {
     // when no home directory is available so an env-only hub configuration
     // still works without one (the cache just does not survive a reboot).
     const homeDirForCache = safeHomeDir(homedir) ?? tmpdir();
-    catalog = new CachedCatalog({
+    const cachedCatalog = new CachedCatalog({
       // Machine-wide cache: several projects on the same machine share one
       // catalog fetch, and it survives across projects.
       filePath: join(homeDirForCache, ".kankaku", "catalog.json"),
@@ -221,10 +222,15 @@ export default function kankaku(pi: ExtensionAPI): void {
       fetchCatalog: createPocketBaseCatalogFetcher(client),
     });
 
+    catalog = cachedCatalog;
     const projectTarget = new LazyProjectTargetSource(config.dir);
     sessionTarget = createSessionTarget({
       role,
       catalog,
+      createTask: createTaskCreator(
+        (projectId, title, externalRef) => createHubTask(client, { projectId, title, ...(externalRef ? { externalRef } : {}) }),
+        (task) => cachedCatalog.adoptTask(task),
+      ),
       resolveProjectConfigIds: () => projectTarget.read(),
       persistProjectConfig: (ids) => projectTarget.write(ids),
     });

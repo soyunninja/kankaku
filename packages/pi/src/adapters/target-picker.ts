@@ -1,12 +1,16 @@
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Client, HubTask, Project, WorkTarget } from "../domain/work-target.ts";
+import { formatTaskCreationFailure, TaskCreationFailure } from "./task-creation.ts";
 
 const SKIP_OPTION = "— skip —";
 const NO_PROJECT_OPTION = "(no project)";
+const CREATE_OPTION = "＋ create task ＋";
+export type TaskCreator = (projectId: string, title: string, externalRef?: string) => Promise<HubTask>;
 
 export interface PickerCatalog {
   clients: Client[];
   projects: Project[];
+  tasks?: HubTask[];
 }
 
 export type PickResult = { kind: "picked"; target: WorkTarget } | { kind: "skipped" };
@@ -36,14 +40,15 @@ function labelOptions<T extends { name: string; code?: string }>(items: T[]): La
 }
 
 /**
- * Run the client/project picker (`ctx.ui.select`) against an already-loaded
+ * Run the client/project/task picker (`ctx.ui.select`) against an already-loaded
  * catalog snapshot. Pure UI interaction: no network, no persistence — the
  * caller (`session-target.ts`) decides what to do with the result.
  *
- * Declining at either step — choosing "— skip —" or dismissing the dialog
+ * Declining at either client/project step — choosing "— skip —" or dismissing the dialog
  * (`undefined`) — cancels the whole pick, not just that step.
+ * Skipping the optional task step keeps the selected client/project.
  */
-export async function pickTarget(ctx: ExtensionContext, catalog: PickerCatalog): Promise<PickResult> {
+export async function pickTarget(ctx: ExtensionContext, catalog: PickerCatalog, createTask?: TaskCreator): Promise<PickResult> {
   const pickableClients = catalog.clients.filter((client) => client.active && !client.unassigned);
   const clientOptions = labelOptions(pickableClients);
 
@@ -77,6 +82,14 @@ export async function pickTarget(ctx: ExtensionContext, catalog: PickerCatalog):
         }
       : {}),
   };
+
+  if (project) {
+    const taskResult = await pickHubTask(ctx, catalog.tasks ?? [], project.id, createTask);
+    if (taskResult.kind === "picked") {
+      target.hubTaskId = taskResult.task.id;
+      target.hubTaskTitle = taskResult.task.title;
+    }
+  }
 
   return { kind: "picked", target };
 }
@@ -112,13 +125,33 @@ function labelTaskOptions(tasks: HubTask[]): LabeledOption<HubTask>[] {
  * has no open/doing task, so the caller can tell "nothing to pick from"
  * apart from "the user skipped".
  */
-export async function pickHubTask(ctx: ExtensionContext, tasks: HubTask[], projectId: string): Promise<PickHubTaskResult> {
+export async function pickHubTask(ctx: ExtensionContext, tasks: HubTask[], projectId: string, createTask?: TaskCreator): Promise<PickHubTaskResult> {
   const pickable = tasks.filter((task) => task.status !== "done" && task.projectId === projectId);
-  if (pickable.length === 0) return { kind: "empty" };
+  if (pickable.length === 0 && !createTask) return { kind: "empty" };
 
   const taskOptions = labelTaskOptions(pickable);
-  const choice = await ctx.ui.select("kankaku — task", [...taskOptions.map((option) => option.label), SKIP_OPTION]);
+  const labels = taskOptions.map((option) => option.label);
+  let createOption = CREATE_OPTION;
+  for (let suffix = 2; labels.includes(createOption); suffix++) {
+    createOption = `${CREATE_OPTION} (${suffix})`;
+  }
+  const choice = await ctx.ui.select("kankaku — task", [...labels, ...(createTask ? [createOption] : []), SKIP_OPTION]);
   if (choice === undefined || choice === SKIP_OPTION) return { kind: "skipped" };
+  if (choice === createOption && createTask) {
+    const title = (await ctx.ui.input("kankaku — task title"))?.trim();
+    if (!title) return { kind: "skipped" };
+    const externalRef = (await ctx.ui.input("kankaku — external reference (optional)"))?.trim();
+    try {
+      return { kind: "picked", task: await createTask(projectId, title, externalRef || undefined) };
+    } catch (error) {
+      if (error instanceof TaskCreationFailure && error.kind === "cache-persistence" && error.task) {
+        ctx.ui.notify(formatTaskCreationFailure(error), "warning");
+        return { kind: "picked", task: error.task };
+      }
+      ctx.ui.notify(formatTaskCreationFailure(error), error instanceof TaskCreationFailure && error.kind === "catalog-unavailable" ? "warning" : "error");
+      return { kind: "skipped" };
+    }
+  }
 
   const task = taskOptions.find((option) => option.label === choice)?.item;
   if (!task) return { kind: "skipped" };

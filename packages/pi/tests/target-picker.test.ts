@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { pickHubTask, pickTarget } from "../src/adapters/target-picker.ts";
+import { createTaskCreator } from "../src/adapters/task-creation.ts";
+import { CatalogAdoptionFailure } from "../src/adapters/cached-catalog.ts";
 import type { PickerCatalog } from "../src/adapters/target-picker.ts";
 import type { HubTask } from "../src/domain/work-target.ts";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -18,6 +20,62 @@ function makeCtx(responses: Array<string | undefined>): { ctx: ExtensionContext;
   } as unknown as ExtensionContext;
   return { ctx, calls };
 }
+
+test("creates a task after a concrete project with required title and optional ref", async () => {
+  const { ctx, calls } = makeCtx(["Acme", "Portal", "＋ create task ＋"]);
+  const inputs = [" New task ", " WEB-1 "];
+  ctx.ui.input = async () => inputs.shift();
+  const result = await pickTarget(ctx, CATALOG, async (projectId, title, externalRef) => {
+    assert.equal(projectId, "p-portal");
+    assert.equal(title, "New task");
+    assert.equal(externalRef, "WEB-1");
+    return { id: "new", title, projectId, status: "open" };
+  });
+  assert.ok(calls[2]?.options.includes("＋ create task ＋"));
+  assert.equal(result.kind === "picked" ? result.target.hubTaskId : undefined, "new");
+});
+
+test("a remote task remains selected when the real creator composition cannot adopt the cache", async () => {
+  const { ctx } = makeCtx(["＋ create task ＋"]);
+  ctx.ui.input = async () => "Created remotely";
+  const notices: Array<[string, string?]> = [];
+  ctx.ui.notify = (message: string, level?: string) => notices.push([message, level]);
+  const creator = createTaskCreator(async () => ({ id: "known-task", title: "Created remotely", projectId: "p-portal", status: "open" }), () => {
+    throw new CatalogAdoptionFailure("persistence");
+  });
+  const result = await pickHubTask(ctx, [], "p-portal", creator);
+  assert.deepEqual(result, { kind: "picked", task: { id: "known-task", title: "Created remotely", projectId: "p-portal", status: "open" } });
+  assert.equal(notices[0]?.[1], "warning");
+  assert.match(notices[0]?.[0] ?? "", /persistence failed/i);
+  assert.doesNotMatch(notices[0]?.[0] ?? "", /secret|private|known-task/);
+});
+
+test("empty or cancelled creation title keeps project without creating a task", async () => {
+  for (const title of [undefined, "   "]) {
+    const { ctx } = makeCtx(["Acme", "Portal", "＋ create task ＋"]);
+    ctx.ui.input = async () => title;
+    const result = await pickTarget(ctx, CATALOG, async () => { assert.fail("must not create"); });
+    assert.equal(result.kind === "picked" ? result.target.projectId : undefined, "p-portal");
+    assert.equal(result.kind === "picked" ? result.target.hubTaskId : undefined, undefined);
+  }
+});
+
+test("create action stays unique against task labels and both choices work", async () => {
+  const tasks: HubTask[] = ["＋ create task ＋", "＋ create task ＋ (2)"].map((title, index) => ({ id: `t-${index}`, title, projectId: "p1", status: "open" }));
+  const existing = makeCtx(["＋ create task ＋"]);
+  assert.deepEqual(await pickHubTask(existing.ctx, tasks, "p1", async () => { assert.fail("must select existing task"); }), { kind: "picked", task: tasks[0] });
+  const creating = makeCtx(["＋ create task ＋ (3)"]);
+  const inputs = ["New", undefined];
+  creating.ctx.ui.input = async () => inputs.shift();
+  const created: HubTask = { id: "new", title: "New", projectId: "p1", status: "open" };
+  assert.deepEqual(await pickHubTask(creating.ctx, tasks, "p1", async (_projectId, title, ref) => {
+    assert.equal(title, "New");
+    assert.equal(ref, undefined, "dismissing optional ref still creates");
+    return created;
+  }), { kind: "picked", task: created });
+  const labels = creating.calls[0]!.options;
+  assert.equal(new Set(labels).size, labels.length);
+});
 
 const CATALOG: PickerCatalog = {
   clients: [
@@ -115,6 +173,39 @@ const PORTAL_TASKS: HubTask[] = [
   { id: "t-done", title: "Old and done", projectId: "p-portal", status: "done" },
   { id: "t-other-project", title: "Belongs elsewhere", projectId: "p-api", status: "open" },
 ];
+
+test("pickTarget offers project tasks and includes the selected task in the target", async () => {
+  const { ctx, calls } = makeCtx(["Acme", "Portal", "Ship it"]);
+  const result = await pickTarget(ctx, { ...CATALOG, tasks: PORTAL_TASKS });
+
+  assert.deepEqual(calls[2], { title: "kankaku — task", options: ["Fix the thing", "Ship it", "— skip —"] });
+  assert.equal(result.kind, "picked");
+  if (result.kind === "picked") {
+    assert.equal(result.target.hubTaskId, "t-doing");
+    assert.equal(result.target.hubTaskTitle, "Ship it");
+  }
+});
+
+for (const choice of ["— skip —", undefined]) {
+  test(`pickTarget keeps client/project when the task choice is ${choice}`, async () => {
+    const { ctx, calls } = makeCtx(["Acme", "Portal", choice]);
+    const result = await pickTarget(ctx, { ...CATALOG, tasks: PORTAL_TASKS });
+    assert.equal(calls.length, 3);
+    assert.equal(result.kind, "picked");
+    if (result.kind === "picked") {
+      assert.equal(result.target.projectId, "p-portal");
+      assert.equal(result.target.hubTaskId, undefined);
+    }
+  });
+}
+
+test("pickTarget never prompts for tasks without a concrete project or eligible tasks", async () => {
+  for (const project of ["(no project)", "API"]) {
+    const { ctx, calls } = makeCtx(["Acme", project]);
+    await pickTarget(ctx, { ...CATALOG, tasks: PORTAL_TASKS.filter((task) => task.projectId === "p-portal") });
+    assert.equal(calls.length, 2);
+  }
+});
 
 test("pickHubTask lists only open/doing tasks of the given project, sorted by title, plus skip", async () => {
   const { ctx, calls } = makeCtx(["— skip —"]);

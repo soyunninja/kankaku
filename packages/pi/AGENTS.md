@@ -259,8 +259,16 @@ lives, the four core flows, how to run and release, and the gotchas.
   record) so every existing report/export keeps grouping correctly. See
   README "Hub (PocketBase)".
 - A linked hub task (`hubTaskId`/`hubTaskTitle`, `/kankaku task pick`) is
-  **session-only** — never written to `config.json`, never prompted at
-  `session_start` — and validated against the resolved project by the same
+  **session-only** — never written to `config.json`. `/kankaku task new
+  <title> [--ref <externalRef>]` creates an open task for the effective
+  project through `SessionTarget`'s existing creator and links it only to
+  the session; visual picker creation remains an additional option.
+  The target picker
+  offers open/doing hub tasks after a concrete project is selected at
+  `session_start` or during explicit target picking. Skipping/dismissing
+  the task step keeps the client/project without a task; selecting no
+  project does not prompt for a task. The link is validated against the
+  resolved project by the same
   pure `domain/work-target.ts#resolveWorkTarget` (a task whose project no
   longer matches is dropped, never linked across projects). Sync sends
   `task_entries.task` on create only, exactly like `client`/`project` (see

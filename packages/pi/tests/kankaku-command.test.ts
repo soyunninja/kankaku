@@ -1003,6 +1003,61 @@ test("'task' notifies 'hub is not configured' when no sessionTarget is present",
   assert.match(notified[0]?.message ?? "", /not configured/);
 });
 
+for (const suffix of ["", " --ref ISSUE-42"]) {
+  test(`task new creates and session-links a task${suffix}`, async () => {
+    const pi = new FakePi();
+    const catalog = new FakeCatalog();
+    catalog.snapshot = SNAPSHOT;
+    const calls: unknown[] = [];
+    let persisted = false;
+    let refreshed = 0;
+    const sessionTarget = createSessionTarget({
+      role: "orchestrator", catalog,
+      resolveProjectConfigIds: () => ({ clientId: "c-acme", projectId: "p-portal" }),
+      persistProjectConfig: () => { persisted = true; },
+      createTask: async (projectId, title, externalRef) => {
+        calls.push([projectId, title, externalRef]);
+        const task = { id: "created", projectId, title, status: "open" as const };
+        catalog.snapshot = { ...SNAPSHOT, tasks: [...SNAPSHOT.tasks!, task] };
+        return task;
+      },
+    });
+    registerKankakuCommand(pi as unknown as ExtensionAPI, {
+      log: new FakeWorkLog(), sessionClient: new FakeSessionClient(), sessionTarget,
+      refreshIdleStatus: () => { refreshed++; },
+    });
+    await pi.commands.get("kankaku")!.handler(`task new Fix login${suffix}`, makeCtx());
+    assert.deepEqual(calls, [["p-portal", "Fix login", suffix ? "ISSUE-42" : undefined]]);
+    assert.equal(sessionTarget.effectiveTarget()?.hubTaskId, "created");
+    assert.equal(persisted, false);
+    assert.equal(refreshed, 1);
+    assert.deepEqual(pi.entries.at(-1)?.data, { clientId: "c-acme", projectId: "p-portal", hubTaskId: "created" });
+  });
+}
+
+for (const args of ["new", "new --ref X", "new Title --ref", "new Title --ref X extra", "new Title --ref X --ref Y"]) {
+  test(`task ${args} reports usage without creating or linking`, async () => {
+    const pi = new FakePi();
+    const catalog = new FakeCatalog();
+    catalog.snapshot = SNAPSHOT;
+    let calls = 0;
+    const notified: string[] = [];
+    const sessionTarget = createSessionTarget({
+      role: "orchestrator", catalog,
+      resolveProjectConfigIds: () => ({ clientId: "c-acme", projectId: "p-portal" }),
+      persistProjectConfig: () => {},
+      createTask: async () => { calls++; throw new Error("must not create"); },
+    });
+    registerKankakuCommand(pi as unknown as ExtensionAPI, {
+      log: new FakeWorkLog(), sessionClient: new FakeSessionClient(), sessionTarget, refreshIdleStatus: () => {},
+    });
+    await pi.commands.get("kankaku")!.handler(`task ${args}`, makeCtx({ ui: { notify: (message: string) => notified.push(message) } }));
+    assert.match(notified[0] ?? "", /usage: \/kankaku task new <title> \[--ref <externalRef>\]/);
+    assert.equal(calls, 0);
+    assert.equal(pi.entries.length, 0);
+  });
+}
+
 test("'task bogus' notifies an unknown-subcommand error", async () => {
   const pi = new FakePi();
   const catalog = new FakeCatalog();

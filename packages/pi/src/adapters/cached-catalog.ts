@@ -32,6 +32,16 @@ function isCatalogSnapshot(value: unknown): value is CatalogSnapshot {
   );
 }
 
+export class CatalogAdoptionFailure extends Error {
+  readonly reason: "snapshot-unavailable" | "persistence";
+
+  constructor(reason: "snapshot-unavailable" | "persistence") {
+    super(reason === "persistence" ? "Catalog cache persistence failed" : "Catalog snapshot unavailable");
+    this.name = "CatalogAdoptionFailure";
+    this.reason = reason;
+  }
+}
+
 export interface CachedCatalogDeps {
   /** Absolute path to the cache file, e.g. `~/.kankaku/catalog.json`. */
   filePath: string;
@@ -61,6 +71,7 @@ export class CachedCatalog implements Catalog {
   private readonly deps: CachedCatalogDeps;
   private memo: CatalogSnapshot | undefined;
   private memoized = false;
+  private pendingAdoptions = new Set<Map<string, HubTask>>();
 
   constructor(deps: CachedCatalogDeps) {
     this.deps = deps;
@@ -74,6 +85,23 @@ export class CachedCatalog implements Catalog {
     return this.memo;
   }
 
+  /** Adopt a POST response without relying on an eventually-consistent list refresh. */
+  adoptTask(task: HubTask): void {
+    const snapshot = this.read();
+    if (!snapshot) throw new CatalogAdoptionFailure("snapshot-unavailable");
+    const adopted = { ...snapshot, tasks: [...(snapshot.tasks ?? []).filter((item) => item.id !== task.id), task] };
+    // The parsed POST response is the freshest known task even when atomic
+    // persistence fails. Publish it to this process and in-flight refreshes
+    // before writing so session target resolution can still validate the link.
+    this.memo = adopted;
+    for (const pending of this.pendingAdoptions) pending.set(task.id, task);
+    try {
+      this.writeDisk(adopted, true);
+    } catch {
+      throw new CatalogAdoptionFailure("persistence");
+    }
+  }
+
   isStale(): boolean {
     const snapshot = this.read();
     if (!snapshot) return true;
@@ -82,6 +110,8 @@ export class CachedCatalog implements Catalog {
   }
 
   async refresh(signal?: AbortSignal): Promise<CatalogSnapshot | undefined> {
+    const adopted = new Map<string, HubTask>();
+    this.pendingAdoptions.add(adopted);
     try {
       const { clients, projects, tasks } = await this.deps.fetchCatalog(signal);
       const snapshot: CatalogSnapshot = {
@@ -89,7 +119,7 @@ export class CachedCatalog implements Catalog {
         url: this.deps.url,
         clients,
         projects,
-        ...(tasks !== undefined ? { tasks } : {}),
+        ...(tasks !== undefined || adopted.size > 0 ? { tasks: [...(tasks ?? []).filter((task) => !adopted.has(task.id)), ...adopted.values()] } : {}),
       };
       this.writeDisk(snapshot);
       this.memo = snapshot;
@@ -97,6 +127,8 @@ export class CachedCatalog implements Catalog {
       return snapshot;
     } catch {
       return undefined;
+    } finally {
+      this.pendingAdoptions.delete(adopted);
     }
   }
 
@@ -112,7 +144,7 @@ export class CachedCatalog implements Catalog {
     }
   }
 
-  private writeDisk(snapshot: CatalogSnapshot): void {
+  private writeDisk(snapshot: CatalogSnapshot, required = false): void {
     try {
       // This cache lives under `~/.kankaku` (machine-wide, not a project's
       // own KANKAKU_DIR) — but `~/.kankaku` itself is never mode-tightened
@@ -139,7 +171,8 @@ export class CachedCatalog implements Catalog {
       // Owner-only: this file names every client/project the machine's user has touched.
       writeFileSync(tmp, JSON.stringify(snapshot), { mode: OWNER_FILE_MODE });
       renameSync(tmp, this.deps.filePath);
-    } catch {
+    } catch (error) {
+      if (required) throw error;
       // Best-effort cache write: a failure here must not fail the refresh
       // itself, since the in-memory snapshot is still usable this process.
     }

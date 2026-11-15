@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { createSessionTarget, TARGET_ENTRY_TYPE } from "../src/adapters/session-target.ts";
+import { createTaskCreator } from "../src/adapters/task-creation.ts";
+import { CachedCatalog, CatalogAdoptionFailure } from "../src/adapters/cached-catalog.ts";
 import type { SessionTargetDeps } from "../src/adapters/session-target.ts";
 import type { Catalog, CatalogSnapshot } from "../src/ports/catalog.ts";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -147,6 +152,104 @@ function makeDeps(overrides: Partial<SessionTargetDeps> = {}): SessionTargetDeps
   };
 }
 
+test("picker-created task resolves immediately and remembering never persists the task", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = { ...SNAPSHOT };
+  let remembered: unknown;
+  const target = createSessionTarget(makeDeps({ catalog, persistProjectConfig: (ids) => { remembered = ids; }, createTask: async (projectId, title) => {
+    const task = { id: "new", projectId, title, status: "open" as const };
+    catalog.snapshot = { ...SNAPSHOT, tasks: [...SNAPSHOT.tasks!, task] };
+    return task;
+  } }));
+  const { ctx } = makeCtx(true, ["Acme", "Portal", "＋ create task ＋"]);
+  const inputs = ["New", undefined];
+  ctx.ui.input = async () => inputs.shift();
+  await target.pick(makeFakePi(), ctx);
+  assert.equal(target.effectiveTarget()?.hubTaskId, "new");
+  assert.deepEqual(remembered, { clientId: "c-acme", projectId: "p-portal" });
+});
+
+for (const ids of [undefined, { clientId: "c-acme" }]) {
+  test(`newTask requires an effective project (${JSON.stringify(ids)})`, async () => {
+    const catalog = new FakeCatalog();
+    catalog.snapshot = SNAPSHOT;
+    let calls = 0;
+    const target = createSessionTarget(makeDeps({ catalog, resolveProjectConfigIds: () => ids,
+      createTask: async () => { calls++; throw new Error("must not create"); },
+    }));
+    const pi = makeFakePi();
+    const { ctx, notified } = makeCtx(true, []);
+    await target.newTask(pi, ctx, "New");
+    assert.equal(calls, 0);
+    assert.equal(pi.appended.length, 0);
+    assert.match(notified[0]?.[0] ?? "", /Pick a client and project first/);
+  });
+}
+
+test("direct and picker creation stay effectively linked after actual cache persistence failure", async () => {
+  for (const path of ["direct", "picker"] as const) {
+    const dir = mkdtempSync(join(tmpdir(), "kankaku-task-cache-failure-"));
+    try {
+      const parent = join(dir, "not-a-directory");
+      writeFileSync(parent, "blocked");
+      const catalog = new CachedCatalog({
+        filePath: join(parent, "catalog.json"),
+        url: "https://pb.example.com",
+        clock: { now: () => 1000 },
+        fetchCatalog: async () => ({ clients: SNAPSHOT.clients, projects: SNAPSHOT.projects, tasks: SNAPSHOT.tasks }),
+      });
+      await catalog.refresh();
+      const creator = createTaskCreator(async (projectId, title) => ({ id: "remote-task", title, projectId, status: "open" }), (task) => catalog.adoptTask(task));
+      const target = createSessionTarget(makeDeps({ catalog, createTask: creator, resolveProjectConfigIds: () => ({ clientId: "c-acme", projectId: "p-portal" }) }));
+      const pi = makeFakePi();
+      const { ctx, notified } = makeCtx(true, path === "picker" ? ["Acme", "Portal", "＋ create task ＋"] : []);
+      if (path === "picker") ctx.ui.input = async () => "New from picker";
+      else target.restore(makeCtxWithEntries([]));
+      if (path === "picker") await target.pick(pi, ctx);
+      else await target.newTask(pi, ctx, "New direct");
+      assert.equal(target.effectiveTarget()?.hubTaskId, "remote-task", `${path} target resolves from the in-memory catalog`);
+      assert.equal(target.runTarget()?.hubTaskId, "remote-task");
+      assert.equal(target.idleTarget()?.hubTaskId, "remote-task");
+      assert.match(notified[0]?.[0] ?? "", /cache persistence failed/i);
+      assert.equal(notified[0]?.[1], "warning");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+});
+
+test("newTask links known remote success when cache adoption fails", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const creator = createTaskCreator(async () => ({ id: "remote-task", title: "New", projectId: "p-portal", status: "open" }), () => {
+    throw new CatalogAdoptionFailure("persistence");
+  });
+  const target = createSessionTarget(makeDeps({ catalog, createTask: creator }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-open" });
+  const { ctx, notified } = makeCtx(true, []);
+  await target.newTask(pi, ctx, "New");
+  assert.equal(pi.appended.at(-1)?.data && (pi.appended.at(-1)?.data as { hubTaskId?: string }).hubTaskId, "remote-task");
+  assert.equal(pi.appended.length, 2);
+  assert.equal(notified[0]?.[1], "warning");
+  assert.match(notified[0]?.[0] ?? "", /persistence failed/i);
+  assert.doesNotMatch(notified[0]?.[0] ?? "", /private|token|remote-task/);
+});
+
+test("newTask request failure preserves the existing session link and sanitizes the error", async () => {
+  const catalog = new FakeCatalog();
+  catalog.snapshot = SNAPSHOT;
+  const target = createSessionTarget(makeDeps({ catalog, createTask: async () => { throw new Error("secret hub body"); } }));
+  const pi = makeFakePi();
+  target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-open" });
+  const { ctx, notified } = makeCtx(true, []);
+  await target.newTask(pi, ctx, "New");
+  assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+  assert.equal(pi.appended.length, 1);
+  assert.match(notified[0]?.[0] ?? "", /outcome is uncertain/i);
+  assert.doesNotMatch(notified[0]?.[0] ?? "", /secret/);
+});
+
 test("restore leaves the override undefined when no kankaku-target entry exists", () => {
   const target = createSessionTarget(makeDeps());
   target.restore(makeCtxWithEntries([]));
@@ -251,6 +354,43 @@ test("ensurePicked shows the picker when nothing resolves, persists the pick as 
   assert.deepEqual(pi.appended[0], { customType: TARGET_ENTRY_TYPE, data: { clientId: "c-acme", projectId: "p-portal" } });
   assert.deepEqual(remembered, { clientId: "c-acme", projectId: "p-portal" });
 });
+
+for (const method of ["ensurePicked", "pick"] as const) {
+  test(`${method} links a picked task only in the session, including after restore`, async () => {
+    const catalog = new FakeCatalog();
+    catalog.snapshot = SNAPSHOT;
+    let remembered: unknown;
+    const target = createSessionTarget(makeDeps({ catalog, persistProjectConfig: (ids) => { remembered = ids; } }));
+    const pi = makeFakePi();
+    const { ctx, selectCalls } = makeCtx(true, ["Acme", "Portal", "Fix the thing"], true);
+    await target[method](pi, ctx);
+    assert.equal(selectCalls.length, 3);
+    assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+    assert.deepEqual(pi.appended.at(-1), {
+      customType: TARGET_ENTRY_TYPE,
+      data: { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-open" },
+    });
+    assert.deepEqual(remembered, { clientId: "c-acme", projectId: "p-portal" });
+    target.restore(makeCtxWithEntries(pi.appended.map((entry) => ({ type: "custom", ...entry }))));
+    assert.equal(target.effectiveTarget()?.hubTaskId, "t-open");
+  });
+}
+
+for (const choice of ["— skip —", undefined]) {
+  test(`retargeting with task choice ${choice} drops the old task but keeps client/project`, async () => {
+    const catalog = new FakeCatalog();
+    catalog.snapshot = SNAPSHOT;
+    const target = createSessionTarget(makeDeps({ catalog }));
+    const pi = makeFakePi();
+    target.setExplicit(pi, { clientId: "c-acme", projectId: "p-portal", hubTaskId: "t-open" });
+    const { ctx, selectCalls } = makeCtx(true, ["Acme", "Portal", choice], false);
+    await target.pick(pi, ctx);
+    assert.equal(selectCalls.length, 3);
+    assert.equal(target.effectiveTarget()?.projectId, "p-portal");
+    assert.equal(target.effectiveTarget()?.hubTaskId, undefined);
+    assert.deepEqual(pi.appended.at(-1)?.data, { clientId: "c-acme", projectId: "p-portal" });
+  });
+}
 
 test("ensurePicked does not persist to the project config file when the user declines to remember", async () => {
   const catalog = new FakeCatalog();
@@ -444,7 +584,7 @@ test("ensurePicked shows the picker with the cached snapshot when the background
 
   await target.ensurePicked(makeFakePi(), ctx);
 
-  assert.equal(selectCalls.length, 2);
+  assert.equal(selectCalls.length, 3);
   assert.equal(target.effectiveTarget()?.clientId, "c-acme");
   assert.equal(notified.length, 0, "a failed background refresh falls back to the cache silently");
 });
@@ -485,7 +625,7 @@ test("pick awaits the background refresh up to the picker deadline and falls bac
   timer.fireAll();
   await promise;
 
-  assert.equal(selectCalls.length, 2);
+  assert.equal(selectCalls.length, 3);
   assert.equal(target.effectiveTarget()?.clientId, "c-acme");
   assert.equal(catalog.refreshCalls, 1);
 });
