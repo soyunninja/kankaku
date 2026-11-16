@@ -85,8 +85,9 @@ extension has one. Instead:
   `/kankaku:target` pick > project `config.json` ids > cached catalog
   `repo_paths`, through the library's `resolveWorkTarget`, the pick passed as
   its session candidate),
-  `RecordAssignment` and `formatTargetLine`. Imports `kankaku-pi`, so heavy
-  paths only.
+  `RecordAssignment`, `formatTargetLine` and `sessionTargetLabel` (the
+  statusline's `<client> · <project> › <task>` label, cache only, no
+  network). Imports `kankaku-pi`, so heavy paths and the statusline only.
 - `src/session-target-store.ts` — `readSessionTarget`/`writeSessionTarget`,
   the session-only file `<KANKAKU_DIR>/claude/<session>.target.json`: the
   task link (`hubTaskId`, `hubTaskTitle`, `pickedAt`), the `/kankaku:target`
@@ -102,7 +103,8 @@ extension has one. Instead:
   substring; only active, non-unassigned entries; a project must belong to its
   client) and `taskLinkOutcome`, the task-link rule.
 - `src/target-cli.ts` — `runTargetCli`, the `target` subcommand (list, pick,
-  clear); bounded fetch like `task`.
+  clear, and `remember`, which writes the session's client and project ids to
+  the folder's `config.json`, never the task); bounded fetch like `task`.
 - `src/find-session.ts` — `findSession`: `KANKAKU_CLAUDE_SESSION` wins, else
   the CLI pid is walked to the Claude process (`resolveClaudePid`) and matched
   to the state file `pid`, most recent activity first.

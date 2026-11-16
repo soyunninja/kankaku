@@ -8,6 +8,12 @@ export interface StatuslineDeps {
   now: () => number;
   readState: typeof readState;
   writeCost: typeof writeCost;
+  /**
+   * The session's work target as `<client> · <project> › <task>`, or
+   * `undefined` when none resolves. Optional and read-only; a throw is
+   * treated as "no label" so the clock and cost are still printed.
+   */
+  targetLabel?: (input: { env: NodeJS.ProcessEnv; cwd: string; sessionId: string }) => string | undefined;
 }
 
 /**
@@ -22,6 +28,8 @@ export interface StatuslineDeps {
  * The project's own state file (`<KANKAKU_DIR>/claude/<session_id>.state.json`)
  * is only ever READ here, for the open-prompt clock, and is never created:
  * a missing state file renders as `idle` rather than creating anything.
+ * When `deps.targetLabel` resolves a work target, it is appended after
+ * ` | ` (`kankaku 0:04 · $1.01 | Acme · Web › Fix login`).
  */
 export function renderStatusline(input: unknown, deps: StatuslineDeps): string {
   try {
@@ -49,9 +57,21 @@ export function renderStatusline(input: unknown, deps: StatuslineDeps): string {
     const state = deps.readState(paths.stateFile);
     const clock = formatClock(state?.promptOpen ?? null, deps.now());
 
-    return totalUsd !== undefined ? `kankaku ${clock} · $${totalUsd.toFixed(2)}` : `kankaku ${clock}`;
+    const line = totalUsd !== undefined ? `kankaku ${clock} · $${totalUsd.toFixed(2)}` : `kankaku ${clock}`;
+    const label = readTargetLabel(deps, cwd, sessionId);
+    return label !== undefined ? `${line} | ${label}` : line;
   } catch {
     return "kankaku";
+  }
+}
+
+/** The target label on one line, or `undefined` when there is none or the lookup fails. */
+function readTargetLabel(deps: StatuslineDeps, cwd: string, sessionId: string): string | undefined {
+  try {
+    const label = deps.targetLabel?.({ env: deps.env, cwd, sessionId })?.split(/\s+/).join(" ").trim();
+    return label ? label : undefined;
+  } catch {
+    return undefined;
   }
 }
 

@@ -134,6 +134,13 @@ projects that never installed kankaku-claude. It writes only to
 only reads a project's own state file, so an unrelated session never leaves
 anything behind in whatever project happens to be open.
 
+The line shows the open prompt's clock, the session cost and, when one
+resolves, the work target: `kankaku 0:04 · $1.01 | Acme · Web › Fix login`
+(client, project and the linked task). The target comes from the session's
+`/kankaku:target` pick and `/kankaku:task` link, then the folder's
+`config.json`, then `repo_paths`; it is read from the cached catalog with no
+network access, and omitted when nothing resolves.
+
 ## Commands
 
 `kankaku setup` installs these as user commands under
@@ -260,6 +267,11 @@ wrong thing):
   belong to the client, otherwise nothing changes.
 - `/kankaku:target clear` removes the pick and prints what the automatic
   resolution gives now.
+- `/kankaku:target remember` saves the current client and project to the
+  folder's `config.json` (`clientId`, `projectId`; other keys are kept), so
+  every later session in this folder resolves to them with no pick. It
+  prints `remembered for this folder: <Client> · <Project>`. With no target
+  to save it changes nothing and exits 1. A task link is never saved.
 
 Text that matches nothing, or several entries, changes nothing (several are
 listed so one can be picked by number). Inactive entries are never
@@ -267,8 +279,9 @@ selectable.
 
 The pick is session-only, like `/kankaku target pick|clear` in pi: it is
 stored in `<KANKAKU_DIR>/claude/<session>.target.json` next to the task
-link, removed when the session ends, and **`config.json` is never written**.
-For a permanent choice use `kankaku setup` or the project's `config.json`.
+link, removed when the session ends, and a pick never writes `config.json`.
+For a permanent choice use `/kankaku:target remember`, like the "remember"
+row of the pi panel.
 Precedence at record time is the library's: session pick, then `config.json`,
 then `repo_paths`; a picked client or project that is no longer active in
 the catalog falls through to the next source. Records carry the picked

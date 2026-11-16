@@ -1,6 +1,6 @@
 ---
-description: Choose the client and project this session works for (list clients, pick one, or clear)
-argument-hint: [number | code | text] [project] | clear
+description: Choose the client and project this session works for (list clients, pick one, clear, or remember it for this folder)
+argument-hint: [number | code | text] [project] | clear | remember
 allowed-tools: Bash(node:*)
 ---
 
@@ -16,4 +16,6 @@ verbatim in a code block.
 Never pick a client or a project on the user's behalf.
 
 The choice lasts for this session only: it does not change the project's
-`config.json`.
+`config.json`. After a pick, tell the user they can keep it for every later
+session in this folder with `/kankaku:target remember`. Run that only when
+the user asks for it.

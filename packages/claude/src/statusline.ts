@@ -1,6 +1,7 @@
 import { renderStatusline } from "./statusline-core.ts";
 import { readState } from "./session-state.ts";
 import { writeCost } from "./cost-store.ts";
+import { sessionTargetLabel } from "./work-target.ts";
 
 async function readStdin(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -23,6 +24,7 @@ async function main(): Promise<void> {
     now: () => Date.now(),
     readState,
     writeCost,
+    targetLabel: sessionTargetLabel,
   });
   process.stdout.write(`${line}\n`);
 }

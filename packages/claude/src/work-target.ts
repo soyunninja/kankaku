@@ -176,3 +176,19 @@ export function resolveSessionWorkTarget(deps: SessionWorkTargetDeps): ClaudeWor
     ...(stored !== undefined ? sessionInputs(stored) : {}),
   });
 }
+
+/**
+ * The statusline's target label for one session: `<client> · <project> ›
+ * <task>` from the session's `/kankaku:target` pick and `/kankaku:task`
+ * link, falling back to the folder's automatic target. `undefined` when
+ * nothing resolves. Read-only and offline, like every hook-path resolution.
+ */
+export function sessionTargetLabel(input: { env: NodeJS.ProcessEnv; cwd: string; sessionId: string }): string | undefined {
+  const kankakuDir = resolveKankakuDir(input.env.KANKAKU_DIR ?? ".kankaku", input.cwd);
+  const stored = readSessionTarget(resolveTargetFile(join(kankakuDir, "claude"), input.sessionId));
+  const result = resolveClaudeWorkTarget({
+    cwd: input.cwd, kankakuDir, homeDir: input.env.HOME || homedir(), env: input.env,
+    ...(stored !== undefined ? sessionInputs(stored) : {}),
+  });
+  return result.target !== undefined ? formatWorkTargetLabel(result.target) : undefined;
+}

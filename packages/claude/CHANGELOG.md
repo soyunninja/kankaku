@@ -4,10 +4,14 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## 1.5.0 — 2026-11-16
 
 ### Added
 
+- The statusline shows the session's work target after the clock and cost:
+  `kankaku 0:04 · $1.01 | Acme · Web › Fix login`.
+- `/kankaku:target remember` saves the current client and project to the
+  folder's `config.json`, so later sessions in that folder need no pick.
 - `/kankaku:task new <title> [--ref <externalRef>]` creates an open task in
   the resolved project and links it session-only, caching the returned task
   immediately. Creation stays out of hooks.

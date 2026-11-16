@@ -1,6 +1,8 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { formatWorkTargetLabel } from "kankaku-pi/domain";
 import type { Client, HubTask, Project } from "kankaku-pi/domain";
+import { writeProjectTargetIds } from "kankaku-pi/hub";
 import type { CliDeps, CliResult } from "./cli-core.ts";
 import { refreshCatalog } from "./catalog-refresh.ts";
 import { findSession } from "./find-session.ts";
@@ -15,14 +17,18 @@ import type { ClaudeWorkTarget } from "./work-target.ts";
 const NO_SESSION = "no active Claude Code session found for this folder\n";
 const NO_CATALOG = "no catalog: configure the hub or run kankaku catalog refresh";
 const HINT = "pick one with: /kankaku:target <number>";
+const NOTHING_TO_REMEMBER = "nothing to remember: pick a client and project first with /kankaku:target";
 const EMPTY_LIST: SessionList = { kind: "tasks", ids: [] };
 
 const say = (lines: string[], exitCode: number): CliResult => ({ stdout: lines.join("\n") + "\n", exitCode });
 
 /**
- * `target [<number | code | text> [<project>] | clear]`: picks the client
- * and project this Claude Code session works for, session-only (see
- * `session-target-store.ts`); it never touches the project's `config.json`.
+ * `target [<number | code | text> [<project>] | clear | remember]`: picks
+ * the client and project this Claude Code session works for, session-only
+ * (see `session-target-store.ts`). Only `remember` touches the project's
+ * `config.json`: it saves the current client and project there, so later
+ * sessions in this folder resolve to them with no pick (like the pi
+ * panel's "remember" row). A task link is never saved.
  * Not a hook: it may use the network, bounded, like `task`.
  */
 export async function runTargetCli(args: string[], deps: CliDeps): Promise<CliResult> {
@@ -49,6 +55,14 @@ export async function runTargetCli(args: string[], deps: CliDeps): Promise<CliRe
     return clear({ file, stored, prefix, tasks: catalog?.snapshot.tasks ?? [], automatic: resolve() });
   }
   if (!catalog) return say([NO_CATALOG], 1);
+
+  if (words.length === 1 && words[0]!.toLowerCase() === "remember") {
+    const target = resolve(sessionInputs(stored).sessionTarget).target;
+    if (!target) return say([...prefix, NOTHING_TO_REMEMBER], 1);
+    writeProjectTargetIds(kankakuDir, { clientId: target.clientId, ...(target.projectId !== undefined ? { projectId: target.projectId } : {}) });
+    const { hubTaskId: _task, hubTaskTitle: _title, ...bare } = target;
+    return say([...prefix, `remembered for this folder: ${formatWorkTargetLabel(bare)} (saved to ${join(kankakuDir, "config.json")})`], 0);
+  }
 
   const { clients, projects, tasks = [] } = catalog.snapshot;
   const link = sessionInputs(stored).taskLink;

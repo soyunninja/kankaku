@@ -353,6 +353,48 @@ test("no link, no task-link line", async () => {
   } finally { f.cleanup(); }
 });
 
+test("remember saves the session pick to the folder's config.json, so it resolves without a session pick", async () => {
+  const f = fixture();
+  try {
+    await run(f, "zed", "zweb");
+    const r = await run(f, "remember");
+    assert.deepEqual(r, { stdout: lines(`remembered for this folder: Zed Studio · Zed Web (saved to ${join(f.dir, "config.json")})`), exitCode: 0 });
+    assert.deepEqual(JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8")), { clientId: "c-zed", projectId: "p-zweb" });
+    // The session pick is untouched, and once cleared the folder still resolves to the remembered target.
+    assert.equal(readSessionTarget(f.target())?.projectId, "p-zweb");
+    assert.equal((await run(f, "clear")).stdout, lines("target cleared for this session; back to Zed Studio · Zed Web (source: project config)"));
+  } finally { f.cleanup(); }
+});
+
+test("remember keeps the other keys of an existing config.json", async () => {
+  const f = fixture();
+  try {
+    writeFileSync(join(f.dir, "config.json"), JSON.stringify({ client: "legacy-label", other: 1 }));
+    await run(f, "acme", "api");
+    assert.equal((await run(f, "remember")).exitCode, 0);
+    assert.deepEqual(JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8")), { client: "legacy-label", other: 1, clientId: "c-acme", projectId: "p-api" });
+  } finally { f.cleanup(); }
+});
+
+test("remember with only a client picked saves the client alone", async () => {
+  const f = fixture({ cwd: "/elsewhere" });
+  try {
+    await run(f, "empty");
+    const r = await run(f, "remember");
+    assert.deepEqual(r, { stdout: lines(`remembered for this folder: Empty Co (saved to ${join(f.dir, "config.json")})`), exitCode: 0 });
+    assert.deepEqual(JSON.parse(readFileSync(join(f.dir, "config.json"), "utf8")), { clientId: "c-empty" });
+  } finally { f.cleanup(); }
+});
+
+test("remember with no target to save says so, exits 1 and writes nothing", async () => {
+  const f = fixture({ cwd: "/elsewhere" });
+  try {
+    const r = await run(f, "remember");
+    assert.deepEqual(r, { stdout: lines("nothing to remember: pick a client and project first with /kankaku:target"), exitCode: 1 });
+    assert.equal(existsSync(join(f.dir, "config.json")), false);
+  } finally { f.cleanup(); }
+});
+
 test("runCli routes the target command, and the config.json is never written", async () => {
   const f = fixture();
   try {

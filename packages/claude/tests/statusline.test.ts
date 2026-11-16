@@ -1,12 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, existsSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, existsSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { renderStatusline, type StatuslineDeps } from "../src/statusline-core.ts";
 import { readState, writeState, type SessionState } from "../src/session-state.ts";
 import { writeCost, readCost, costFile } from "../src/cost-store.ts";
 import { resolvePaths } from "../src/paths.ts";
+import { writeSessionTarget } from "../src/session-target-store.ts";
+import { sessionTargetLabel } from "../src/work-target.ts";
 
 function tmpEnv(): { projectDir: string; homeDir: string; env: NodeJS.ProcessEnv; cwd: string } {
   const projectDir = mkdtempSync(join(tmpdir(), "kankaku-claude-statusline-project-"));
@@ -203,6 +205,90 @@ test("renderStatusline resolves cwd from workspace.current_dir when present, fal
     renderStatusline(input, deps(dirs.env, () => 5000));
     const cost = readCost(dirs.env, "s1");
     assert.notEqual(cost, undefined);
+  } finally {
+    cleanup(dirs);
+  }
+});
+
+test("renderStatusline appends the target label after the clock and cost", () => {
+  const dirs = tmpEnv();
+  try {
+    const seen: Array<{ cwd: string; sessionId: string }> = [];
+    const targetLabel: NonNullable<StatuslineDeps["targetLabel"]> = ({ cwd, sessionId }) => {
+      seen.push({ cwd, sessionId });
+      return "Acme · Web › Fix login";
+    };
+    const withCost = renderStatusline({ session_id: "s1", cwd: dirs.cwd, cost: { total_cost_usd: 1.01 } }, deps(dirs.env, () => 5000, { targetLabel }));
+    assert.equal(withCost, "kankaku idle · $1.01 | Acme · Web › Fix login");
+    assert.deepEqual(seen, [{ cwd: dirs.cwd, sessionId: "s1" }]);
+
+    const withoutCost = renderStatusline({ session_id: "s1", cwd: dirs.cwd }, deps(dirs.env, () => 5000, { targetLabel }));
+    assert.equal(withoutCost, "kankaku idle | Acme · Web › Fix login");
+  } finally {
+    cleanup(dirs);
+  }
+});
+
+test("renderStatusline keeps the clock and cost when there is no target or the label lookup throws", () => {
+  const dirs = tmpEnv();
+  try {
+    const input = { session_id: "s1", cwd: dirs.cwd, cost: { total_cost_usd: 1.01 } };
+    assert.equal(renderStatusline(input, deps(dirs.env, () => 5000, { targetLabel: () => undefined })), "kankaku idle · $1.01");
+    const throwing = (): string => { throw new Error("broken catalog"); };
+    assert.equal(renderStatusline(input, deps(dirs.env, () => 5000, { targetLabel: throwing })), "kankaku idle · $1.01");
+    assert.equal(readCost(dirs.env, "s1")?.totalUsd, 1.01);
+  } finally {
+    cleanup(dirs);
+  }
+});
+
+function writeCatalog(homeDir: string): void {
+  mkdirSync(join(homeDir, ".kankaku"), { recursive: true });
+  writeFileSync(join(homeDir, ".kankaku", "credentials.json"), JSON.stringify({ url: "https://hub.example.test", email: "a@b.c", password: "pw" }));
+  writeFileSync(join(homeDir, ".kankaku", "catalog.json"), JSON.stringify({
+    fetchedAt: 0,
+    url: "https://hub.example.test",
+    clients: [{ id: "c-acme", name: "Acme", code: "acme", active: true }],
+    projects: [
+      { id: "p-web", name: "Web", clientId: "c-acme", repoPaths: ["/repo"], active: true },
+      { id: "p-api", name: "API", clientId: "c-acme", repoPaths: [], active: true },
+    ],
+    tasks: [{ id: "t-api", title: "Ship endpoint", projectId: "p-api", status: "open" }],
+  }));
+}
+
+test("sessionTargetLabel: the session's pick and linked task, read-only", () => {
+  const dirs = tmpEnv();
+  try {
+    writeCatalog(dirs.homeDir);
+    const paths = resolvePaths({ env: dirs.env, cwd: dirs.cwd, sessionId: "s1" });
+    writeSessionTarget(paths.targetFile, { clientId: "c-acme", projectId: "p-api", hubTaskId: "t-api", hubTaskTitle: "Ship endpoint", lastList: { kind: "tasks", ids: [] } });
+    const before = readdirSync(paths.claudeDir);
+
+    assert.equal(sessionTargetLabel({ env: dirs.env, cwd: dirs.cwd, sessionId: "s1" }), "Acme · API › Ship endpoint");
+    assert.deepEqual(readdirSync(paths.claudeDir), before);
+    assert.equal(existsSync(join(dirs.projectDir, "config.json")), false);
+  } finally {
+    cleanup(dirs);
+  }
+});
+
+test("sessionTargetLabel: without a session pick it falls back to the folder's automatic target, and to nothing when none resolves", () => {
+  const dirs = tmpEnv();
+  try {
+    writeCatalog(dirs.homeDir);
+    assert.equal(sessionTargetLabel({ env: dirs.env, cwd: dirs.cwd, sessionId: "s1" }), "Acme · Web");
+    assert.equal(sessionTargetLabel({ env: dirs.env, cwd: "/elsewhere", sessionId: "s1" }), undefined);
+    assert.deepEqual(readdirSync(dirs.projectDir), []);
+  } finally {
+    cleanup(dirs);
+  }
+});
+
+test("sessionTargetLabel: no catalog cache means no label", () => {
+  const dirs = tmpEnv();
+  try {
+    assert.equal(sessionTargetLabel({ env: dirs.env, cwd: dirs.cwd, sessionId: "s1" }), undefined);
   } finally {
     cleanup(dirs);
   }
