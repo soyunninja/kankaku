@@ -1,6 +1,6 @@
 {
   "name": "kankaku",
-  "version": "1.5.1",
+  "version": "1.5.2",
   "description": "Terminal app that shows today's kankaku work across every project on disk",
   "keywords": [
     "pi-package",
@@ -38,9 +38,9 @@
   },
   "dependencies": {
     "ink": "^7.1.1",
-    "kankaku-claude": "^1.5.1",
+    "kankaku-claude": "^1.5.2",
     "kankaku-hub": "^0.5.1",
-    "kankaku-pi": "^1.5.1",
+    "kankaku-pi": "^1.5.2",
     "react": "^19.3.0"
   },
   "devDependencies": {

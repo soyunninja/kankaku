@@ -3,6 +3,10 @@
 All notable changes to kankaku-pi (formerly kankaku). The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
+## 1.5.2 — 2026-11-16
+
+No changes in this package; released in lockstep with kankaku-claude 1.5.2.
+
 ## 1.5.1 — 2026-11-16
 
 No changes in this package; released in lockstep with kankaku-claude 1.5.1.
