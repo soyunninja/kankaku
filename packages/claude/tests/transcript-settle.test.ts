@@ -364,3 +364,39 @@ test("waitForTranscript counts time already spent since the hook started: 400 ms
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("settleTranscripts with notBefore leaves out copied history in a file without a stored offset, and reads past it", () => {
+  const { dir, main, sub } = setup();
+  try {
+    const at = (ms: number) => ({ timestamp: new Date(ms).toISOString() });
+    // A forked session: the file appears after the submit, already holding the parent's history.
+    writeFileSync(main, assistant("parent-1", 1000, at(1_000)) + assistant("parent-2", 2000, at(2_000)) + assistant("m1", 5, at(6_000)));
+    writeFileSync(join(sub, "a.jsonl"), assistant("parent-sub", 300, at(1_500)) + assistant("s1", 7, at(6_500)));
+
+    const settled = settleTranscripts({ path: main, offsets: {} }, { notBefore: 5_000 });
+    assert.deepEqual(settled?.tokens, { input: 12, output: 2, cacheRead: 0, cacheWrite: 0 });
+    assert.equal(settled?.transcript.offsets[main]?.bytes, statSync(main).size);
+    assert.equal(settled?.transcript.offsets[join(sub, "a.jsonl")]?.bytes, statSync(join(sub, "a.jsonl")).size);
+
+    // The next settle reads only what was appended.
+    appendFileSync(main, assistant("m2", 3, at(7_000)));
+    assert.deepEqual(settleTranscripts(settled?.transcript, { notBefore: 5_000 })?.tokens, { input: 3, output: 1, cacheRead: 0, cacheWrite: 0 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("settleTranscripts with notBefore still counts everything after a stored offset, whatever its date", () => {
+  const { dir, main } = setup();
+  try {
+    const at = (ms: number) => ({ timestamp: new Date(ms).toISOString() });
+    writeFileSync(main, assistant("old", 1000, at(1_000)));
+    const offsets = { [main]: { bytes: statSync(main).size } };
+    appendFileSync(main, assistant("between-prompts", 40, at(3_000)) + assistant("m1", 5, at(6_000)));
+
+    const settled = settleTranscripts({ path: main, offsets }, { notBefore: 5_000 });
+    assert.deepEqual(settled?.tokens, { input: 45, output: 2, cacheRead: 0, cacheWrite: 0 });
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

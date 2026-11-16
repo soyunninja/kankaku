@@ -384,6 +384,10 @@ for the session. kankaku-claude reads it for three things, and nothing else:
   by its last line. When a read ends in the middle of a message, the stored
   position remembers the message id and what was counted for it, and the
   next read adds only the growth.
+  A forked session's transcript starts with a copy of its parent's history,
+  with the original dates: in a file that has no stored position yet, lines
+  dated before the session started are left out, and the line's `timestamp`
+  is the only extra field read for it.
 - **The version.** The `version` of the first line read becomes the record's
   `agentVersion`.
 - **For headless runs, the cost.** See "Headless runs" below.

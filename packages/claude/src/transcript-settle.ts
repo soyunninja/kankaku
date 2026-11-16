@@ -105,10 +105,16 @@ export interface SettledTranscripts {
  * `maxBytes` (default {@link MAX_SETTLE_BYTES}) are read across all files;
  * a file whose new content does not fit is skipped to its end without
  * counting and the whole result carries no tokens.
+ *
+ * `notBefore` (epoch ms, when the session started) applies only to a file
+ * WITHOUT a stored position: a forked session's transcript appears after the
+ * submit already holding the parent's history, with its original dates, and
+ * those lines are not this session's spend. After a stored position every
+ * line counts, whatever its date.
  */
 export function settleTranscripts(
   transcript: TranscriptState | undefined,
-  options: { maxBytes?: number } = {},
+  options: { maxBytes?: number; notBefore?: number } = {},
 ): SettledTranscripts | undefined {
   if (!transcript) return undefined;
   let remaining = options.maxBytes ?? MAX_SETTLE_BYTES;
@@ -124,7 +130,10 @@ export function settleTranscripts(
   const files = [transcript.path, ...listSubagentTranscripts(transcript.path)];
   for (const file of files) {
     const before = offsets[file] ?? { bytes: 0 };
-    const result = readTranscriptSince(file, before, { maxBytes: remaining });
+    const result = readTranscriptSince(file, before, {
+      maxBytes: remaining,
+      ...(!(file in offsets) && options.notBefore !== undefined ? { notBefore: options.notBefore } : {}),
+    });
     if (result.truncated) {
       truncated = true;
       remaining = 0;

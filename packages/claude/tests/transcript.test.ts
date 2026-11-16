@@ -439,3 +439,26 @@ test("readTranscriptHead reads the version and entry point from the first comple
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("parseTranscriptChunk with notBefore leaves out assistant lines dated earlier and counts later and undated ones", () => {
+  const at = (ms: number) => ({ timestamp: new Date(ms).toISOString() });
+  const text = lines(
+    assistant("history-1", usage(100, 200, 300, 400), at(1_000)),
+    assistant("history-2", usage(100, 200, 300, 400), at(4_999)),
+    assistant("edge", usage(1, 2, 3, 4), at(5_000)),
+    assistant("new", usage(10, 20, 30, 40), at(9_000)),
+    assistant("undated", usage(5, 5, 5, 5)),
+    assistant("bad-date", usage(1, 1, 1, 1), { timestamp: "not a date" }),
+  );
+  const parsed = parseTranscriptChunk(text, {}, { notBefore: 5_000 });
+  assert.deepEqual(parsed.usage, { input: 17, output: 28, cacheRead: 39, cacheWrite: 50 });
+  assert.equal(parsed.lastMessageId, "bad-date");
+
+  // Only history: nothing is counted and no message id is remembered.
+  const onlyHistory = parseTranscriptChunk(lines(assistant("history-1", usage(100, 200, 300, 400), at(1_000))), {}, { notBefore: 5_000 });
+  assert.deepEqual(onlyHistory.usage, ZERO);
+  assert.equal(onlyHistory.lastMessageId, undefined);
+
+  // Without the option every line counts, as before.
+  assert.deepEqual(parseTranscriptChunk(text, {}).usage, { input: 217, output: 428, cacheRead: 639, cacheWrite: 850 });
+});

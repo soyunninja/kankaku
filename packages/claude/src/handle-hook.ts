@@ -414,7 +414,7 @@ function trackTranscriptSafely(state: SessionState | undefined, path: string | u
 /** Reads what the transcript gained since the stored positions; any failure means "no tokens", as before this feature. */
 function settleSafely(state: SessionState, deps: HandleHookDeps): SettledTranscripts | undefined {
   try {
-    return settleTranscripts(state.transcript);
+    return settleTranscripts(state.transcript, { notBefore: state.startedAt });
   } catch (error) {
     deps.stderr(`kankaku: transcript: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;

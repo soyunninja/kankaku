@@ -242,6 +242,11 @@ extension has one. Instead:
   line; a position stores `lastMessageId` and `lastMessageUsage` so a message
   split across two reads adds only its growth (a legacy position without the
   usage skips that message's head lines instead).
+  A forked session's transcript appears after the submit already holding the
+  parent's history with its original dates, so no position was stored for
+  it: every settle passes `notBefore: state.startedAt`, and in a file
+  WITHOUT a stored position an assistant line dated earlier is left out.
+  After a stored position every line counts, whatever its date.
   Handlers that rebuild the state must carry `transcript` and `pending`
   over (`carriedOver`). Tests use synthetic fixtures that copy only the
   shapes; never put real transcript content in a fixture, test or doc.

@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- **A forked session no longer counts its parent's tokens.** When the
+  desktop app or an IDE forks a session, Claude Code creates the new
+  transcript after the prompt was submitted, already holding the parent's
+  history. No read position existed for it, so the first settle counted that
+  history as the prompt's own tokens. In a transcript file without a stored
+  position, assistant lines dated before the session started are now left
+  out. Records already written are not changed.
+
 ## 1.5.0 — 2026-11-16
 
 ### Added

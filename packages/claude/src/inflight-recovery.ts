@@ -121,7 +121,7 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
 /** A dead session's transcript is best-effort: any failure means a record without tokens, as before. */
 function settleSafely(state: SessionState): ReturnType<typeof settleTranscripts> {
   try {
-    return settleTranscripts(state.transcript);
+    return settleTranscripts(state.transcript, { notBefore: state.startedAt });
   } catch {
     return undefined;
   }

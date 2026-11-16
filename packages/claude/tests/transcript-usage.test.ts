@@ -265,3 +265,60 @@ test("recovery of a dead session with an open prompt stamps the tokens and the v
     cleanup(env);
   }
 });
+
+test("a forked session whose transcript appears after the submit with the parent's history counts only its own tokens", async () => {
+  const env = setup();
+  try {
+    const at = (ms: number) => ({ timestamp: new Date(ms).toISOString() });
+    env.set(10_000);
+    await handleHook(input(env, { hook_event_name: "SessionStart", source: "startup" }), env.deps);
+    env.set(11_000);
+    await handleHook(input(env, { hook_event_name: "UserPromptSubmit", prompt: "go" }), env.deps);
+    assert.deepEqual(stateOf(env)?.transcript?.offsets, {});
+
+    writeFileSync(
+      env.transcript,
+      assistant("parent-1", 1000, 1000, { ...at(2_000), version: "2.5.0", entrypoint: "sdk-ts" }) +
+        assistant("parent-2", 2000, 2000, at(3_000)) +
+        assistant("m1", 3, 4, at(12_000)),
+    );
+    env.set(13_000);
+    await handleHook(input(env, { hook_event_name: "Stop", stop_hook_active: false }), env.deps);
+
+    const [record] = worklog(env);
+    assert.equal(isWorkRecord(record), true);
+    assert.deepEqual(record?.usage, { input: 3, output: 4, cacheRead: 30, cacheWrite: 40, cost: 0 });
+    assert.equal(record?.agentVersion, "2.5.0");
+    assert.equal(stateOf(env)?.transcript?.offsets[env.transcript]?.bytes, statSync(env.transcript).size);
+  } finally {
+    cleanup(env);
+  }
+});
+
+test("recovery of a dead forked session leaves the parent's history out of the interrupted record", () => {
+  const env = setup();
+  try {
+    const at = (ms: number) => ({ timestamp: new Date(ms).toISOString() });
+    const claudeDir = join(env.kankakuDir, "claude");
+    writeFileSync(env.transcript, assistant("parent-1", 500, 500, at(2_000)) + assistant("m1", 9, 1, { ...at(12_000), version: "2.5.0", entrypoint: "sdk-ts" }));
+    writeState(join(claudeDir, "dead.state.json"), {
+      pid: 9999,
+      parentPid: 1,
+      cwd: "/repo",
+      startedAt: 10_000,
+      promptOpen: { id: "p", startedAt: 11_000, costAtStart: undefined },
+      permissionOpen: null,
+      transcript: { path: env.transcript, offsets: {} },
+    });
+    appendEvent(join(claudeDir, "dead.events.jsonl"), { ts: 11_000, event: "UserPromptSubmit", prompt: "cut off" });
+
+    const records = recoverStaleSessions({ claudeDir, currentSessionId: "other", isAlive: () => false, now: 50_000, env: env.deps.env });
+    assert.equal(records.length, 1);
+    assert.deepEqual(
+      { input: records[0]?.usage.input, output: records[0]?.usage.output },
+      { input: 9, output: 1 },
+    );
+  } finally {
+    cleanup(env);
+  }
+});

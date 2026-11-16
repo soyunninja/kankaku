@@ -100,10 +100,15 @@ function parseUsage(raw: Record<string, unknown>): TokenUsage {
  * - A non-finite, negative or non-numeric usage field counts as 0.
  * - `version` and `entrypoint` come from the first line that carries each.
  * - `costState` is the last valid `cost-state` line.
+ * - With `notBefore` (epoch ms), an `assistant` line whose `timestamp` is
+ *   earlier is left out entirely: it is history copied from another session
+ *   (a fork keeps the parent's lines with their original dates). A line
+ *   without a readable `timestamp` is counted as usual.
  */
 export function parseTranscriptChunk(
   text: string,
   previous: { lastMessageId?: string; lastMessageUsage?: TokenUsage },
+  options: { notBefore?: number } = {},
 ): ParsedChunk {
   const finals = new Map<string, TokenUsage>();
   let lastMessageId = previous.lastMessageId;
@@ -131,6 +136,7 @@ export function parseTranscriptChunk(
     if (entrypoint === undefined && typeof parsed.entrypoint === "string" && parsed.entrypoint !== "") entrypoint = parsed.entrypoint;
 
     if (parsed.type === "assistant") {
+      if (options.notBefore !== undefined && typeof parsed.timestamp === "string" && Date.parse(parsed.timestamp) < options.notBefore) continue;
       const message = parsed.message;
       if (isObject(message) && typeof message.model === "string" && message.model !== "") model = message.model;
       if (!isObject(message) || typeof message.id !== "string" || message.id === "") continue;
@@ -200,11 +206,12 @@ export function parseTranscriptChunk(
  *   not read at all: the position jumps to the end of the file, nothing is
  *   counted and `truncated` is set, so a hook never times out on a huge file.
  * - A missing or unreadable file returns zero usage and the same position.
+ * - `notBefore` is passed to {@link parseTranscriptChunk}.
  */
 export function readTranscriptSince(
   file: string,
   position: TranscriptPosition,
-  options: { maxBytes?: number } = {},
+  options: { maxBytes?: number; notBefore?: number } = {},
 ): TranscriptRead {
   const unchanged: TranscriptRead = { usage: zeroUsage(), position, truncated: false };
   const maxBytes = options.maxBytes ?? MAX_SETTLE_BYTES;
@@ -247,7 +254,9 @@ export function readTranscriptSince(
       return { usage: zeroUsage(), position: { bytes: start, ...carried }, truncated: false };
     }
     const consumed = lastNewline + 1;
-    const parsed = parseTranscriptChunk(buffer.subarray(0, consumed).toString("utf8"), carried);
+    const parsed = parseTranscriptChunk(buffer.subarray(0, consumed).toString("utf8"), carried, {
+      ...(options.notBefore !== undefined ? { notBefore: options.notBefore } : {}),
+    });
     return {
       ...parsed,
       position: {
