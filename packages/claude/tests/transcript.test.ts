@@ -462,3 +462,61 @@ test("parseTranscriptChunk with notBefore leaves out assistant lines dated earli
   // Without the option every line counts, as before.
   assert.deepEqual(parseTranscriptChunk(text, {}).usage, { input: 217, output: 428, cacheRead: 639, cacheWrite: 850 });
 });
+
+// Synthetic: only the shape of a usage block with a cache-write split.
+function priced(id: string, model: string, u: { in?: number; out?: number; cr?: number; w5?: number; w1h?: number; split?: boolean }, extra: Record<string, unknown> = {}): string {
+  const write = (u.w5 ?? 0) + (u.w1h ?? 0);
+  const usageBlock: Record<string, unknown> = {
+    input_tokens: u.in ?? 0,
+    output_tokens: u.out ?? 0,
+    cache_read_input_tokens: u.cr ?? 0,
+    cache_creation_input_tokens: write,
+  };
+  if (u.split !== false) usageBlock.cache_creation = { ephemeral_5m_input_tokens: u.w5 ?? 0, ephemeral_1h_input_tokens: u.w1h ?? 0 };
+  return JSON.stringify({ type: "assistant", ...extra, message: { id, model, usage: usageBlock } });
+}
+
+test("parseTranscriptChunk sums each counted message by model and price category, splitting cache writes into 5m and 1h", () => {
+  const text = lines(
+    priced("a", "model-a", { in: 1, out: 2, cr: 3, w5: 4, w1h: 5 }),
+    priced("a", "model-a", { in: 1, out: 20, cr: 3, w5: 4, w1h: 5 }),
+    priced("b", "model-b", { in: 10, out: 1, w1h: 7 }),
+    priced("c", "model-a", { in: 2, out: 3, w5: 6, w1h: 0, split: false }),
+  );
+  const parsed = parseTranscriptChunk(text, {});
+  assert.deepEqual(parsed.byModel, {
+    "model-a": { input: 3, output: 23, cacheRead: 3, cacheWrite5m: 4, cacheWrite1h: 5, cacheWriteUnsplit: 6 },
+    "model-b": { input: 10, output: 1, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 7, cacheWriteUnsplit: 0 },
+  });
+  // The totals are unchanged by the breakdown.
+  assert.deepEqual(parsed.usage, { input: 13, output: 24, cacheRead: 3, cacheWrite: 22 });
+});
+
+test("parseTranscriptChunk adds only a straddling message's growth to its model, and leaves lines dated before notBefore out", () => {
+  const previous = { lastMessageId: "a", lastMessageUsage: { input: 1, output: 2, cacheRead: 3, cacheWrite: 9 } };
+  const grown = parseTranscriptChunk(lines(priced("a", "model-a", { in: 1, out: 12, cr: 3, w5: 4, w1h: 5 })), previous);
+  assert.deepEqual(grown.byModel, { "model-a": { input: 0, output: 10, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheWriteUnsplit: 0 } });
+
+  const at = (ms: number) => ({ timestamp: new Date(ms).toISOString() });
+  const cut = parseTranscriptChunk(lines(priced("old", "model-a", { out: 100 }, at(1_000)), priced("new", "model-a", { out: 5 }, at(9_000))), {}, { notBefore: 5_000 });
+  assert.deepEqual(cut.byModel, { "model-a": { input: 0, output: 5, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheWriteUnsplit: 0 } });
+
+  // A chunk with nothing counted has no breakdown.
+  assert.equal(parseTranscriptChunk("", {}).byModel, undefined);
+});
+
+test("parseTranscriptChunk reports the last cost-state's per-model usage next to the cost-state", () => {
+  const costLine = JSON.stringify({
+    type: "cost-state",
+    totalCostUSD: 1.5,
+    hasUnknownModelCost: false,
+    modelUsage: {
+      "model-a": { inputTokens: 1, outputTokens: 2, cacheReadInputTokens: 3, cacheCreationInputTokens: 4, costUSD: 1.25 },
+      broken: { inputTokens: "x", costUSD: 0.25 },
+    },
+  });
+  const parsed = parseTranscriptChunk(lines(costLine), {});
+  assert.deepEqual(parsed.costState, { totalUsd: 1.5, hasUnknownModelCost: false });
+  assert.deepEqual(parsed.costModelUsage, { "model-a": { input: 1, output: 2, cacheRead: 3, cacheWrite: 4, costUsd: 1.25 } });
+  assert.equal(parseTranscriptChunk(lines(JSON.stringify({ type: "cost-state", totalCostUSD: 1 })), {}).costModelUsage, undefined);
+});

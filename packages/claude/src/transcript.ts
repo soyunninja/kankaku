@@ -43,8 +43,37 @@ export interface TranscriptCostState {
   hasUnknownModelCost: boolean;
 }
 
+/**
+ * Tokens of one model split the way they are priced. Cache writes come as
+ * 5-minute and 1-hour writes (`usage.cache_creation`), priced differently;
+ * a write without that split is `cacheWriteUnsplit` (it can never be priced).
+ */
+export interface CategoryUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite5m: number;
+  cacheWrite1h: number;
+  cacheWriteUnsplit: number;
+}
+
+export const PRICE_CATEGORIES = ["input", "output", "cacheRead", "cacheWrite5m", "cacheWrite1h", "cacheWriteUnsplit"] as const;
+
+export function zeroCategories(): CategoryUsage {
+  return { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheWriteUnsplit: 0 };
+}
+
+/** One model's counts and cost in a `cost-state` line's `modelUsage` (cache writes not split). */
+export interface CostStateModelUsage extends TokenUsage {
+  costUsd: number;
+}
+
 export interface ParsedChunk {
   usage: TokenUsage;
+  /** {@link usage} split per `message.model` and price category; absent when nothing was counted. */
+  byModel?: Record<string, CategoryUsage>;
+  /** `modelUsage` of the same `cost-state` line as {@link costState}, valid entries only; absent when it has none. */
+  costModelUsage?: Record<string, CostStateModelUsage>;
   lastMessageId?: string;
   /** Counted so far for {@link lastMessageId}; carry it into the next read. Absent for a legacy position that has not advanced. */
   lastMessageUsage?: TokenUsage;
@@ -87,6 +116,41 @@ function parseUsage(raw: Record<string, unknown>): TokenUsage {
 }
 
 /**
+ * Adds one message's counted tokens to its model. The cache write is split
+ * by the message's own 5m/1h proportion (a growth delta keeps it); without
+ * a split it is `cacheWriteUnsplit`. Nothing is added for a zero delta.
+ */
+function addByModel(byModel: Record<string, CategoryUsage>, info: { model: string; split?: { w5: number; w1h: number } } | undefined, added: TokenUsage): void {
+  if (added.input + added.output + added.cacheRead + added.cacheWrite === 0) return;
+  const target = (byModel[info?.model ?? "unknown"] ??= zeroCategories());
+  target.input += added.input;
+  target.output += added.output;
+  target.cacheRead += added.cacheRead;
+  const split = info?.split;
+  if (added.cacheWrite > 0 && split && split.w5 + split.w1h > 0) {
+    const w5 = Math.round((added.cacheWrite * split.w5) / (split.w5 + split.w1h));
+    target.cacheWrite5m += w5;
+    target.cacheWrite1h += added.cacheWrite - w5;
+  } else {
+    target.cacheWriteUnsplit += added.cacheWrite;
+  }
+}
+
+/** The valid entries of a `cost-state` `modelUsage`: every count and `costUSD` a finite, non-negative number. */
+function parseModelUsage(raw: unknown): Record<string, CostStateModelUsage> | undefined {
+  if (!isObject(raw)) return undefined;
+  const result: Record<string, CostStateModelUsage> = {};
+  const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+  for (const [model, entry] of Object.entries(raw)) {
+    if (!isObject(entry)) continue;
+    const { inputTokens, outputTokens, cacheReadInputTokens, cacheCreationInputTokens, costUSD } = entry;
+    if (!valid(inputTokens) || !valid(outputTokens) || !valid(cacheReadInputTokens) || !valid(cacheCreationInputTokens) || !valid(costUSD)) continue;
+    result[model] = { input: inputTokens, output: outputTokens, cacheRead: cacheReadInputTokens, cacheWrite: cacheCreationInputTokens, costUsd: costUSD };
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+/**
  * Pure: parses the text of complete transcript lines.
  *
  * - Claude Code writes one message over several adjacent lines whose usage
@@ -111,6 +175,8 @@ export function parseTranscriptChunk(
   options: { notBefore?: number } = {},
 ): ParsedChunk {
   const finals = new Map<string, TokenUsage>();
+  const meta = new Map<string, { model: string; split?: { w5: number; w1h: number } }>();
+  let costModelUsage: Record<string, CostStateModelUsage> | undefined;
   let lastMessageId = previous.lastMessageId;
   let version: string | undefined;
   let entrypoint: string | undefined;
@@ -141,16 +207,24 @@ export function parseTranscriptChunk(
       if (isObject(message) && typeof message.model === "string" && message.model !== "") model = message.model;
       if (!isObject(message) || typeof message.id !== "string" || message.id === "") continue;
       lastMessageId = message.id;
-      if (isObject(message.usage)) finals.set(message.id, parseUsage(message.usage));
-      else if (!finals.has(message.id)) finals.set(message.id, zeroUsage());
+      if (isObject(message.usage)) {
+        finals.set(message.id, parseUsage(message.usage));
+        const creation = message.usage.cache_creation;
+        meta.set(message.id, {
+          model: typeof message.model === "string" && message.model !== "" ? message.model : "unknown",
+          ...(isObject(creation) ? { split: { w5: counted(creation.ephemeral_5m_input_tokens), w1h: counted(creation.ephemeral_1h_input_tokens) } } : {}),
+        });
+      } else if (!finals.has(message.id)) finals.set(message.id, zeroUsage());
     } else if (parsed.type === "cost-state") {
       const total = parsed.totalCostUSD;
       if (typeof total !== "number" || !Number.isFinite(total) || total < 0) continue;
       costState = { totalUsd: total, hasUnknownModelCost: parsed.hasUnknownModelCost === true };
+      costModelUsage = parseModelUsage(parsed.modelUsage);
     }
   }
 
   const usage = zeroUsage();
+  const byModel: Record<string, CategoryUsage> = {};
   for (const [id, final] of finals) {
     let added = final;
     if (id === previous.lastMessageId) {
@@ -167,6 +241,7 @@ export function parseTranscriptChunk(
     usage.output += added.output;
     usage.cacheRead += added.cacheRead;
     usage.cacheWrite += added.cacheWrite;
+    addByModel(byModel, meta.get(id), added);
   }
 
   let lastMessageUsage: TokenUsage | undefined = previous.lastMessageUsage;
@@ -186,6 +261,8 @@ export function parseTranscriptChunk(
 
   return {
     usage,
+    ...(Object.keys(byModel).length > 0 ? { byModel } : {}),
+    ...(costModelUsage !== undefined ? { costModelUsage } : {}),
     ...(lastMessageId !== undefined ? { lastMessageId } : {}),
     ...(lastMessageUsage !== undefined ? { lastMessageUsage } : {}),
     ...(version !== undefined ? { version } : {}),
