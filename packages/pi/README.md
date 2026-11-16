@@ -985,7 +985,10 @@ The `/kankaku` panel's Target screen's Task row is the interactive
 equivalent of `/kankaku task pick`/`clear`: it lists the same open/doing
 tasks, applies the link through the same `SessionTarget.setTask`, and
 stays just as session-only — picking a task there is never persisted to
-`config.json` either.
+`config.json` either. The same submenu offers **＋ create task ＋**, also
+when the project has no open tasks: it asks for a title and creates and
+links the task exactly like `/kankaku task new <title>` (use that command
+when the task needs an external reference).
 
 ### Caching and offline behaviour
 

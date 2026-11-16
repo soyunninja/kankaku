@@ -57,7 +57,11 @@ class FakeSessionTarget implements SessionTarget {
     setTask: [] as string[],
     clearTask: 0,
     rememberTarget: 0,
+    newTask: [] as string[],
   };
+  /** The task id `newTask` links, mirroring the real adapter's `setTask` after a successful creation; `undefined` simulates a failed creation. */
+  newTaskLinks: string | undefined = "t-docs";
+  newTaskError: Error | undefined;
   rememberResult = true;
   source: WorkTargetSourceName | undefined = "session";
   private readonly snapshot: CatalogSnapshot;
@@ -90,7 +94,13 @@ class FakeSessionTarget implements SessionTarget {
     this.sessionOverride = undefined;
   }
   async pickTask(): Promise<void> {}
-  async newTask(): Promise<void> {}
+  async newTask(_pi: ExtensionAPI, _ctx: ExtensionContext, title: string): Promise<void> {
+    this.calls.newTask.push(title);
+    if (this.newTaskError) throw this.newTaskError;
+    if (this.newTaskLinks !== undefined && this.sessionOverride && typeof this.sessionOverride === "object") {
+      this.sessionOverride = { ...this.sessionOverride, hubTaskId: this.newTaskLinks };
+    }
+  }
   clearTask(_pi: ExtensionAPI): void {
     this.calls.clearTask++;
     if (this.sessionOverride && typeof this.sessionOverride === "object") {
@@ -325,8 +335,9 @@ test("'— none —' in the task submenu calls clearTask", () => {
 
   component.handleInput(DOWN); // client -> project
   component.handleInput(DOWN); // project -> task
-  component.handleInput(ENTER); // open task submenu: Fix the bug, — none —
-  component.handleInput(DOWN); // Fix the bug -> — none —
+  component.handleInput(ENTER); // open task submenu: Fix the bug, ＋ create task ＋, — none —
+  component.handleInput(DOWN); // Fix the bug -> ＋ create task ＋
+  component.handleInput(DOWN); // ＋ create task ＋ -> — none —
   component.handleInput(ENTER);
 
   assert.equal(sessionTarget.calls.clearTask, 1);
@@ -354,6 +365,151 @@ test("the task submenu shows 'no open tasks' when the project has none", () => {
   component.handleInput(ENTER);
 
   assert.match(component.render(80).join("\n"), /No open tasks for this project in the hub/);
+});
+
+/** Lets the screen's pending `SessionTarget.newTask` promise settle. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+function taskScreen(sessionTarget: FakeSessionTarget, catalog: Catalog, host: FakeHost, refreshCalls: unknown[] = []): TestComponent {
+  const factory = createTargetScreen({
+    pi: makeFakePi(),
+    ctx: makeCtx(),
+    role: "orchestrator",
+    sessionTarget,
+    sessionClient: new FakeSessionClient(),
+    catalog,
+    refreshIdleStatus: () => refreshCalls.push(undefined),
+  });
+  const component = factory(host) as TestComponent;
+  component.handleInput(DOWN); // client -> project
+  component.handleInput(DOWN); // project -> task
+  component.handleInput(ENTER); // open the task submenu
+  return component;
+}
+
+test("'＋ create task ＋' asks for a title, creates the task through SessionTarget.newTask and shows it linked", async () => {
+  const sessionTarget = new FakeSessionTarget(SNAPSHOT, { clientId: "c-acme", projectId: "p-portal" });
+  const host = fakeHost();
+  const refreshCalls: unknown[] = [];
+  const component = taskScreen(sessionTarget, new FakeCatalog(), host, refreshCalls);
+
+  assert.match(component.render(80).join("\n"), /＋ create task ＋/);
+  component.handleInput(DOWN); // Fix the bug -> Write docs
+  component.handleInput(DOWN); // Write docs -> ＋ create task ＋
+  component.handleInput(ENTER); // open the title field
+  assert.equal(host.bodyWantsText, true);
+  assert.match(component.render(80).join("\n"), /New task title/);
+
+  for (const ch of "  Ship it  ") component.handleInput(ch);
+  component.handleInput(ENTER);
+  await settle();
+
+  assert.deepEqual(sessionTarget.calls.newTask, ["Ship it"]);
+  assert.equal(host.bodyWantsText, false);
+  assert.equal(host.bodyCapturesEscape, false);
+  assert.equal(refreshCalls.length, 1);
+  const rendered = component.render(80).join("\n");
+  assert.match(rendered, /Write docs/); // the task the fake linked
+  assert.doesNotMatch(rendered, /New task title/);
+});
+
+test("a project without open tasks still offers '＋ create task ＋'", async () => {
+  const sessionTarget = new FakeSessionTarget(SNAPSHOT, { clientId: "c-acme", projectId: "p-portal" });
+  const host = fakeHost();
+  const component = taskScreen(sessionTarget, new FakeCatalog({ ...SNAPSHOT, tasks: [] }), host);
+
+  const rendered = component.render(80).join("\n");
+  assert.match(rendered, /No open tasks for this project in the hub/);
+  assert.match(rendered, /＋ create task ＋/);
+
+  component.handleInput(ENTER); // ＋ create task ＋ is the first option
+  for (const ch of "First task") component.handleInput(ch);
+  component.handleInput(ENTER);
+  await settle();
+
+  assert.deepEqual(sessionTarget.calls.newTask, ["First task"]);
+});
+
+test("create task: an empty title shows an inline error and never calls newTask", async () => {
+  const sessionTarget = new FakeSessionTarget(SNAPSHOT, { clientId: "c-acme", projectId: "p-portal" });
+  const host = fakeHost();
+  const component = taskScreen(sessionTarget, new FakeCatalog({ ...SNAPSHOT, tasks: [] }), host);
+
+  component.handleInput(ENTER); // open the title field
+  for (const ch of "   ") component.handleInput(ch);
+  component.handleInput(ENTER);
+  await settle();
+
+  assert.deepEqual(sessionTarget.calls.newTask, []);
+  assert.match(component.render(80).join("\n"), /error: the title is required/);
+  assert.equal(host.bodyWantsText, true);
+});
+
+test("create task: Escape in the title field returns to the task list without creating anything", async () => {
+  const sessionTarget = new FakeSessionTarget(SNAPSHOT, { clientId: "c-acme", projectId: "p-portal" });
+  const host = fakeHost();
+  const component = taskScreen(sessionTarget, new FakeCatalog({ ...SNAPSHOT, tasks: [] }), host);
+
+  component.handleInput(ENTER); // open the title field
+  for (const ch of "Draft") component.handleInput(ch);
+  component.handleInput(ESCAPE);
+  await settle();
+
+  assert.deepEqual(sessionTarget.calls.newTask, []);
+  assert.equal(host.bodyWantsText, false);
+  assert.equal(host.bodyCapturesEscape, true); // the task submenu is still open
+  const rendered = component.render(80).join("\n");
+  assert.match(rendered, /＋ create task ＋/);
+  assert.doesNotMatch(rendered, /New task title/);
+});
+
+test("create task: when the creation links nothing, the Task row stays unlinked and the panel stays usable", async () => {
+  const sessionTarget = new FakeSessionTarget(SNAPSHOT, { clientId: "c-acme", projectId: "p-portal" });
+  sessionTarget.newTaskLinks = undefined; // SessionTarget.newTask reports its own failure through ctx.ui.notify
+  const host = fakeHost();
+  const component = taskScreen(sessionTarget, new FakeCatalog({ ...SNAPSHOT, tasks: [] }), host);
+
+  component.handleInput(ENTER);
+  for (const ch of "Will fail") component.handleInput(ch);
+  component.handleInput(ENTER);
+  await settle();
+
+  assert.deepEqual(sessionTarget.calls.newTask, ["Will fail"]);
+  assert.deepEqual(sessionTarget.calls.setTask, []);
+  assert.equal(host.bodyWantsText, false);
+  assert.equal(host.bodyCapturesEscape, false);
+  assert.doesNotMatch(component.render(80).join("\n"), /New task title/);
+});
+
+test("create task: an error thrown by newTask is notified and the submenu closes", async () => {
+  const sessionTarget = new FakeSessionTarget(SNAPSHOT, { clientId: "c-acme", projectId: "p-portal" });
+  sessionTarget.newTaskError = new Error("task creation is not configured");
+  const host = fakeHost();
+  const notified: Array<{ message: string; level: string | undefined }> = [];
+  const ctx = { hasUI: true, cwd: "/nowhere", ui: { notify: (message: string, level?: string) => notified.push({ message, level }) } } as unknown as ExtensionContext;
+  const factory = createTargetScreen({
+    pi: makeFakePi(),
+    ctx,
+    role: "orchestrator",
+    sessionTarget,
+    sessionClient: new FakeSessionClient(),
+    catalog: new FakeCatalog({ ...SNAPSHOT, tasks: [] }),
+    refreshIdleStatus: () => {},
+  });
+  const component = factory(host) as TestComponent;
+  component.handleInput(DOWN);
+  component.handleInput(DOWN);
+  component.handleInput(ENTER); // open the task submenu
+  component.handleInput(ENTER); // ＋ create task ＋
+  for (const ch of "Boom") component.handleInput(ch);
+  component.handleInput(ENTER);
+  await settle();
+
+  assert.deepEqual(notified, [{ message: "kankaku: task creation is not configured", level: "error" }]);
+  assert.equal(host.bodyCapturesEscape, false);
+  assert.doesNotMatch(component.render(80).join("\n"), /Creating task/);
 });
 
 test("legacy label: Enter with a valid value calls sessionClient.set and closes", () => {

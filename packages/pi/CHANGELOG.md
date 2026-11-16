@@ -3,10 +3,13 @@
 All notable changes to kankaku-pi (formerly kankaku). The format follows Keep a Changelog; versions
 follow semver. Dates are the day the version was cut.
 
-## Unreleased
+## 1.5.0 — 2026-11-16
 
 ### Added
 
+- The `/kankaku` panel's Target screen offers **＋ create task ＋** in its
+  Task submenu, also for a project without open tasks: it asks for a title
+  and creates and links the task like `/kankaku task new <title>`.
 - `/kankaku task new <title> [--ref <externalRef>]` creates and session-links
   an open task for the effective project, matching Claude's command syntax.
   Visual picker creation remains available.

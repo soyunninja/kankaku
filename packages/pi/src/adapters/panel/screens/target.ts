@@ -35,6 +35,10 @@ const SUBAGENT_NOTE = "Subagent session: the billing target is inherited from th
 const USE_DEFAULTS_VALUE = "__kankaku_use_defaults__";
 const NO_PROJECT_VALUE = "__kankaku_no_project__";
 const NO_TASK_VALUE = "__kankaku_no_task__";
+const CREATE_TASK_VALUE = "__kankaku_create_task__";
+/** Same wording as the `/kankaku target pick` picker's own option (`adapters/target-picker.ts`). */
+const CREATE_TASK_LABEL = "＋ create task ＋";
+const NO_OPEN_TASKS_NOTE = "No open tasks for this project in the hub";
 const MAX_VISIBLE = 10;
 
 /** `WorkTargetSourceName` ("session" | "project" | "repoPaths"), formatted for the read-only `source` row ("session" | "config" | "repoPaths"). */
@@ -161,6 +165,103 @@ class LegacyLabelComponent implements Component {
   handleInput(data: string): void {
     this.invalidLabel = undefined;
     this.input.handleInput(data);
+  }
+}
+
+/**
+ * The task submenu: the project's open tasks, `＋ create task ＋` and
+ * `— none —`. Choosing `＋ create task ＋` swaps the list for a title
+ * `Input` in place; Escape there returns to the list, and a submitted
+ * title is handed to `onCreate`. Like the legacy-label field, the title
+ * field needs `PanelHost.setBodyWantsText` so `q` types instead of closing
+ * the panel; it is cleared on every path out of the field.
+ */
+class TaskSubmenuComponent implements Component {
+  private readonly theme: SettingsListTheme;
+  private readonly host: PanelHost;
+  private readonly list: SelectList;
+  private readonly showEmptyNote: boolean;
+  private readonly onCreate: (title: string) => Promise<void>;
+  private input: Input | undefined;
+  private titleError: string | undefined;
+  private creating = false;
+
+  constructor(
+    theme: SettingsListTheme,
+    host: PanelHost,
+    options: Array<{ label: string; task: HubTask }>,
+    handlers: { onPick: (taskId: string) => void; onClear: () => void; onCreate: (title: string) => Promise<void>; onCancel: () => void },
+  ) {
+    this.theme = theme;
+    this.host = host;
+    this.showEmptyNote = options.length === 0;
+    this.onCreate = handlers.onCreate;
+    const items: SelectItem[] = [
+      ...options.map((option) => ({ value: option.task.id, label: option.label })),
+      { value: CREATE_TASK_VALUE, label: CREATE_TASK_LABEL },
+      { value: NO_TASK_VALUE, label: "— none —" },
+    ];
+    this.list = new SelectList(items, MAX_VISIBLE, buildSelectListTheme(host.theme));
+    this.list.onSelect = (item) => {
+      if (item.value === CREATE_TASK_VALUE) this.openTitleField();
+      else if (item.value === NO_TASK_VALUE) handlers.onClear();
+      else handlers.onPick(item.value);
+    };
+    this.list.onCancel = () => handlers.onCancel();
+  }
+
+  private openTitleField(): void {
+    const input = new Input();
+    input.onSubmit = (value) => this.submitTitle(value);
+    input.onEscape = () => this.closeTitleField();
+    this.input = input;
+    this.titleError = undefined;
+    this.host.setBodyWantsText(true);
+    this.host.requestRender();
+  }
+
+  private closeTitleField(): void {
+    this.input = undefined;
+    this.titleError = undefined;
+    this.host.setBodyWantsText(false);
+    this.host.requestRender();
+  }
+
+  private submitTitle(rawValue: string): void {
+    const title = rawValue.trim();
+    if (title.length === 0) {
+      this.titleError = "the title is required";
+      return;
+    }
+    this.creating = true;
+    this.host.setBodyWantsText(false);
+    this.host.requestRender();
+    void this.onCreate(title);
+  }
+
+  invalidate(): void {
+    this.list.invalidate();
+    this.input?.invalidate();
+  }
+
+  render(width: number): string[] {
+    if (this.creating) return [this.theme.hint("Creating task…")];
+    if (this.input) {
+      const lines = [this.theme.hint("New task title (Enter to create, Esc to go back)"), ...this.input.render(width)];
+      return this.titleError === undefined ? lines : [...lines, this.theme.hint(`error: ${this.titleError}`)];
+    }
+    const lines = this.list.render(width);
+    return this.showEmptyNote ? [this.theme.hint(NO_OPEN_TASKS_NOTE), ...lines] : lines;
+  }
+
+  handleInput(data: string): void {
+    if (this.creating) return;
+    if (this.input) {
+      this.titleError = undefined;
+      this.input.handleInput(data);
+      return;
+    }
+    this.list.handleInput(data);
   }
 }
 
@@ -306,24 +407,34 @@ class TargetScreenComponent implements Component {
     }
 
     const tasks = (this.deps.catalog?.read()?.tasks ?? []).filter((task) => task.status !== "done" && task.projectId === target.projectId);
-    if (tasks.length === 0) {
-      return new NoteComponent(this.settingsTheme, "No open tasks for this project in the hub", done);
-    }
-
-    const options = labelTasks(tasks);
-    const items: SelectItem[] = [...options.map((option) => ({ value: option.task.id, label: option.label })), { value: NO_TASK_VALUE, label: "— none —" }];
-    const list = new SelectList(items, MAX_VISIBLE, buildSelectListTheme(this.host.theme));
-    list.onSelect = (item) => {
-      if (item.value === NO_TASK_VALUE) {
-        this.deps.sessionTarget?.clearTask(this.deps.pi);
-      } else {
-        this.deps.sessionTarget?.setTask(this.deps.pi, item.value);
-      }
+    const finish = (): void => {
       done();
       this.applyChange("task");
     };
-    list.onCancel = () => done();
-    return list;
+    return new TaskSubmenuComponent(this.settingsTheme, this.host, labelTasks(tasks), {
+      onPick: (taskId) => {
+        this.deps.sessionTarget?.setTask(this.deps.pi, taskId);
+        finish();
+      },
+      onClear: () => {
+        this.deps.sessionTarget?.clearTask(this.deps.pi);
+        finish();
+      },
+      // `SessionTarget.newTask` creates, caches and links the task and
+      // reports the outcome (success or failure) through `ctx.ui.notify`,
+      // exactly as `/kankaku task new <title>` does; the row is rebuilt
+      // from the resulting state either way.
+      onCreate: async (title) => {
+        try {
+          await this.deps.sessionTarget?.newTask(this.deps.pi, this.deps.ctx, title);
+        } catch (error) {
+          // `newTask` reports hub failures itself; only a missing task creator reaches here.
+          if (this.deps.ctx.hasUI) this.deps.ctx.ui.notify(`kankaku: ${error instanceof Error ? error.message : String(error)}`, "error");
+        }
+        finish();
+      },
+      onCancel: () => done(),
+    });
   }
 
   private buildRememberItem(row: PanelRow): SettingItem {
