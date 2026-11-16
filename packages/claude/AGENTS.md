@@ -130,7 +130,12 @@ extension has one. Instead:
 - `src/hook.ts` — the actual hook entry point: reads stdin, calls
   `handleHook`, always exits 0.
 - `src/statusline-core.ts` / `src/statusline.ts` — the pure statusline
-  renderer and its stdin-to-stdout entry point.
+  renderer and its stdin-to-stdout entry point. The line is clock and cost,
+  then ` | <target>`, then ` | ⎇ <branch>`, then ` | ctx N%`
+  (`context_window.used_percentage`); each part is left out when unknown.
+- `src/git-branch.ts` — `readGitBranch`, the branch from `.git/HEAD`
+  (walks up, follows a worktree's `gitdir:` file, short commit when
+  detached), no `git` process. Node builtins only.
 - `src/report.ts` — `formatReport`, a minimal day-grouped report built on
   `buildTasks` from `kankaku-pi/domain`.
 - `src/cli-core.ts` / `src/cli.ts` — `runCli(argv, deps)` (`report`,

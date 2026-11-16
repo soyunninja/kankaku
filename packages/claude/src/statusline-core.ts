@@ -14,6 +14,8 @@ export interface StatuslineDeps {
    * treated as "no label" so the clock and cost are still printed.
    */
   targetLabel?: (input: { env: NodeJS.ProcessEnv; cwd: string; sessionId: string }) => string | undefined;
+  /** The git branch of `cwd`, or `undefined`. Optional; a throw is treated as "no branch". */
+  gitBranch?: (cwd: string) => string | undefined;
 }
 
 /**
@@ -28,8 +30,10 @@ export interface StatuslineDeps {
  * The project's own state file (`<KANKAKU_DIR>/claude/<session_id>.state.json`)
  * is only ever READ here, for the open-prompt clock, and is never created:
  * a missing state file renders as `idle` rather than creating anything.
- * When `deps.targetLabel` resolves a work target, it is appended after
- * ` | ` (`kankaku 0:04 · $1.01 | Acme · Web › Fix login`).
+ * After the clock and cost come, each after ` | ` and each left out when
+ * unknown: the work target (`deps.targetLabel`), the git branch of the
+ * working directory (`deps.gitBranch`) and `context_window.used_percentage`
+ * as `ctx N%` (`kankaku 4m · $1.01 | Acme · Web › Fix login | ⎇ main | ctx 42%`).
  */
 export function renderStatusline(input: unknown, deps: StatuslineDeps): string {
   try {
@@ -57,9 +61,16 @@ export function renderStatusline(input: unknown, deps: StatuslineDeps): string {
     const state = deps.readState(paths.stateFile);
     const clock = formatClock(state?.promptOpen ?? null, deps.now());
 
-    const line = totalUsd !== undefined ? `kankaku ${clock} · $${totalUsd.toFixed(2)}` : `kankaku ${clock}`;
+    const contextWindow = isPlainObject(input.context_window) ? input.context_window : undefined;
+    const contextUsed = readFiniteNumberField(contextWindow?.used_percentage);
+
+    const sections = [totalUsd !== undefined ? `kankaku ${clock} · $${totalUsd.toFixed(2)}` : `kankaku ${clock}`];
     const label = readTargetLabel(deps, cwd, sessionId);
-    return label !== undefined ? `${line} | ${label}` : line;
+    if (label !== undefined) sections.push(label);
+    const branch = readBranch(deps, cwd);
+    if (branch !== undefined) sections.push(`⎇ ${branch}`);
+    if (contextUsed !== undefined) sections.push(`ctx ${Math.round(contextUsed)}%`);
+    return sections.join(" | ");
   } catch {
     return "kankaku";
   }
@@ -75,21 +86,30 @@ function readTargetLabel(deps: StatuslineDeps, cwd: string, sessionId: string): 
   }
 }
 
+/** The branch on one line, or `undefined` when there is none or the lookup fails. */
+function readBranch(deps: StatuslineDeps, cwd: string): string | undefined {
+  try {
+    const branch = deps.gitBranch?.(cwd)?.split(/\s+/).join(" ").trim();
+    return branch ? branch : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function formatClock(promptOpen: PromptOpenState | null, now: number): string {
   if (!promptOpen) return "idle";
   return formatElapsed(Math.max(0, now - promptOpen.startedAt));
 }
 
-/** `m:ss` under an hour, `h:mm:ss` from an hour onward. */
+/** Whole minutes: `4m` under an hour, `1h05m` from an hour onward. */
 function formatElapsed(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
+  const totalMinutes = Math.floor(ms / 60_000);
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
   if (hours > 0) {
-    return `${hours}:${pad2(minutes)}:${pad2(seconds)}`;
+    return `${hours}h${pad2(minutes)}m`;
   }
-  return `${minutes}:${pad2(seconds)}`;
+  return `${minutes}m`;
 }
 
 function pad2(n: number): string {

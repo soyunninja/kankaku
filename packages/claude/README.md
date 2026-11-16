@@ -134,9 +134,15 @@ projects that never installed kankaku-claude. It writes only to
 only reads a project's own state file, so an unrelated session never leaves
 anything behind in whatever project happens to be open.
 
-The line shows the open prompt's clock, the session cost and, when one
-resolves, the work target: `kankaku 0:04 · $1.01 | Acme · Web › Fix login`
-(client, project and the linked task). The target comes from the session's
+The line shows the open prompt's clock, the session cost, the work target
+when one resolves, the git branch and the share of the context window in
+use: `kankaku 4m · $1.01 | Acme · Web › Fix login | ⎇ main | ctx 42%`
+(the target is client, project and the linked task). The clock counts whole
+minutes (`4m`, then `1h05m` from an hour on). The context share is Claude Code's
+own `context_window.used_percentage`, left out until Claude Code has
+computed it. The branch is read from the working directory's `.git/HEAD`
+(linked worktrees included, a detached HEAD shows its short commit) without
+running `git`, and left out outside a repository. The target comes from the session's
 `/kankaku:target` pick and `/kankaku:task` link, then the folder's
 `config.json`, then `repo_paths`; it is read from the cached catalog with no
 network access, and omitted when nothing resolves.

@@ -90,21 +90,22 @@ test("renderStatusline prints idle and creates nothing under the project when no
   }
 });
 
-test("renderStatusline formats the open prompt's elapsed clock as m:ss under an hour", () => {
+test("renderStatusline formats the open prompt's elapsed clock as whole minutes with an m under an hour", () => {
   const dirs = tmpEnv();
   try {
     const paths = resolvePaths({ env: dirs.env, cwd: dirs.cwd, sessionId: "s1" });
     writeState(paths.stateFile, baseState({ promptOpen: { id: "p1", startedAt: 0, costAtStart: 0 } }));
 
     const input = { session_id: "s1", cwd: dirs.cwd };
-    const line = renderStatusline(input, deps(dirs.env, () => 65_000));
-    assert.equal(line, "kankaku 1:05");
+    assert.equal(renderStatusline(input, deps(dirs.env, () => 59_000)), "kankaku 0m");
+    assert.equal(renderStatusline(input, deps(dirs.env, () => 65_000)), "kankaku 1m");
+    assert.equal(renderStatusline(input, deps(dirs.env, () => (59 * 60 + 59) * 1000)), "kankaku 59m");
   } finally {
     cleanup(dirs);
   }
 });
 
-test("renderStatusline formats the open prompt's elapsed clock as h:mm:ss past an hour", () => {
+test("renderStatusline formats the open prompt's elapsed clock as hours and two-digit minutes from an hour on", () => {
   const dirs = tmpEnv();
   try {
     const paths = resolvePaths({ env: dirs.env, cwd: dirs.cwd, sessionId: "s1" });
@@ -113,7 +114,7 @@ test("renderStatusline formats the open prompt's elapsed clock as h:mm:ss past a
     const input = { session_id: "s1", cwd: dirs.cwd };
     const oneHourFiveMinSevenSec = (3600 + 5 * 60 + 7) * 1000;
     const line = renderStatusline(input, deps(dirs.env, () => oneHourFiveMinSevenSec));
-    assert.equal(line, "kankaku 1:05:07");
+    assert.equal(line, "kankaku 1h05m");
   } finally {
     cleanup(dirs);
   }
@@ -146,7 +147,7 @@ test("renderStatusline prints just the clock, with no cost suffix and no write, 
 
     const input = { session_id: "s1", cwd: dirs.cwd };
     const line = renderStatusline(input, deps(dirs.env, () => 5000, { writeCost: spyWriteCost }));
-    assert.equal(line, "kankaku 0:05");
+    assert.equal(line, "kankaku 0m");
     assert.equal(writeCalled, false);
   } finally {
     cleanup(dirs);
@@ -289,6 +290,54 @@ test("sessionTargetLabel: no catalog cache means no label", () => {
   const dirs = tmpEnv();
   try {
     assert.equal(sessionTargetLabel({ env: dirs.env, cwd: dirs.cwd, sessionId: "s1" }), undefined);
+  } finally {
+    cleanup(dirs);
+  }
+});
+
+test("renderStatusline shows the context window used, rounded, after the clock and cost and before the target", () => {
+  const dirs = tmpEnv();
+  try {
+    const targetLabel = () => "Acme · Web";
+    const full = { session_id: "s1", cwd: dirs.cwd, cost: { total_cost_usd: 1.01 }, context_window: { used_percentage: 41.6 } };
+    assert.equal(renderStatusline(full, deps(dirs.env, () => 5000, { targetLabel })), "kankaku idle · $1.01 | Acme · Web | ctx 42%");
+
+    const noCost = { session_id: "s1", cwd: dirs.cwd, context_window: { used_percentage: 8 } };
+    assert.equal(renderStatusline(noCost, deps(dirs.env, () => 5000)), "kankaku idle | ctx 8%");
+  } finally {
+    cleanup(dirs);
+  }
+});
+
+test("renderStatusline leaves the context out when used_percentage is null, missing or not a finite number", () => {
+  const dirs = tmpEnv();
+  try {
+    for (const contextWindow of [{ used_percentage: null }, {}, { used_percentage: "50" }, { used_percentage: Number.NaN }, null, undefined]) {
+      const input = { session_id: "s1", cwd: dirs.cwd, cost: { total_cost_usd: 1.01 }, context_window: contextWindow };
+      assert.equal(renderStatusline(input, deps(dirs.env, () => 5000)), "kankaku idle · $1.01");
+    }
+  } finally {
+    cleanup(dirs);
+  }
+});
+
+test("renderStatusline shows the git branch of the working directory before the target, and nothing when there is none or the lookup throws", () => {
+  const dirs = tmpEnv();
+  try {
+    const seen: string[] = [];
+    const gitBranch = (cwd: string) => {
+      seen.push(cwd);
+      return "main";
+    };
+    const input = { session_id: "s1", workspace: { current_dir: "/repo/packages/claude" }, cwd: dirs.cwd, cost: { total_cost_usd: 1.01 }, context_window: { used_percentage: 8 } };
+    assert.equal(
+      renderStatusline(input, deps(dirs.env, () => 5000, { gitBranch, targetLabel: () => "Acme · Web" })),
+      "kankaku idle · $1.01 | Acme · Web | ⎇ main | ctx 8%",
+    );
+    assert.deepEqual(seen, ["/repo/packages/claude"]);
+    assert.equal(renderStatusline(input, deps(dirs.env, () => 5000, { gitBranch: () => undefined })), "kankaku idle · $1.01 | ctx 8%");
+    const throwing = (): string => { throw new Error("unreadable"); };
+    assert.equal(renderStatusline(input, deps(dirs.env, () => 5000, { gitBranch: throwing })), "kankaku idle · $1.01 | ctx 8%");
   } finally {
     cleanup(dirs);
   }

@@ -4,6 +4,22 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **The statusline shows the git branch and the context window in use,**
+  after kankaku's own parts:
+  `kankaku 4m · $1.01 | Acme · Web › Fix login | ⎇ main | ctx 42%`. The
+  context share is Claude Code's `context_window.used_percentage`, left out
+  until Claude Code computes it; the branch is read from `.git/HEAD` without
+  running `git`, and left out outside a repository.
+
+### Changed
+
+- **The statusline clock counts whole minutes:** `4m`, and `1h05m` from an
+  hour on, instead of `0:04` and `1:05:07`.
+
 ## 1.5.1 — 2026-11-16
 
 ### Fixed
