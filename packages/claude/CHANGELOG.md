@@ -4,6 +4,19 @@ All notable changes to this project are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **Desktop-app and IDE sessions get a cost.** They have no statusline, so
+  until now their records never carried one. Each prompt is now priced
+  from its own tokens with prices kankaku learns from Claude Code's totals
+  when sessions close: no price table to maintain. A model gets a price only
+  once its samples reproduce Claude Code's totals within 0.1%; a prompt
+  using a model or token kind without a learned price stays without cost. A
+  price change is detected and relearned, and `/kankaku:doctor` lists the
+  learned prices. Prices live in `~/.kankaku/claude/prices.json`.
+
 ## 1.5.2 — 2026-11-16
 
 ### Added

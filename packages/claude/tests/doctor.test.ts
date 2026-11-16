@@ -73,3 +73,26 @@ test("doctor distinguishes invalid hub URL without exposing its value", () => {
     assert.doesNotMatch(output, /private\.example|private@example\.com|secret-password/);
   } finally { f.cleanup(); }
 });
+
+test("doctor shows the learned prices per model, a model still learning, and a model whose price changed", async () => {
+  const { writePriceBook } = await import("../src/price-book.ts");
+  const f = fixture();
+  try {
+    assert.match(runDoctor(f.deps), /learned prices: none yet/);
+    const tokens = { input: 1, output: 1, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0, cacheWriteUnsplit: 0 };
+    const s = (id: string) => ({ sessionId: id, at: 1, tokens, costUsd: 0.000024 });
+    writePriceBook({ HOME: f.home }, {
+      version: 1,
+      models: {
+        "claude-opus-5-5": { samples: [s("a"), s("b"), s("c")], prices: { input: 3.9999999991, output: 20, cacheRead: 0.2, cacheWrite1h: 8 } },
+        "claude-new-6": { samples: [s("a")] },
+        "claude-fable-5-2": { samples: [s("z")], changedAt: Date.parse("2026-11-20T10:00:00Z") },
+      },
+    });
+    const output = runDoctor(f.deps);
+    assert.match(output, /## Desktop app cost \(learned prices\)/);
+    assert.match(output, /claude-opus-5-5: \$4\.00 input · \$20\.00 output · \$0\.20 cache read · \$8\.00 cache write 1h per Mtok \(3 sessions\)/);
+    assert.match(output, /claude-new-6: learning \(1 session\)/);
+    assert.match(output, /claude-fable-5-2: price changed on 2026-11-20, relearning \(1 session\)/);
+  } finally { f.cleanup(); }
+});

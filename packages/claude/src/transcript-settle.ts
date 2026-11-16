@@ -5,6 +5,9 @@ import {
   readTranscriptHead,
   readTranscriptSince,
   statTranscriptSize,
+  PRICE_CATEGORIES,
+  zeroCategories,
+  type CategoryUsage,
   type TokenUsage,
   type TranscriptCostState,
   type TranscriptPosition,
@@ -91,6 +94,8 @@ export async function waitForTranscript(
 export interface SettledTranscripts {
   /** Tokens added since the stored positions; `undefined` when any file exceeded the read bound (the record then simply lacks tokens). */
   tokens: TokenUsage | undefined;
+  /** {@link tokens} per model and price category; `undefined` whenever {@link tokens} is, or nothing was counted. */
+  byModel?: Record<string, CategoryUsage>;
   /** The state with the advanced positions and any newly learned version / entry point. */
   transcript: TranscriptState;
   /** The last `cost-state` of the MAIN transcript among the bytes read. */
@@ -120,6 +125,7 @@ export function settleTranscripts(
   let remaining = options.maxBytes ?? MAX_SETTLE_BYTES;
   const offsets: Record<string, TranscriptPosition> = { ...transcript.offsets };
   const total: TokenUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+  const byModel: Record<string, CategoryUsage> = {};
   let truncated = false;
   let version: string | undefined;
   let entrypoint: string | undefined;
@@ -146,6 +152,10 @@ export function settleTranscripts(
     total.output += result.usage.output;
     total.cacheRead += result.usage.cacheRead;
     total.cacheWrite += result.usage.cacheWrite;
+    for (const [model, tokens] of Object.entries(result.byModel ?? {})) {
+      const sum = (byModel[model] ??= zeroCategories());
+      for (const category of PRICE_CATEGORIES) sum[category] += tokens[category];
+    }
     if (version === undefined) version = result.version;
     if (entrypoint === undefined) entrypoint = result.entrypoint;
     if (file === transcript.path) {
@@ -166,6 +176,7 @@ export function settleTranscripts(
   const model = mainModel ?? transcript.model ?? subagentModel;
   return {
     tokens: truncated ? undefined : total,
+    ...(!truncated && Object.keys(byModel).length > 0 ? { byModel } : {}),
     transcript: {
       path: transcript.path,
       offsets,

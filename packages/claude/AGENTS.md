@@ -117,6 +117,10 @@ extension has one. Instead:
 - `src/session-state.ts` — `readState`/`writeState`/`updateState`, the
   atomic per-session state file (no `cost` field since T7).
 - `src/cost-chain.ts` — `settleCost`, the pure chained per-prompt cost rule.
+- `src/price-book.ts` — learned prices for desktop-app sessions:
+  `learnFromTranscript`, `recordSample`, `solvePrices`, `priceUsage`,
+  `readPriceBook`/`writePriceBook` (`~/.kankaku/claude/prices.json`). Node
+  builtins only.
 - `src/cost-store.ts` — `readCost`/`writeCost`/`deleteCost`/
   `sweepStaleCostFiles`, the per-session cost file under
   `~/.kankaku/claude/cost/`. Node builtins only, no `kankaku-pi` import.
@@ -264,6 +268,22 @@ extension has one. Instead:
   `hasUnknownModelCost` is not used. The pending list is dropped from the
   state right after the append, and the state files are deleted by
   whichever path runs first, so a prompt is written once.
+- **Desktop-app sessions (`entrypoint: "sdk-ts"`) are priced from learned
+  prices, never from a hand-kept table.** `SessionEnd` (with or without an
+  open prompt; the path falls back to the input's `transcript_path`) and
+  `recoverStaleSessions` call `learnFromTranscript` FIRST, then price the
+  open prompt. Learning reads the whole transcript (main + subagents, at
+  most `LEARN_MAX_BYTES`), numbers and model names only, and records a
+  sample only when a model's transcript tokens equal its `cost-state`
+  `modelUsage` counts (a `[1m]`-style suffix maps to the plain message
+  model when unambiguous). `solvePrices` accepts prices only with at least
+  one more sample than unknowns, none negative, every sample within
+  `PRICE_TOLERANCE`; a reproduced-by-nobody sample on a priced model is a
+  price change (`changedAt`). `priceUsage` returns `undefined` unless every
+  model and category with tokens has a price: never a partial cost. Only
+  `sdk-ts` uses it (the `cli` chain would double count). Learning never
+  runs on a light hook, and the book lives under HOME
+  (`~/.kankaku/claude/prices.json`), never a project.
 
 ## Conventions (mirrored from kankaku)
 

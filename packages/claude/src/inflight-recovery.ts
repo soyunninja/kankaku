@@ -10,6 +10,10 @@ import { settleTranscripts } from "./transcript-settle.ts";
 import { buildHeadlessRecords, withLateTokens } from "./headless.ts";
 import { readCost, deleteCost, type CostEnv } from "./cost-store.ts";
 import { settleCost } from "./cost-chain.ts";
+import { learnFromTranscript, priceUsage, readPriceBook } from "./price-book.ts";
+
+/** The desktop app and IDEs: no statusline, so an interrupted prompt's cost comes from the learned prices. */
+const DESKTOP_ENTRYPOINT = "sdk-ts";
 import type { RecordAssignment } from "./work-target.ts";
 
 export interface RecoverStaleSessionsInput {
@@ -56,6 +60,9 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
     const dead = state.pid <= 0 || !input.isAlive(state.pid);
     if (!dead) continue;
 
+    // A dead session's last cost-state teaches prices first, so its own open prompt can use them.
+    if (state.transcript?.path) learnFromTranscript(state.transcript.path, sessionId, input.env, input.now);
+
     const held = [...(state.pending ?? [])];
     const openPrompt = state.promptOpen && state.cwd !== "" ? state.promptOpen : undefined;
     if (openPrompt || held.length > 0) {
@@ -80,7 +87,9 @@ export function recoverStaleSessions(input: RecoverStaleSessionsInput): WorkReco
           // `now` is only a fallback when no usable timestamp exists.
           const lastTs = last.events[last.events.length - 1]?.ts;
           const settledAt = typeof lastTs === "number" && Number.isFinite(lastTs) ? lastTs : input.now;
-          const cost = headless ? undefined : settleCost(costNow?.totalUsd, openPrompt.costAtStart).cost;
+          const desktop = (transcript?.transcript.entrypoint ?? state.transcript?.entrypoint) === DESKTOP_ENTRYPOINT;
+          const learnedCost = desktop && transcript?.tokens ? priceUsage(readPriceBook(input.env), transcript.byModel) : undefined;
+          const cost = headless ? undefined : (settleCost(costNow?.totalUsd, openPrompt.costAtStart).cost ?? learnedCost);
           const core = replayPrompt(last, { settledAt, cost });
           if (core && headless) {
             held.push({ core: stampTokens(core, transcript?.tokens), costAtStart: openPrompt.costAtStart });

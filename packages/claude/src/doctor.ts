@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { JsonlWorkLog, SyncStateStore, computeSyncStatus, resolveHubCredentials } from "kankaku-pi/hub";
 import type { CliDeps } from "./cli-core.ts";
 import { costDir } from "./cost-store.ts";
+import { readPriceBook, type PricedCategory } from "./price-book.ts";
 import { listStateFiles, resolveKankakuDir } from "./paths.ts";
 import { readState } from "./session-state.ts";
 import { formatTargetLine, formatTaskLine, resolveSessionWorkTarget } from "./work-target.ts";
@@ -25,6 +26,31 @@ function label(value: unknown): string {
 function syncWindowHours(env: NodeJS.ProcessEnv): number {
   const hours = Number(env.KANKAKU_SYNC_WINDOW_HOURS);
   return env.KANKAKU_SYNC_WINDOW_HOURS && Number.isFinite(hours) && hours > 0 ? hours : 24;
+}
+
+const CATEGORY_LABELS: Record<PricedCategory, string> = {
+  input: "input",
+  output: "output",
+  cacheRead: "cache read",
+  cacheWrite5m: "cache write 5m",
+  cacheWrite1h: "cache write 1h",
+};
+
+/** The prices learned for desktop-app sessions (`src/price-book.ts`), one line per model. */
+function priceLines(deps: CliDeps): string[] {
+  const models = Object.entries(readPriceBook(deps.env).models);
+  if (models.length === 0) return ["learned prices: none yet (learned from Claude Code's totals when a session closes)"];
+  return models.map(([model, entry]) => {
+    const name = /^[\w.\-[\]]+$/.test(model) ? model : "unavailable";
+    const sessions = `(${entry.samples.length} ${entry.samples.length === 1 ? "session" : "sessions"})`;
+    const changed = entry.changedAt !== undefined ? new Date(entry.changedAt).toISOString().slice(0, 10) : undefined;
+    if (!entry.prices) return changed ? `${name}: price changed on ${changed}, relearning ${sessions}` : `${name}: learning ${sessions}`;
+    const prices = (Object.keys(CATEGORY_LABELS) as PricedCategory[])
+      .filter((category) => entry.prices![category] !== undefined)
+      .map((category) => `$${entry.prices![category]!.toFixed(2)} ${CATEGORY_LABELS[category]}`)
+      .join(" · ");
+    return `${name}: ${prices} per Mtok ${sessions}${changed ? `; price changed on ${changed}, relearned` : ""}`;
+  });
 }
 
 function workTargetLines(deps: CliDeps): string[] {
@@ -83,6 +109,8 @@ export function runDoctor(deps: CliDeps): string {
     `active sessions: ${states.length}`,
     `alive: ${alive}; dead: ${dead}; open prompts: ${open}; unreadable: ${unreadable}`,
     `cost files visible: ${costsVisible ? "yes" : "no"} (current HOME)`,
+    "", "## Desktop app cost (learned prices)",
+    ...priceLines(deps),
     "", "## Work target",
     ...workTargetLines(deps),
     "", "## Hub / sync",

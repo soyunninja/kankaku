@@ -372,8 +372,53 @@ files live").
 - **Headless runs take their cost from the transcript.** `claude -p` renders
   no statusline, so the cost comes from the transcript's `cost-state` line
   instead (see "Headless runs" below).
+- **Desktop-app and IDE prompts are priced from learned prices.** Sessions
+  started from the Claude desktop app or an IDE (entry point `sdk-ts`)
+  render no statusline either, and Claude Code writes their `cost-state`
+  only when the session closes, as one total that, in a forked session,
+  includes the parent's spend. So each prompt is priced from its own tokens
+  instead (see "Learned prices" below). Other entry points never use them.
 - `/kankaku:status` shows `recorded $X of $Y` per live session so a gap is
   visible.
+
+### Learned prices
+
+Nobody maintains a price table: kankaku-claude learns each model's price
+per million tokens from Claude Code's own totals.
+
+- **Learning.** When a session ends (`SessionEnd`, or crash recovery at the
+  next `SessionStart`), its whole transcript is read once, numbers only. The
+  last `cost-state` line gives, per model, a cost and token counts; the
+  messages give the same tokens split the way they are priced: input,
+  output, cache read, 5-minute cache write and 1-hour cache write. When a
+  model's transcript tokens match the `cost-state` counts exactly, that
+  session becomes one sample for the model (the last 30 are kept).
+- **Solving.** A model's prices are solved from its samples and accepted only
+  when there is at least one more sample than prices to find, no price is
+  negative, and every sample is reproduced within 0.1%. Until then the model
+  has no price.
+- **Pricing a prompt.** A desktop-app prompt's cost is its tokens per model
+  and category times the learned prices. If any model or category it used
+  has no price, the record has no cost: never a partial or invented figure.
+  The cost is marked `costObserved` like a statusline cost; nothing in the
+  record says it was priced rather than read from the statusline.
+- **Price changes.** A new sample the current prices do not reproduce means
+  the price changed: the model's older samples are dropped, its prices are
+  cleared and relearned from new sessions, and `/kankaku:doctor` says so.
+  Prompts settled between the change and the first session that closes
+  after it keep the old price (records are never rewritten).
+- **What is not covered.** Claude Code's side calls that never reach the
+  transcript (for example a small model titling the session) are in its
+  totals but in no prompt, so the records of a session can add up to a
+  little less than Claude Code's total.
+- **Reopened sessions.** When the desktop app reopens a session, Claude
+  Code's last total can cover fewer tokens than the transcript holds.
+  kankaku-claude prices every message in the transcript, so there its
+  records can add up to more than that total (on the author's machine: 98 of
+  98 sessions with a single total matched within 0.1%; 19 of 25 reopened
+  ones came out higher).
+
+`/kankaku:doctor` lists the learned prices per model.
 
 ## What is read from the transcript
 
@@ -397,8 +442,11 @@ for the session. kankaku-claude reads it for three things, and nothing else:
 - **The version.** The `version` of the first line read becomes the record's
   `agentVersion`.
 - **For headless runs, the cost.** See "Headless runs" below.
+- **For learned prices, the model and the cache-write split.** Each
+  message's `model` and its `cache_creation` 5-minute / 1-hour split, and the
+  `cost-state` line's per-model `modelUsage` (see "Learned prices" above).
 
-Only numbers, the version and the entry point (`cli` or `sdk-cli`) are taken
+Only numbers, model names, the version and the entry point (`cli`, `sdk-cli` or `sdk-ts`) are taken
 from a line; prompts, answers, tool inputs and outputs are never kept, copied
 or sent anywhere. Subagents do not appear in the session's transcript: each
 has its own file under `<session id>/subagents/`, and those files are read
@@ -502,6 +550,9 @@ with the statusline cost.
   happens to be open with another session's data. This directory is
   owner-only (`0700`), each cost file is `0600`, and a file older than 7
   days is swept on the next `SessionStart`.
+- `~/.kankaku/claude/prices.json` — the learned prices and the samples they
+  come from (model names, session ids and numbers only), also always under
+  your home directory. Deleting it only means prices are learned again.
 
 `KANKAKU_DIR` defaults to `.kankaku` (relative to the session's working
 directory); set the `KANKAKU_DIR` environment variable to use an absolute

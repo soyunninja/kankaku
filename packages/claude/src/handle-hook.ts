@@ -34,6 +34,8 @@ export interface HandleHookDeps {
 
 /** The transcript `entrypoint` of a headless `claude -p` run. */
 const HEADLESS_ENTRYPOINT = "sdk-cli";
+/** The desktop app and IDEs: no statusline, so a prompt's cost comes from the learned prices (`src/price-book.ts`). */
+const DESKTOP_ENTRYPOINT = "sdk-ts";
 
 const STOP_COST_WAIT_POLL_MS = 100;
 const STOP_COST_WAIT_MAX_MS = 1500;
@@ -139,7 +141,7 @@ export async function handleHook(input: unknown, deps: HandleHookDeps): Promise<
     case "SessionEnd": {
       const reason = readString(raw.reason) ?? "other";
       appendEvent(paths.eventsFile, { ts, event: "SessionEnd", reason });
-      await handleSessionEnd(paths, sessionId, cwd, ts, deps);
+      await handleSessionEnd(paths, sessionId, cwd, ts, deps, readString(raw.transcript_path));
       return;
     }
     default:
@@ -200,8 +202,9 @@ async function handleStop(paths: ResolvedPaths, sessionId: string, deps: HandleH
 
   // A Stop with no open prompt settles nothing: no cost, no baseline move.
   const settled = state.promptOpen ? settleCost(cost?.totalUsd, state.promptOpen.costAtStart) : {};
+  const promptCost = settled.cost ?? (state.promptOpen ? await desktopCost(transcript, state, deps) : undefined);
 
-  const core = replayPrompt(last, { cost: settled.cost });
+  const core = replayPrompt(last, { cost: promptCost });
   if (core) {
     const assignment = await assignmentResolver(paths, deps);
     const version = agentVersionOf(transcript, state);
@@ -275,8 +278,18 @@ async function handleSessionStart(
   await syncHeavy("session_start", cwd, deps);
 }
 
-async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: string, ts: number, deps: HandleHookDeps): Promise<void> {
+async function handleSessionEnd(
+  paths: ResolvedPaths,
+  sessionId: string,
+  cwd: string,
+  ts: number,
+  deps: HandleHookDeps,
+  inputTranscriptPath: string | undefined,
+): Promise<void> {
   const state = readState(paths.stateFile);
+  // The cost-state of the closing session teaches prices first, so its own open prompt can use them.
+  const learnPath = state?.transcript?.path ?? inputTranscriptPath;
+  if (learnPath) await learnSafely(learnPath, sessionId, ts, deps);
   if (state && (state.promptOpen || (state.pending?.length ?? 0) > 0)) {
     const { replayPrompt } = await import("./replay.ts");
     const { buildClaudeRecord, stampTokens } = await import("./record.ts");
@@ -296,7 +309,8 @@ async function handleSessionEnd(paths: ResolvedPaths, sessionId: string, cwd: st
       if (last) {
         const costNow = readCost(deps.env, sessionId);
         const settled = headless ? {} : settleCost(costNow?.totalUsd, state.promptOpen.costAtStart);
-        const core = replayPrompt(last, { settledAt: ts, cost: settled.cost });
+        const promptCost = headless ? undefined : (settled.cost ?? (await desktopCost(transcript, state, deps)));
+        const core = replayPrompt(last, { settledAt: ts, cost: promptCost });
         if (core && headless) {
           pending.push({ core: stampTokens(core, transcript?.tokens), costAtStart: state.promptOpen.costAtStart });
           attached = true;
@@ -418,6 +432,32 @@ function settleSafely(state: SessionState, deps: HandleHookDeps): SettledTranscr
   } catch (error) {
     deps.stderr(`kankaku: transcript: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
+  }
+}
+
+/**
+ * A desktop-app prompt's cost from the learned prices, or `undefined`
+ * (any other entry point, no tokens, a model or category without a price,
+ * or any failure). Heavy paths only: the price book is loaded on demand.
+ */
+async function desktopCost(settled: SettledTranscripts | undefined, state: SessionState, deps: HandleHookDeps): Promise<number | undefined> {
+  const entrypoint = settled?.transcript.entrypoint ?? state.transcript?.entrypoint;
+  if (entrypoint !== DESKTOP_ENTRYPOINT || !settled?.tokens) return undefined;
+  try {
+    const { readPriceBook, priceUsage } = await import("./price-book.ts");
+    return priceUsage(readPriceBook(deps.env), settled.byModel);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Learning prices never fails a hook. */
+async function learnSafely(transcriptPath: string, sessionId: string, now: number, deps: HandleHookDeps): Promise<void> {
+  try {
+    const { learnFromTranscript } = await import("./price-book.ts");
+    learnFromTranscript(transcriptPath, sessionId, deps.env, now);
+  } catch (error) {
+    deps.stderr(`kankaku: prices: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
 
